@@ -132,7 +132,10 @@ enum BuildMode<'a> {
     /// the boundary rather than the project root: a project inside a larger
     /// repository may link to a tracked sibling outside itself, and the ref
     /// records that sibling.
-    Ref { checkout: &'a Path },
+    Ref {
+        checkout: &'a Path,
+        revisions: Option<&'a BTreeMap<PathBuf, String>>,
+    },
 }
 
 /// Invocation-local reuse for materialised refs, keyed by actual file bytes,
@@ -142,6 +145,7 @@ pub struct BuildSession {
     cache: BuildCache,
     prepared: Arc<OnceLock<parser::PreparedPatterns>>,
     previous: Option<(String, BuildOutcome)>,
+    contents: BTreeMap<PathBuf, (String, String)>,
 }
 
 impl BuildSession {
@@ -151,7 +155,36 @@ impl BuildSession {
         checkout: &Path,
         config: &Config,
     ) -> Result<BuildOutcome> {
-        build_inner(root, config, BuildMode::Ref { checkout }, Some(self))
+        build_inner(
+            root,
+            config,
+            BuildMode::Ref {
+                checkout,
+                revisions: None,
+            },
+            Some(self),
+        )
+    }
+
+    /// Reuse bytes of unchanged regular files in an exclusively owned checkout.
+    /// `revisions` must come from [`crate::git::Repository::materialized_revisions`]
+    /// for that checkout's index; ordinary mutable filesystem builds use `build_of_ref`.
+    pub fn build_of_indexed_ref(
+        &mut self,
+        root: &Path,
+        checkout: &Path,
+        config: &Config,
+        revisions: &BTreeMap<PathBuf, String>,
+    ) -> Result<BuildOutcome> {
+        build_inner(
+            root,
+            config,
+            BuildMode::Ref {
+                checkout,
+                revisions: Some(revisions),
+            },
+            Some(self),
+        )
     }
 }
 
@@ -239,13 +272,23 @@ fn build_inner(
         BuildMode::WorkingTree { .. } | BuildMode::Ref { .. } => &[],
     };
     let persist_cache = matches!(mode, BuildMode::WorkingTree { .. });
+    let revision_of = |path: &Path| match &mode {
+        BuildMode::Ref {
+            checkout,
+            revisions: Some(revisions),
+        } => path
+            .strip_prefix(checkout)
+            .ok()
+            .and_then(|path| revisions.get(path)),
+        _ => None,
+    };
 
     // 1. Scan scope. The scan is the single scope authority: overlay
     // paths participate exactly as if their proposed bytes were on
     // disk (membership, conditional excludes), so an overlay graph and
     // the real post-write build can never disagree about scope.
     let scan = match mode {
-        BuildMode::Ref { checkout } => scanner::scan_ref(root, checkout, config)?,
+        BuildMode::Ref { checkout, .. } => scanner::scan_ref(root, checkout, config)?,
         _ => scanner::scan_scope_with_overlay(root, config, overlay)?,
     };
     let empty_scan = scanner::coverage_warning(&scan, "graph");
@@ -277,13 +320,19 @@ fn build_inner(
     let mut parse_config = parser::ParseConfig::new(config);
     let config_hash = parse_config.cache_key();
     let mut local_cache;
-    let (cache, cache_warning, previous) = if let Some(session) = session {
+    let mut local_contents = BTreeMap::new();
+    let (cache, cache_warning, previous, contents) = if let Some(session) = session {
         if session.cache.config_hash != config_hash {
             *session = BuildSession::default();
         }
         session.cache.remember_revisions();
         parse_config.prepared = Arc::clone(&session.prepared);
-        (&mut session.cache, None, Some(&mut session.previous))
+        (
+            &mut session.cache,
+            None,
+            Some(&mut session.previous),
+            &mut session.contents,
+        )
     } else {
         let (loaded, warning) = if full_rebuild {
             (BuildCache::default(), None)
@@ -291,7 +340,7 @@ fn build_inner(
             BuildCache::load(&cache_path, &config_hash)
         };
         local_cache = loaded;
-        (&mut local_cache, warning, None)
+        (&mut local_cache, warning, None, &mut local_contents)
     };
     cache.config_hash = config_hash;
 
@@ -330,6 +379,12 @@ fn build_inner(
                 return (rel_path.clone(), Ok(proposed.to_string()));
             }
             let abs_path = root.join(rel_path);
+            if let Some(revision) = revision_of(&abs_path)
+                && let Some((held_revision, content)) = contents.get(&abs_path)
+                && held_revision == revision
+            {
+                return (rel_path.clone(), Ok(content.clone()));
+            }
             // ParseFailure is a serialized graph record: its message
             // names the document by its graph identity (forward-slash,
             // like the `path` field and `Node.path`'s serialized form),
@@ -361,6 +416,16 @@ fn build_inner(
                 }),
             };
             (rel_path.clone(), result)
+        })
+        .collect();
+
+    *contents = read_results
+        .iter()
+        .filter_map(|(path, result)| {
+            let path = root.join(path);
+            let revision = revision_of(&path)?;
+            let content = result.as_ref().ok()?;
+            Some((path, (revision.clone(), content.clone())))
         })
         .collect();
 
@@ -1063,6 +1128,73 @@ mod tests {
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn indexed_ref_reads_match_fresh_builds_across_changes_and_conversion() {
+        use crate::git::{Repository, fixture::run_git};
+        let tmp = tempfile::tempdir().unwrap();
+        let checkout = tmp.path();
+        let root = checkout.join("project");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        run_git(checkout, &["init", "-q"]);
+        let a = "---\nid: a\n---\n[B](b.md)\n";
+        let b = "---\nid: b\n---\nBody\n";
+        std::fs::write(root.join("docs/a.md"), a).unwrap();
+        std::fs::write(root.join("docs/b.md"), b).unwrap();
+        let mut config = Config::default();
+        config.scope.include = vec![IncludePattern {
+            glob: "docs/**/*.md".into(),
+            may_be_empty: false,
+        }];
+        let repository = Repository::discover(&root).unwrap().unwrap();
+        let index = checkout.join(".git/index");
+        let mut session = BuildSession::default();
+        for content in [
+            Some(b),
+            Some(b),
+            Some("---\nid: renamed\n---\nChanged\n"),
+            None,
+            Some(b),
+        ] {
+            match content {
+                Some(content) => std::fs::write(root.join("docs/b.md"), content).unwrap(),
+                None => std::fs::remove_file(root.join("docs/b.md")).unwrap(),
+            }
+            run_git(checkout, &["add", "-A"]);
+            let revisions = repository.materialized_revisions(checkout, &index).unwrap();
+            let indexed = session
+                .build_of_indexed_ref(&root, checkout, &config, &revisions)
+                .unwrap();
+            let fresh = build_of_ref(&root, checkout, &config).unwrap();
+            assert_eq!(
+                serde_json::to_value(&indexed.graph).unwrap(),
+                serde_json::to_value(&fresh.graph).unwrap()
+            );
+        }
+        std::fs::write(checkout.join(".gitattributes"), "project/docs/a.md ident\n").unwrap();
+        run_git(checkout, &["add", "-A"]);
+        std::fs::write(root.join("docs/b.md"), "---\nid: transformed\n---\n").unwrap();
+        let revisions = repository.materialized_revisions(checkout, &index).unwrap();
+        let indexed = session
+            .build_of_indexed_ref(&root, checkout, &config, &revisions)
+            .unwrap();
+        let fresh = build_of_ref(&root, checkout, &config).unwrap();
+        assert_eq!(
+            serde_json::to_value(&indexed.graph).unwrap(),
+            serde_json::to_value(&fresh.graph).unwrap()
+        );
+        assert!(indexed.graph.node("transformed").is_some());
+        std::fs::write(root.join("docs/b.md"), b).unwrap();
+        assert!(
+            session
+                .build_of_ref(&root, checkout, &config)
+                .unwrap()
+                .graph
+                .node("b")
+                .is_some()
+        );
+        assert!(!root.join(&config.output.dir).exists());
+    }
 
     #[test]
     fn a_ref_session_reuses_revisions_and_resolves_each_document_scope() {

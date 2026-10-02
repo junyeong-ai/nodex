@@ -1047,10 +1047,18 @@ impl Checkout {
     /// Graph the checkout already held, without running git's conversions again.
     pub fn graph_held(&self, config: &nodex_core::Config) -> Result<BuildOutcome> {
         let project = self.repository.locate(&self.dir);
+        let revisions = self
+            .repository
+            .materialized_revisions(&self.dir, &self.index())
+            .map_err(|e| CoreError::Git {
+                context: "the held checkout's reusable file revisions could not be read"
+                    .to_string(),
+                stderr: e.to_string(),
+            })?;
         Ok(self
             .builds
             .borrow_mut()
-            .build_of_ref(&project, &self.dir, config)?)
+            .build_of_indexed_ref(&project, &self.dir, config, &revisions)?)
     }
 
     /// The directory's own root: what the tree recorded, whole. The

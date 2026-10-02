@@ -488,7 +488,12 @@ exactly the Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by
 `rules::finding_identity`: a duplicate of a pre-existing violation still
 refuses; a pre-existing violation elsewhere never blocks).
-`BuildSession` shares parsing and prepared patterns across ref builds within one invocation. It reuses the previous complete outcome only when actual scoped bytes, paths, configuration, version and scan disclosures match; git conversions still run before those bytes are read. No ref cache is persisted.
+`BuildSession` shares parsing and prepared patterns across ref builds within one invocation.
+The CLI's exclusively owned checkout also reuses bytes of regular index entries whose blob
+has not changed. A checkout with filters, ident or encoding conversions supplies no reusable
+revisions, and symlink entries always read the materialised tree. Ordinary filesystem builds
+always reread their bytes. The previous complete outcome is reused only when scoped bytes,
+paths, configuration, version and scan disclosures match. No ref cache is persisted.
 The private `scanner::scan` behind `scan_scope`, `scan_scope_with_overlay` and `scan_ref` is
 the single scope authority, so an overlay graph and the real post-write build never disagree
 about membership.
