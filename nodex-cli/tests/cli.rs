@@ -12992,6 +12992,10 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ("query.similar", vec!["query", "similar", "--id", "spec"]),
         ("query.trust", vec!["query", "trust", "spec"]),
         ("query.trust-list", vec!["query", "trust", "--top", "3"]),
+        (
+            "query.search-body",
+            vec!["query", "search", "Spec", "--body"],
+        ),
     ];
     for (key, args) in &read_cases {
         let env = run_envelope(nodex(root).args(args));
@@ -15663,50 +15667,56 @@ fn query_similar_min_score_filters_low_matches() {
 }
 
 #[test]
-fn scaffold_warns_when_similar_doc_exists() {
+fn scaffold_returns_comparison_candidates_without_a_replacement_warning() {
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
         tmp.path(),
         "docs/existing.md",
-        "---\nid: doc-existing\ntitle: Auth Retry Policy\nkind: generic\nstatus: active\n---\n# Existing\n",
+        "---\nid: doc-existing\ntitle: Storage design\nkind: generic\nstatus: active\ntags: [knowledge]\n---\n# Existing\n",
     );
-    nodex(tmp.path()).arg("build").assert().success();
-
     let envelope = run_envelope(nodex(tmp.path()).args([
         "scaffold",
         "--kind",
         "generic",
         "--title",
-        "Auth Retry Policy v2",
+        "Payroll holiday policy",
         "--id",
         "doc-new",
         "--path",
         "docs/new.md",
+        "--field",
+        "tags=[knowledge]",
         "--dry-run",
     ]));
-    // Per `.claude/rules/json-output.md`, warnings live at the
-    // envelope level — never nested inside `data`. A consumer that
-    // parses `envelope.warnings` is the one we promise to support.
-    let warnings: Vec<&str> = envelope
-        .get("warnings")
-        .and_then(Value::as_array)
-        .expect("envelope-level warnings array")
-        .iter()
-        .filter_map(warning_msg)
-        .collect();
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("similar doc exists") && w.contains("doc-existing")),
-        "scaffold must warn about similar existing doc at envelope level; got {warnings:?}"
+    assert_eq!(envelope["data"]["candidates"][0]["id"], "doc-existing");
+    assert_eq!(
+        envelope["data"]["candidates"][0]["components"]["title"],
+        0.0
     );
-    // Negative side: `data` must NOT carry a stray `warnings` field —
-    // that's the contract violation we just removed.
-    assert!(
-        envelope.pointer("/data/warnings").is_none(),
-        "scaffold result must not nest warnings inside data: {envelope}"
-    );
+    assert_eq!(envelope["data"]["candidates"][0]["components"]["tags"], 1.0);
+    assert!(envelope.get("warnings").is_none());
+    assert!(!tmp.path().join("docs/new.md").exists());
+    let overwrite = run_envelope(nodex(tmp.path()).args([
+        "scaffold",
+        "--kind",
+        "generic",
+        "--title",
+        "Storage design",
+        "--id",
+        "doc-existing",
+        "--path",
+        "docs/existing.md",
+        "--force",
+        "--dry-run",
+    ]));
+    assert!(overwrite["data"].get("candidates").is_none());
+    let manifest = nodex_core::export::export_envelope_schema(false).unwrap();
+    let schema = &manifest.per_command["scaffold"];
+    let validator = jsonschema::draft202012::new(schema).unwrap();
+    for result in [envelope, overwrite] {
+        assert!(validator.is_valid(&result["data"]));
+    }
 }
 
 #[test]
@@ -18501,8 +18511,8 @@ fn query_node_with_body_on_stale_graph_emits_io_error() {
         env["error"]["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("nodex build"),
-        "stale-graph error must point at the fix: {env}"
+            .contains("docs/a.md"),
+        "read failure must identify the affected file: {env}"
     );
 }
 
@@ -25206,4 +25216,65 @@ fn locks_recover_the_revision_before_a_document_became_unparseable() {
             "{envelope}"
         );
     }
+}
+
+#[test]
+fn queries_can_require_current_content_and_reject_drift_without_writing() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    let original = "---\nid: a\ntitle: Storage\nstatus: active\n---\nOriginal\n";
+    write_doc(tmp.path(), "docs/a.md", original);
+    nodex(tmp.path()).arg("build").assert().success();
+    let snapshot_path = tmp.path().join("_index/graph.json");
+    let snapshot = fs::read(&snapshot_path).unwrap();
+    run_json(nodex(tmp.path()).args(["query", "nodes", "--require-current"]));
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        &original.replace("status: active", "status: archived"),
+    );
+    let held = run_json(nodex(tmp.path()).args(["query", "nodes", "--status", "active"]));
+    assert_eq!(held["total"], 1);
+    for args in [
+        vec!["query", "nodes", "--require-current"],
+        vec!["query", "--require-current", "backlinks", "a"],
+        vec!["query", "search", "Storage", "--require-current"],
+    ] {
+        let output = nodex(tmp.path()).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["error"]["code"], "GRAPH_OUTDATED");
+    }
+    assert_eq!(fs::read(snapshot_path).unwrap(), snapshot);
+}
+
+#[test]
+fn body_search_reports_literal_matches_and_refuses_mixed_revisions() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\ntitle: Storage\nstatus: active\n---\n# Storage\nOAuth 토큰 회전\n```text\noauth literal\n```\n",
+    );
+    write_doc(tmp.path(), "docs/b.md", "---\nid: b\n---\nOAuth second\n");
+    nodex(tmp.path()).arg("build").assert().success();
+    let metadata = run_json(nodex(tmp.path()).args(["query", "search", "OAuth"]));
+    assert_eq!(metadata["total"], 0);
+    let body =
+        run_json(nodex(tmp.path()).args(["query", "search", "OAuth", "--body", "--limit", "1"]));
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["returned"], 1);
+    assert_eq!(body["items"][0]["id"], "a");
+    assert_eq!(body["items"][0]["matches"][0]["line"], 2);
+    assert_eq!(body["items"][0]["matches"][0]["text"], "OAuth 토큰 회전");
+    assert_eq!(body["items"][0]["matches"][1]["line"], 4);
+    write_doc(tmp.path(), "docs/b.md", "---\nid: b\n---\nChanged\n");
+    let output = nodex(tmp.path())
+        .args(["query", "search", "OAuth", "--body", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "GRAPH_OUTDATED");
 }

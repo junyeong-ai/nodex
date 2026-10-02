@@ -453,6 +453,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     })?;
 
     let mut updated_files = Vec::new();
+    let mut failures = Vec::new();
     for (plan, staged) in staged {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
         match staged.commit() {
@@ -460,11 +461,14 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
             // The move has landed, so an abort here would strand it and
             // discard the record of what the surviving rewrites did.
             // Report each remaining failure alongside successful writes.
-            Err(e) => skipped.push(format!(
-                "{shown} could not be rewritten ({}); its reference to the renamed file is \
-                 stale — repoint it manually",
-                nodex_core::error::chain(&e)
-            )),
+            Err(e) => {
+                failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
+                skipped.push(format!(
+                    "{shown} could not be rewritten ({}); its reference to the renamed file is \
+                     stale — repoint it manually",
+                    nodex_core::error::chain(&e)
+                ));
+            }
         }
     }
 
@@ -489,6 +493,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     );
 
     let data = RenameResult {
+        failures,
         old_path: nodex_core::path_guard::forward_str(old_path),
         new_path: nodex_core::path_guard::forward_str(new_path),
         total_updated: updated_files.len(),
@@ -1269,8 +1274,8 @@ mod tests {
     /// kernel, so that is what is asserted — against the kernel itself rather
     /// than against a model of it.
     ///
-    /// Each layout is built twice. One copy is asked; in the other the move is
-    /// really performed the way [`run`] performs it, and the result is read
+    /// A read-only layout is shared across destination queries. Each actual
+    /// move gets a fresh layout, and its result is read
     /// exactly as the pipeline downstream reads it: `walk_dir` admits a
     /// document by `is_file()`, and the build's read phase takes the bytes. A
     /// `Content` answer must match those bytes and an `Absent` answer must
@@ -1312,14 +1317,14 @@ mod tests {
 
         let mut checked = 0usize;
         for source in SOURCES {
-            for destination in DESTINATIONS {
-                for target in TARGETS {
-                    let asked = TempDir::new().unwrap();
+            for target in TARGETS {
+                let asked = TempDir::new().unwrap();
+                let Some(a) = layout(asked.path(), source, target) else {
+                    continue;
+                };
+                for destination in DESTINATIONS {
                     let moved = TempDir::new().unwrap();
-                    let (Some(a), Some(m)) = (
-                        layout(asked.path(), source, target),
-                        layout(moved.path(), source, target),
-                    ) else {
+                    let Some(m) = layout(moved.path(), source, target) else {
                         continue;
                     };
 

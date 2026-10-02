@@ -73,6 +73,8 @@ pub struct ScaffoldResult {
     pub path: PathBuf,
     pub content: String,
     pub written: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<crate::SimilarityEntry>,
 }
 
 /// `--field` keys with a canonical source that `fields` must not shadow.
@@ -421,8 +423,7 @@ pub fn scaffold(
         return Err(refusal);
     }
 
-    // 6.1 Advisories: a near-duplicate existing doc, then whatever the
-    // overlay check surfaced that did not refuse.
+    // 6.1 Comparison candidates and findings that did not refuse.
     // The graph this decision was made against carries what the walk could
     // not read; a document written into a corpus that is missing part of
     // itself is a partial answer, and the caller has to be told. An empty
@@ -431,9 +432,7 @@ pub fn scaffold(
     // document failed to parse, and those are exactly the states the
     // advisories describe.
     let mut warnings = before.warnings.clone();
-    if let Some(similar) = similar_doc_warning(&spec, &rel_path, &before.graph, config) {
-        warnings.push(Warning::new(WarningCode::SimilarDocument, similar));
-    }
+    let candidates = similar_candidates(&id, &proposed.graph, config)?;
     warnings.extend(introduced.advisories());
 
     // 7. Write atomically (or skip in dry-run).
@@ -459,6 +458,7 @@ pub fn scaffold(
             path: rel_path,
             content,
             written,
+            candidates,
         },
         warnings,
     ))
@@ -855,32 +855,14 @@ fn detect_id_collision(id: &str, rel_path: &Path, graph: &Graph) -> Result<()> {
 
 // ─── advisories ─────────────────────────────────────────────────────
 
-/// Duplicate detection — vector-free similarity against the live
-/// graph. Surfaces the top match with its score so the agent can
-/// decide whether `lifecycle supersede` is the right move. Reads the
-/// *scored* entries only: a spec carrying no positively-weighted signal
-/// ranks nothing — every candidate is excluded alike — so the warning
-/// can never report a fabricated "similarity 0.00".
-fn similar_doc_warning(
-    spec: &ScaffoldSpec,
-    rel_path: &Path,
+fn similar_candidates(
+    id: &str,
     graph: &Graph,
     config: &Config,
-) -> Option<String> {
-    let target = crate::query::similar::SimilarityTarget::Spec {
-        title: &spec.title,
-        kind: Some(spec.kind.as_str()),
-        tags: &[],
-        parent_dir: rel_path.parent(),
-    };
-    let opts = crate::query::similar::SimilarityOptions::from_config(config);
-    let candidates =
-        crate::query::similar::compute_similarity(graph, config, &target, &opts).ok()?;
-    let top = candidates.entries.first()?;
-    Some(format!(
-        "similar doc exists: {:?} (similarity {:.2}); consider `lifecycle supersede` instead of creating a duplicate",
-        top.node.id, top.score
-    ))
+) -> Result<Vec<crate::SimilarityEntry>> {
+    let target = crate::SimilarityTarget::Node(id);
+    let opts = crate::SimilarityOptions::from_config(config);
+    Ok(crate::compute_similarity(graph, config, &target, &opts)?.entries)
 }
 
 #[cfg(test)]

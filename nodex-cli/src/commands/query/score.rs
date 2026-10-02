@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::NaiveDate;
-use std::path::Path;
 
 use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
 use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
@@ -20,7 +19,7 @@ use super::{
 /// cutoff, unknown kind / status) runs before `load_graph` so a missing
 /// `graph.json` cannot mask a flag bug behind `GRAPH_MISSING`.
 pub(crate) fn run_trust(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     args: TrustArgs,
     pretty: bool,
     today: NaiveDate,
@@ -33,14 +32,14 @@ pub(crate) fn run_trust(
         status,
         below,
     } = args;
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project(context.root)?;
     if let Some(id) = id {
-        let snapshot = nodex_core::load_graph(root, &config)?;
+        let snapshot = context.load_graph(&config)?;
         let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
         let report = snapshot.require(
-            root,
+            context.root,
             &config,
-            nodex_core::query::trust::compute_trust(graph, &config, root, &id, today),
+            nodex_core::query::trust::compute_trust(graph, &config, context.root, &id, today),
         )?;
         emit_read_with(report, warnings, &config, pretty);
         return Ok(());
@@ -82,7 +81,7 @@ pub(crate) fn run_trust(
         )?;
     }
 
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
     let opts = TrustListOptions {
         extreme,
@@ -92,7 +91,7 @@ pub(crate) fn run_trust(
         below,
     };
     let outcome =
-        nodex_core::query::trust::compute_trust_ranking(graph, &config, root, &opts, today);
+        nodex_core::query::trust::compute_trust_ranking(graph, &config, context.root, &opts, today);
     // A node with no composite is not in the ranking's domain —
     // excluded from items and total — and the exclusion is never
     // silent: it rides the envelope warnings.
@@ -120,8 +119,12 @@ pub(crate) fn run_trust(
 /// every input-shape check (unknown kind, zero limit, non-finite or
 /// out-of-range cutoff) runs before `load_graph` so a missing graph
 /// cannot mask a flag bug.
-pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+pub(crate) fn run_similar(
+    context: &super::QueryContext<'_>,
+    args: SimilarityArgs,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(context.root)?;
 
     if let Some(kind) = args.kind.as_deref()
         && !config.kinds.allowed.iter().any(|k| k == kind)
@@ -139,7 +142,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
         reject_non_finite_or_out_of_unit_range(cutoff, "--min-score")?;
     }
 
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
 
     let opts = SimilarityOptions {
@@ -151,7 +154,7 @@ pub(crate) fn run_similar(root: &Path, args: SimilarityArgs, pretty: bool) -> Re
     // is unreachable.
     let outcome = match (args.id.as_deref(), args.title.as_deref()) {
         (Some(id), _) => snapshot.require(
-            root,
+            context.root,
             &config,
             nodex_core::query::similar::compute_similarity(
                 graph,

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::NaiveDate;
-use std::path::Path;
 
 use nodex_core::query::recent::{RecentOptions, RecentSince};
 
@@ -18,8 +17,12 @@ fn is_spine_field(field: &str) -> bool {
     nodex_core::query::NODE_REF_FIELDS.contains(&field)
 }
 
-pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+pub(crate) fn run_nodes(
+    context: &super::QueryContext<'_>,
+    args: NodesArgs,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(context.root)?;
     reject_empty_csv_entries("--kind", &args.kind)?;
     reject_empty_csv_entries("--status", &args.status)?;
     reject_empty_csv_entries("--tag", &args.tag)?;
@@ -81,7 +84,7 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
         reject_zero_usize(n, "--limit")?;
     }
 
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let filter = nodex_core::NodeFilter {
         kinds: args.kind,
@@ -116,8 +119,9 @@ pub(crate) fn run_nodes(root: &Path, args: NodesArgs, pretty: bool) -> Result<()
 }
 
 pub(crate) fn run_search(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     keyword: &str,
+    body: bool,
     statuses: Option<Vec<String>>,
     limit: Option<usize>,
     pretty: bool,
@@ -135,7 +139,7 @@ pub(crate) fn run_search(
         )
         .into());
     }
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project(context.root)?;
     // An unknown status would silently match zero nodes and return a
     // successful empty result — the silent-skip failure mode every
     // other vocabulary-taking flag (`query nodes --status`, `--kind`)
@@ -147,30 +151,48 @@ pub(crate) fn run_search(
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let snapshot = nodex_core::load_graph(root, &config)?;
-    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::search::search(
-        graph,
-        &config.search.weights,
-        keyword,
-        statuses.as_deref(),
-    );
-    emit_read_with(
-        ItemsEnvelope::capped(items, limit),
-        warnings,
-        &config,
-        pretty,
-    );
+    let snapshot = context.load_graph(&config)?;
+    let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
+    if body {
+        let items =
+            nodex_core::search_bodies(&snapshot, context.root, keyword, statuses.as_deref())?;
+        if !graph.parse_failures().is_empty() {
+            let paths: Vec<_> = graph
+                .parse_failures()
+                .iter()
+                .map(|failure| failure.path.as_str())
+                .collect();
+            warnings.push(nodex_core::Warning::new(
+                nodex_core::WarningCode::ScopeCoverage,
+                format!("body search could not include documents with parse failures: {paths:?}; run `nodex check`"),
+            ));
+        }
+        emit_read_with(
+            ItemsEnvelope::capped(items, limit),
+            warnings,
+            &config,
+            pretty,
+        );
+    } else {
+        let items = nodex_core::search(graph, &config.search.weights, keyword, statuses.as_deref());
+        emit_read_with(
+            ItemsEnvelope::capped(items, limit),
+            warnings,
+            &config,
+            pretty,
+        );
+    }
+
     Ok(())
 }
 
 pub(crate) fn run_recent(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     args: RecentArgs,
     pretty: bool,
     today: NaiveDate,
 ) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project(context.root)?;
     // Validate inputs BEFORE `load_graph` so an invalid flag surfaces
     // as `CONFIG_ERROR` even when `graph.json` is missing — symmetric
     // with `run_trust` / `run_similar`. Reject zero on `--days` /
@@ -183,7 +205,7 @@ pub(crate) fn run_recent(
     if let Some(k) = &args.kind {
         reject_unknown_vocabulary("--kind", std::slice::from_ref(k), &config.kinds.allowed)?;
     }
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
 
     let since = match args.since {

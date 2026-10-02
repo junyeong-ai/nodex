@@ -54,9 +54,7 @@ const SHARED: &[&[&str]] = &[
     &["export", "schema"],
     &["export", "enums"],
     &["export", "rules"],
-    &["export", "envelope-schema"],
     &["export", "config"],
-    &["export", "commands"],
     &["scaffold", "--kind", "adr", "--title", "Swept", "--dry-run"],
     &["migrate"],
 ];
@@ -66,6 +64,9 @@ const SHARED: &[&[&str]] = &[
 /// `NOT_FOUND` on the fixture that does not hold the subject, so the pin
 /// recorded a lookup miss rather than the command.
 const PER_FIXTURE: &[(&str, &[&str])] = &[
+    ("graph", &["export", "envelope-schema"]),
+    ("graph", &["export", "commands"]),
+    ("graph", &["query", "search", "beta", "--body"]),
     ("minimal", &["query", "node", "guide-overview"]),
     ("minimal", &["query", "backlinks", "adr-storage"]),
     ("minimal", &["query", "neighborhood", "guide-overview"]),
@@ -223,7 +224,7 @@ fn behaviour_sweep() {
         let dir = stage(fixture);
         // `build` is the precondition for every graph-reading command;
         // its own envelope carries a duration and is exempt from the pins.
-        Command::cargo_bin("nodex")
+        let built = Command::cargo_bin("nodex")
             .expect("nodex binary")
             .arg("-C")
             .arg(dir.path())
@@ -232,6 +233,9 @@ fn behaviour_sweep() {
             .arg("build")
             .output()
             .expect("build ran");
+        assert!(built.status.success(), "fixture build failed");
+        let envelope: Value = serde_json::from_slice(&built.stdout).expect("build JSON");
+        assert_eq!(envelope["ok"], true);
 
         for argv in invocations_for(fixture) {
             let name = format!("{}__{}", fixture, argv.join("_").replace(['-', '/'], "_"));

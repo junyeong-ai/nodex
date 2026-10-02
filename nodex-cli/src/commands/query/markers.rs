@@ -1,16 +1,15 @@
 use anyhow::Result;
-use std::path::Path;
 
 use crate::format::{ItemsEnvelope, emit_read_with};
 
 pub(crate) fn run_annotations(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     name: Option<&str>,
     with_frontmatter: Vec<String>,
     min_count: usize,
     pretty: bool,
 ) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project(context.root)?;
     if let Some(filter) = name
         && !config.annotations.iter().any(|a| a.name == filter)
     {
@@ -42,7 +41,7 @@ pub(crate) fn run_annotations(
             .into());
         }
     }
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items = nodex_core::query::annotations::find_annotations(
         graph,

@@ -1,26 +1,23 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
-
-use nodex_core::error::Error as CoreError;
-use nodex_core::parser::frontmatter::{canonicalize, split_frontmatter};
 
 use crate::format::{ItemsEnvelope, emit_read_with};
 
 use super::{reject_zero_u32, reject_zero_usize};
 
 pub(crate) fn run_backlinks(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     node_id: &str,
     limit: Option<usize>,
     pretty: bool,
 ) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project(context.root)?;
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    snapshot.require(root, &config, graph.require_node(node_id))?;
+    snapshot.require(context.root, &config, graph.require_node(node_id))?;
     let items = nodex_core::query::traverse::find_backlinks(graph, node_id);
     emit_read_with(
         ItemsEnvelope::capped(items, limit),
@@ -31,37 +28,41 @@ pub(crate) fn run_backlinks(
     Ok(())
 }
 
-pub(crate) fn run_chain(root: &Path, node_id: &str, pretty: bool) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
-    let snapshot = nodex_core::load_graph(root, &config)?;
+pub(crate) fn run_chain(
+    context: &super::QueryContext<'_>,
+    node_id: &str,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(context.root)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    snapshot.require(root, &config, graph.require_node(node_id))?;
+    snapshot.require(context.root, &config, graph.require_node(node_id))?;
     let items = nodex_core::query::traverse::find_chain(graph, node_id);
     emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }
 
 pub(crate) fn run_node(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     id: Option<&str>,
     path: Option<&str>,
     with_body: bool,
     pretty: bool,
 ) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let config = nodex_core::load_project(context.root)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
 
     let resolved_id: String = match (id, path) {
         (Some(id), None) => snapshot
-            .require(root, &config, graph.require_node(id))?
+            .require(context.root, &config, graph.require_node(id))?
             .id
             .clone(),
         (None, Some(p)) => {
-            let normalised = nodex_core::path_guard::normalize_for_lookup(p, root)?;
+            let normalised = nodex_core::path_guard::normalize_for_lookup(p, context.root)?;
             snapshot
                 .require(
-                    root,
+                    context.root,
                     &config,
                     graph.require_node_by_path(Path::new(&normalised)),
                 )?
@@ -75,57 +76,21 @@ pub(crate) fn run_node(
         .expect("require_node / node_by_path guarantees presence");
 
     if with_body {
-        // The graph stores body fingerprints, never text — re-read the
-        // file through the canonical parse seam (BOM / line-ending
-        // normalisation + frontmatter split) so the attached body is
-        // byte-identical to what `body_hash` was computed over. A read
-        // failure on a successfully-looked-up node means the graph is
-        // stale (file moved or deleted since the last build) — surface
-        // it as a typed error naming the path, never a silent drop.
-        let abs = root.join(&detail.node.path);
-        let content = std::fs::read_to_string(&abs)
-            .map_err(|source| CoreError::Io {
-                path: abs.clone(),
-                source,
-            })
-            .with_context(|| {
-                format!(
-                    "{} is in the graph but unreadable on disk — the graph is stale; \
-                     run `nodex build` and retry",
-                    detail.node.path.display()
-                )
-            })?;
-        if !detail.node.matches_content(&content) {
-            return Err(CoreError::StaleGraph {
-                asked: nodex_core::error::Lookup::Id(resolved_id.clone()),
-                divergence: format!("{} changed since the build", detail.node.path.display()),
-            }
-            .into());
-        }
-        let canonical = canonicalize(&content);
-        let (_, body) = split_frontmatter(&canonical)
-            .map_err(|source| CoreError::Parse {
-                path: abs.clone(),
-                source,
-            })
-            .with_context(|| {
-                format!(
-                    "{} is in the graph but no longer splits on disk — the graph is stale; \
-                     run `nodex build` and retry",
-                    detail.node.path.display()
-                )
-            })?;
-        detail.body = Some(body.to_string());
+        detail.body = Some(snapshot.body(context.root, &resolved_id)?);
     }
 
     emit_read_with(detail, warnings, &config, pretty);
     Ok(())
 }
 
-pub(crate) fn run_covered_by(root: &Path, code_path: &str, pretty: bool) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
-    let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, root)?;
-    let snapshot = nodex_core::load_graph(root, &config)?;
+pub(crate) fn run_covered_by(
+    context: &super::QueryContext<'_>,
+    code_path: &str,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(context.root)?;
+    let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, context.root)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items =
         nodex_core::query::traverse::find_covered_by(graph, &normalised, &config.parser.extensions);
@@ -134,13 +99,13 @@ pub(crate) fn run_covered_by(root: &Path, code_path: &str, pretty: bool) -> Resu
 }
 
 pub(crate) fn run_dependents(
-    root: &Path,
+    context: &super::QueryContext<'_>,
     id: &str,
     depth: Option<u32>,
     relations: Vec<String>,
     pretty: bool,
 ) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+    let config = nodex_core::load_project(context.root)?;
     // Validate inputs BEFORE `load_graph` so a missing graph cannot
     // mask a flag bug behind `GRAPH_MISSING`. `--depth 0` is rejected for
     // symmetry with every other zero-cap input — at depth 0 the
@@ -165,10 +130,10 @@ pub(crate) fn run_dependents(
             .into());
         }
     }
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let report = snapshot.require(
-        root,
+        context.root,
         &config,
         nodex_core::query::dependents::find_dependents(graph, id, depth, &relations),
     )?;
@@ -176,8 +141,13 @@ pub(crate) fn run_dependents(
     Ok(())
 }
 
-pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+pub(crate) fn run_neighborhood(
+    context: &super::QueryContext<'_>,
+    id: &str,
+    depth: u32,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(context.root)?;
     // `--depth 0` would return the seed alone — `find_neighborhood`
     // supports that semantic at the library level (it's a legitimate
     // "no traversal" probe for composed callers), but at the CLI the
@@ -185,10 +155,10 @@ pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) 
     // neighbourhood" and asked for a corpus of one. Reject up-front,
     // symmetric with every other zero-cap input.
     reject_zero_u32(depth, "--depth")?;
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let result = snapshot.require(
-        root,
+        context.root,
         &config,
         nodex_core::query::structure::find_neighborhood(graph, id, depth),
     )?;
@@ -196,12 +166,16 @@ pub(crate) fn run_neighborhood(root: &Path, id: &str, depth: u32, pretty: bool) 
     Ok(())
 }
 
-pub(crate) fn run_components(root: &Path, limit: Option<usize>, pretty: bool) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+pub(crate) fn run_components(
+    context: &super::QueryContext<'_>,
+    limit: Option<usize>,
+    pretty: bool,
+) -> Result<()> {
+    let config = nodex_core::load_project(context.root)?;
     if let Some(n) = limit {
         reject_zero_usize(n, "--limit")?;
     }
-    let snapshot = nodex_core::load_graph(root, &config)?;
+    let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items = nodex_core::query::structure::find_components(graph);
     emit_read_with(

@@ -152,6 +152,16 @@ pub fn compute_divergence(
     root: &Path,
     probe: DivergenceProbe,
 ) -> Result<DivergenceOutcome> {
+    measure_divergence(graph, config, root, probe, false)
+}
+
+fn measure_divergence(
+    graph: &Graph,
+    config: &Config,
+    root: &Path,
+    probe: DivergenceProbe,
+    require_readable: bool,
+) -> Result<DivergenceOutcome> {
     let scan = crate::builder::scanner::scan_scope(root, config)?;
     let scanned: BTreeSet<String> = scan
         .paths
@@ -193,22 +203,23 @@ pub fn compute_divergence(
                 .iter()
                 .filter(|(path, _)| scanned.contains(*path))
                 .collect();
-            let mut changed: Vec<String> = intersecting
+            let measured: Vec<Result<Option<String>>> = intersecting
                 .par_iter()
-                .filter_map(|(path, recorded)| {
+                .map(|(path, recorded)| {
                     let abs = root.join(Path::new(path));
-                    // Raw bytes, matching what the build digested — so a
-                    // recorded non-UTF-8 parse failure with unchanged
-                    // bytes confirms faithful instead of reading stale.
                     match std::fs::read(&abs) {
-                        Ok(bytes) => {
-                            (crate::hash::sha256_hex(&bytes) != **recorded).then(|| (*path).clone())
-                        }
-                        // Unreadable now ⇒ the snapshot cannot be
-                        // confirmed faithful for this path.
-                        Err(_) => Some((*path).clone()),
+                        Ok(bytes) => Ok((crate::hash::sha256_hex(&bytes) != **recorded)
+                            .then(|| (*path).clone())),
+                        Err(source) if require_readable => Err(Error::Io { path: abs, source }),
+                        Err(_) => Ok(Some((*path).clone())),
                     }
                 })
+                .collect();
+            let mut changed: Vec<String> = measured
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
                 .collect();
             changed.sort();
             Some(changed)
@@ -364,6 +375,16 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec
 /// graph costs one scope walk. [`Snapshot::require`] escalates to the
 /// content probe on the one question the cheap probe cannot answer.
 pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
+    read_snapshot(root, config, false)
+}
+
+/// Read a snapshot only if its configuration, membership and content match
+/// the working tree at the time of the probe. Does not rebuild or write files.
+pub fn load_current_graph(root: &Path, config: &Config) -> Result<Snapshot> {
+    read_snapshot(root, config, true)
+}
+
+fn read_snapshot(root: &Path, config: &Config, require_current: bool) -> Result<Snapshot> {
     let graph_path = root.join(&config.output.dir).join("graph.json");
     let content = match std::fs::read_to_string(&graph_path) {
         Ok(content) => content,
@@ -383,9 +404,20 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
     })?;
 
     let mut warnings = Vec::new();
-    match compute_divergence(&graph, config, root, DivergenceProbe::Membership) {
+    let probe = if require_current {
+        DivergenceProbe::Content
+    } else {
+        DivergenceProbe::Membership
+    };
+    match measure_divergence(&graph, config, root, probe, require_current) {
         Ok(outcome) => {
             if outcome.divergence.is_divergent() {
+                if require_current {
+                    return Err(Error::StaleGraph {
+                        asked: crate::error::Lookup::Snapshot,
+                        divergence: divergence_cause(&outcome.divergence),
+                    });
+                }
                 warnings.push(crate::Warning::new(
                     crate::WarningCode::SnapshotDivergence,
                     divergence_advisory(&outcome.divergence),
@@ -423,6 +455,9 @@ pub fn load_graph(root: &Path, config: &Config) -> Result<Snapshot> {
             ));
         }
         Err(e) => {
+            if require_current {
+                return Err(e);
+            }
             warnings.push(crate::Warning::new(
                 crate::WarningCode::SnapshotDivergence,
                 format!(
@@ -459,6 +494,26 @@ impl Snapshot {
     /// The graph as the snapshot holds it.
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Read the canonical body of the exact file revision stored in this graph.
+    pub fn body(&self, root: &Path, id: &str) -> Result<String> {
+        let node = self.graph.require_node(id)?;
+        let path = root.join(&node.path);
+        let content = std::fs::read_to_string(&path).map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if !node.matches_content(&content) {
+            return Err(Error::StaleGraph {
+                asked: crate::error::Lookup::Id(id.to_string()),
+                divergence: format!("{} changed since the build", node.path.display()),
+            });
+        }
+        let canonical = crate::parser::frontmatter::canonicalize(&content);
+        let (_, body) = crate::parser::frontmatter::split_frontmatter(&canonical)
+            .map_err(|source| Error::Parse { path, source })?;
+        Ok(body.to_string())
     }
 
     /// The staleness advisories this read produced, for the caller's
@@ -584,6 +639,46 @@ mod tests {
     }
 
     const DOC_A: (&str, &str) = ("docs/a.md", "---\nid: doc-a\ntitle: A\n---\n# A\n");
+
+    #[test]
+    fn current_reads_require_configuration_membership_and_exact_bytes() {
+        let (dir, config) = project_with(&[DOC_A]);
+        build_and_snapshot(dir.path(), &config);
+        assert!(load_current_graph(dir.path(), &config).is_ok());
+        let mut changed_config = config.clone();
+        changed_config.parser.wikilink_enabled = true;
+        assert!(matches!(
+            load_current_graph(dir.path(), &changed_config),
+            Err(Error::StaleGraph { .. })
+        ));
+        let extra = dir.path().join("docs/b.md");
+        std::fs::write(&extra, "# Added").unwrap();
+        assert!(matches!(
+            load_current_graph(dir.path(), &config),
+            Err(Error::StaleGraph { .. })
+        ));
+        std::fs::remove_file(extra).unwrap();
+        std::fs::write(dir.path().join(DOC_A.0), DOC_A.1.replace('\n', "\r\n")).unwrap();
+        assert!(matches!(
+            load_current_graph(dir.path(), &config),
+            Err(Error::StaleGraph { .. })
+        ));
+        std::fs::write(dir.path().join(DOC_A.0), DOC_A.1).unwrap();
+        assert!(load_current_graph(dir.path(), &config).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_reads_preserve_permission_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, config) = project_with(&[DOC_A]);
+        build_and_snapshot(dir.path(), &config);
+        let path = dir.path().join(DOC_A.0);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let answer = load_current_graph(dir.path(), &config);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(answer, Err(Error::Io { .. })));
+    }
 
     #[test]
     fn compute_status_reports_absent_without_snapshot() {

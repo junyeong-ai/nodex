@@ -373,6 +373,7 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
             }
         }
     }
+    let mut failures = Vec::new();
     for plan in &narrowing.writable {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
         let (id, kind) = &injected[&plan.rel_path];
@@ -393,19 +394,23 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
                     kind: kind.clone(),
                 });
             }
-            Err(e) => warnings.push(nodex_core::Warning::new(
-                nodex_core::WarningCode::FileSkipped,
-                format!(
-                    "{shown} could not be written ({}); it was not migrated",
-                    nodex_core::error::chain(&e)
-                ),
-            )),
+            Err(e) => {
+                failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
+                warnings.push(nodex_core::Warning::new(
+                    nodex_core::WarningCode::FileSkipped,
+                    format!(
+                        "{shown} could not be written ({}); it was not migrated",
+                        nodex_core::error::chain(&e)
+                    ),
+                ));
+            }
         }
     }
 
     let total = changes.len();
     emit_write(
         MigrateResult {
+            failures,
             changes,
             total,
             applied: apply,

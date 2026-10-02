@@ -65,9 +65,6 @@ pub enum WarningCode {
     /// be stale, so it is a typed error (`GRAPH_MISSING`, `IO_ERROR`,
     /// `PARSE_ERROR`) that ends the command.
     SnapshotDivergence,
-    /// A scaffold target closely resembles an existing document; consider
-    /// `lifecycle supersede` instead of creating a duplicate.
-    SimilarDocument,
     /// A mutation left a follow-up the operator should run before the
     /// graph is consistent again: a scaffolded document is not yet in the
     /// graph (run `nodex build`), a config-default scaffold left a rule
@@ -182,7 +179,6 @@ impl WarningCode {
         Self::ScopeCoverage,
         Self::Cache,
         Self::SnapshotDivergence,
-        Self::SimilarDocument,
         Self::BuildRecommended,
         Self::BinaryCompat,
         Self::GateSuppression,
@@ -232,7 +228,6 @@ mod tests {
                 WarningCode::ScopeCoverage
                 | WarningCode::Cache
                 | WarningCode::SnapshotDivergence
-                | WarningCode::SimilarDocument
                 | WarningCode::BuildRecommended
                 | WarningCode::BinaryCompat
                 | WarningCode::GateSuppression
@@ -250,7 +245,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 14);
+        assert_eq!(WarningCode::ALL.len(), 13);
     }
 
     #[test]
