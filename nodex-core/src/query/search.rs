@@ -139,24 +139,46 @@ pub struct BodySearchEntry {
 pub struct BodyMatch {
     pub line: usize,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
-/// Search canonical body lines from the revisions recorded in the snapshot.
-/// Lines are one-based, relative to the body; code blocks are searchable.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BodySearchOptions {
+    pub limit: Option<usize>,
+    pub max_matches: Option<usize>,
+    pub max_line_chars: Option<usize>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BodySearchResult {
+    pub items: Vec<BodySearchEntry>,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned: Option<usize>,
+    pub match_total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_returned: Option<usize>,
+}
+
+/// Search every selected revision; limits bound retained matches, never validation.
 pub fn search_bodies(
     snapshot: &crate::Snapshot,
     root: &std::path::Path,
     keyword: &str,
     statuses: Option<&[String]>,
-) -> crate::Result<Vec<BodySearchEntry>> {
+    options: BodySearchOptions,
+) -> crate::Result<BodySearchResult> {
     use rayon::prelude::*;
-    if keyword.is_empty() {
+    if keyword.is_empty()
+        || [options.limit, options.max_matches, options.max_line_chars].contains(&Some(0))
+    {
         return Err(crate::Error::Config(
-            "search keyword must not be empty".into(),
+            "body search requires a non-empty keyword and positive limits".into(),
         ));
     }
     let keyword = keyword.to_lowercase();
-    let nodes: Vec<_> = snapshot
+    let mut nodes: Vec<_> = snapshot
         .graph()
         .nodes()
         .values()
@@ -166,33 +188,78 @@ pub fn search_bodies(
             })
         })
         .collect();
-    let measured: Vec<crate::Result<Option<BodySearchEntry>>> = nodes
-        .par_iter()
-        .map(|node| {
-            let body = snapshot.body(root, &node.id)?;
-            let matches: Vec<_> = body
-                .lines()
-                .enumerate()
-                .filter(|(_, line)| line.to_lowercase().contains(&keyword))
-                .map(|(line, text)| BodyMatch {
-                    line: line + 1,
-                    text: text.to_string(),
-                })
-                .collect();
-            Ok((!matches.is_empty()).then(|| BodySearchEntry {
-                node: NodeRef::from_node(node),
-                matches,
-            }))
-        })
-        .collect();
-    let mut entries: Vec<_> = measured
-        .into_iter()
-        .collect::<crate::Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
-    entries.sort_by(|a, b| a.node.id.cmp(&b.node.id));
-    Ok(entries)
+    nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut items = Vec::new();
+    let mut total = 0;
+    let mut match_total = 0;
+    let mut returned_matches = 0;
+    for batch in nodes.chunks(rayon::current_num_threads()) {
+        let allowance = options
+            .max_matches
+            .map(|cap| cap.saturating_sub(returned_matches))
+            .unwrap_or(usize::MAX);
+        let keep = options.limit.is_none_or(|cap| items.len() < cap);
+        let measured: Vec<crate::Result<_>> = batch
+            .par_iter()
+            .map(|node| {
+                let body = snapshot.body(root, &node.id)?;
+                let mut count = 0;
+                let mut matches = Vec::new();
+                for (line, text) in body.lines().enumerate() {
+                    if !text.to_lowercase().contains(&keyword) {
+                        continue;
+                    }
+                    count += 1;
+                    if !keep || matches.len() >= allowance {
+                        continue;
+                    }
+                    let end = options
+                        .max_line_chars
+                        .and_then(|cap| text.char_indices().nth(cap).map(|(byte, _)| byte));
+                    matches.push(BodyMatch {
+                        line: line + 1,
+                        text: text[..end.unwrap_or(text.len())].to_string(),
+                        truncated: end.map(|_| true),
+                    });
+                }
+                Ok((
+                    count,
+                    BodySearchEntry {
+                        node: NodeRef::from_node(node),
+                        matches,
+                    },
+                ))
+            })
+            .collect();
+        for measured in measured {
+            let (count, mut entry) = measured?;
+            match_total += count;
+            if count == 0 {
+                continue;
+            }
+            total += 1;
+            if options.limit.is_some_and(|cap| items.len() >= cap) {
+                continue;
+            }
+            if let Some(cap) = options.max_matches {
+                entry.matches.truncate(cap.saturating_sub(returned_matches));
+            }
+            if entry.matches.is_empty() {
+                continue;
+            }
+            returned_matches += entry.matches.len();
+            items.push(entry);
+        }
+    }
+    let returned = (items.len() < total).then_some(items.len());
+    let match_returned = (returned_matches < match_total).then_some(returned_matches);
+    Ok(BodySearchResult {
+        items,
+        total,
+        returned,
+        match_total,
+        match_returned,
+    })
 }
 
 #[cfg(test)]

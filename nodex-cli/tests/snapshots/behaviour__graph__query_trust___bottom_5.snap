@@ -74,6 +74,11 @@ exit: 0
     "total": 5
   },
   "ok": true,
+  "snapshot": {
+    "unbuildable": 0,
+    "unfollowed": 0,
+    "verification": "membership"
+  },
   "warnings": [
     {
       "code": "ranking_unscored",

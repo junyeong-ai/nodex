@@ -13,6 +13,7 @@ exit: 0
         "path": "docs/legacy.md"
       }
     ],
+    "completion": "planned",
     "total": 1
   },
   "ok": true

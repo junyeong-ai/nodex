@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::format::{ItemsEnvelope, emit_read_with};
+use crate::format::ItemsEnvelope;
 
 pub(crate) fn run_annotations(
     context: &super::QueryContext<'_>,
@@ -51,6 +51,6 @@ pub(crate) fn run_annotations(
             min_count,
         },
     );
-    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
+    context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

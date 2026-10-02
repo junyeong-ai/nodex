@@ -15,7 +15,7 @@ description: >-
   body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.49.0
+  version: 0.50.0
 ---
 
 # nodex — markdown document graph CLI
@@ -35,9 +35,9 @@ Branch on `error.code` and `warnings[].code`, never on message text. `warnings` 
 
 Exit codes: `0` ok · `1` `check` found Error-severity violations · `2` every error envelope, and output stdout would not take (a pipe closed early).
 
-List queries put items in `data` as `{items, total}`. On plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) `total` counts every match and a `--limit` cap announces itself via `returned`, so a capped response never reads as complete. Selection queries (`trust --top/--bottom`, `similar`, `recent`) select in core, so their `total` is the selection size.
+List results use `{items, total}`. Listings count all matches and add `returned` when capped by `--limit`; selection queries (`trust --top/--bottom`, `similar`, `recent`) count the selected items.
 
-Global flags: `--pretty` (indented JSON) · `-C <dir>` (run against another project root) · `--check-version <semver-req>` (refuse to run unless the binary satisfies it) · `--today YYYY-MM-DD` (evaluate every date-relative rule and query as if today were that date, instead of reading the clock — staleness, orphan grace, recency, trust freshness and the dates written into scaffolded documents all measure from it, so pinning it makes a run reproducible). A project can also pin the binary with `[meta] nodex_version` in `nodex.toml`: reads warn, document-writing commands refuse with `VERSION_MISMATCH`.
+Global flags: `--jobs N` sets a positive per-process worker count (default: `RAYON_NUM_THREADS` or available CPUs); `--pretty` indents JSON; `-C <dir>` selects the project; `--check-version <semver-req>` rejects incompatible binaries; `--today YYYY-MM-DD` fixes date-relative rules, queries and scaffold dates. `[meta] nodex_version` pins the project: reads warn; writes refuse with `VERSION_MISMATCH`.
 
 ## Commands
 
@@ -64,7 +64,7 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 
 **Run `nodex build` before any `query`** — queries read the indexed `_index/graph.json`; without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. No other command needs a prior build.
 
-Queries read snapshots; rebuild after edits. `query --require-current` rejects drift (`GRAPH_OUTDATED`) and read failures (`IO_ERROR`). `search --body` returns revision-checked lines. Scaffold candidates are comparisons. Details: `reference/commands.md`. Interpret lookup failures:
+Queries read snapshots; rebuild after edits. Envelope `snapshot` states verification and coverage; `membership` does not check content, and `unbuildable > 0` means parsed nodes omit documents. `query --require-current` rejects drift (`GRAPH_OUTDATED`) and read failures (`IO_ERROR`). `search --body` returns revision-checked lines. Use `--max-matches` / `--max-line-chars` to bound body-search output without skipping revision checks. Batch writes report `completion`; `partial` requires inspecting holds and failures even with exit 0. Scaffold candidates are comparisons. Details: `reference/commands.md`. Interpret lookup failures:
 
 - `NOT_FOUND` — the snapshot was verified against the working tree and the id really is not in the project. Correct the id. The message names what the project held: a corpus governing nothing, or one whose every document failed to parse, is not answered by correcting anything.
 - `GRAPH_OUTDATED` — the lookup or requested body cannot be read consistently from the snapshot. Run `nodex build` — unless the cause is an in-scope file the walk can list but not *read*: there were no bytes to digest, so the probe can never confirm it and a rebuild will not clear it. Make the file readable.

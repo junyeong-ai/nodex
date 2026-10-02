@@ -15,14 +15,26 @@ pub fn emit_read<T: Serialize>(data: T, config: &Config, pretty: bool) {
 /// `build` surfacing skipped rules); the advisory is merged in.
 pub fn emit_read_with<T: Serialize>(
     data: T,
+    warnings: Vec<Warning>,
+    config: &Config,
+    pretty: bool,
+) {
+    emit_read_snapshot(data, warnings, config, None, pretty);
+}
+
+pub fn emit_read_snapshot<T: Serialize>(
+    data: T,
     mut warnings: Vec<Warning>,
     config: &Config,
+    snapshot: Option<nodex_core::SnapshotRead>,
     pretty: bool,
 ) {
     if let Some(advisory) = nodex_core::binary_compat_warning(config) {
         warnings.push(advisory);
     }
-    print_json(&Envelope::with_warnings(data, warnings), pretty);
+    let mut envelope = Envelope::with_warnings(data, warnings);
+    envelope.snapshot = snapshot;
+    print_json(&envelope, pretty);
 }
 
 /// Emit a mutating command's payload, appending everything about the run's
@@ -54,6 +66,8 @@ pub struct Envelope<T: Serialize> {
     pub data: T,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<nodex_core::SnapshotRead>,
 }
 
 /// Canonical `{ items: [...], total: N }` payload for every list-style
@@ -114,6 +128,7 @@ impl<T: Serialize> Envelope<T> {
             ok: true,
             data,
             warnings: vec![],
+            snapshot: None,
         }
     }
 
@@ -122,6 +137,7 @@ impl<T: Serialize> Envelope<T> {
             ok: true,
             data,
             warnings,
+            snapshot: None,
         }
     }
 }

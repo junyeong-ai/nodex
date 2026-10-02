@@ -89,5 +89,10 @@ exit: 0
     ],
     "total": 4
   },
-  "ok": true
+  "ok": true,
+  "snapshot": {
+    "unbuildable": 0,
+    "unfollowed": 0,
+    "verification": "membership"
+  }
 }

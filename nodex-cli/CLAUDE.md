@@ -7,7 +7,7 @@ Thin CLI binary wrapping `nodex-core`. Domain logic is in core — CLI handles a
 - `main.rs` — top-level `Command` enum, clap parsing, dispatch only
 - `envelope.rs` — the bin-shared envelope encoder (`ErrorEnvelope` + `print_json()`); both bin targets emit through it — `nodex` via `format`'s re-export, `contract-gate` via `#[path]` inclusion — so the envelope contract has exactly one encoder
 - `format.rs` — `Envelope<T>` / `ItemsEnvelope` wrappers, error classification via `downcast_ref`, re-exports the shared encoder; `emit_read` / `emit_read_with` are the single seam merging the binary-compat advisory into read-command envelopes, and `emit_write` is its write-side twin, merging the unenforced-baseline advisory into every mutating command's envelope — so no handler on either plane has to remember its cross-cutting advisory
-- `commands/<name>.rs` or `commands/<name>/` — one file or submodule directory per subcommand. Each owns every clap type its command needs (`Subcommand`, `ValueEnum`, or `Args`) **and** the `pub fn run(...)` handler. Large commands (e.g. `query/`) split handlers into submodules by concern. `main.rs` never contains a command's CLI shape.
+- `commands/<name>.rs` or `commands/<name>/` — one file or submodule directory per subcommand. Each owns every clap type its command needs (`Subcommand`, `ValueEnum`, or `Args`) **and** the `pub fn run(...)` handler. Large commands (e.g. `query/`) split handlers into submodules by concern. `main.rs` never contains a command's CLI shape. Global `--jobs` configures the CLI-owned Rayon pool; library callers retain their own pool policy.
 
 ## Adding a Command
 

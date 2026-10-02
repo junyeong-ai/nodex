@@ -410,6 +410,12 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
     let total = changes.len();
     emit_write(
         MigrateResult {
+            completion: nodex_core::WriteCompletion::of(
+                apply,
+                warnings
+                    .iter()
+                    .any(|warning| warning.code == nodex_core::WarningCode::FileSkipped),
+            ),
             failures,
             changes,
             total,

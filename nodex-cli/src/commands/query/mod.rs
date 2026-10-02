@@ -17,19 +17,7 @@ use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecentField};
 #[derive(Subcommand)]
 pub enum QueryCommand {
     /// Keyword search in metadata, or canonical body lines with --body
-    Search {
-        keyword: String,
-        /// Search body lines instead of title/id/tags; return matching lines in id order.
-        #[arg(long)]
-        body: bool,
-        /// Filter by status (comma-separated)
-        #[arg(long)]
-        status: Option<String>,
-        /// Cap returned documents after metadata ranking or body-search id sorting.
-        /// `total` reports every matching document, `returned` the cap.
-        #[arg(long)]
-        limit: Option<usize>,
-    },
+    Search(SearchArgs),
     /// Show nodes linking to target
     Backlinks {
         id: String,
@@ -148,6 +136,27 @@ pub enum QueryCommand {
         #[arg(long, value_delimiter = ',')]
         relations: Vec<String>,
     },
+}
+
+#[derive(Args)]
+pub struct SearchArgs {
+    pub keyword: String,
+    /// Search body lines instead of title/id/tags; return matching lines in id order.
+    #[arg(long)]
+    pub body: bool,
+    /// Filter by status (comma-separated)
+    #[arg(long)]
+    pub status: Option<String>,
+    /// Cap returned documents after metadata ranking or body-search id sorting.
+    /// `total` reports every matching document, `returned` the cap.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// Cap returned matching lines across documents; every selected revision is still checked.
+    #[arg(long, requires = "body")]
+    pub max_matches: Option<std::num::NonZeroUsize>,
+    /// Cap each returned line in Unicode characters and mark shortened text.
+    #[arg(long, requires = "body")]
+    pub max_line_chars: Option<std::num::NonZeroUsize>,
 }
 
 /// Args for `query nodes` — the generic listing's predicate flags plus
@@ -303,15 +312,34 @@ impl From<FieldArg> for RecentField {
 pub(super) struct QueryContext<'a> {
     root: &'a Path,
     require_current: bool,
+    snapshot: std::cell::RefCell<Option<nodex_core::SnapshotRead>>,
 }
 
 impl QueryContext<'_> {
     fn load_graph(&self, config: &nodex_core::Config) -> nodex_core::Result<nodex_core::Snapshot> {
-        if self.require_current {
+        let snapshot = if self.require_current {
             nodex_core::load_current_graph(self.root, config)
         } else {
             nodex_core::load_graph(self.root, config)
-        }
+        }?;
+        self.snapshot.replace(Some(snapshot.read_info().clone()));
+        Ok(snapshot)
+    }
+
+    fn emit_read_with<T: serde::Serialize>(
+        &self,
+        data: T,
+        warnings: Vec<nodex_core::Warning>,
+        config: &nodex_core::Config,
+        pretty: bool,
+    ) {
+        crate::format::emit_read_snapshot(
+            data,
+            warnings,
+            config,
+            self.snapshot.borrow().clone(),
+            pretty,
+        );
     }
 }
 
@@ -325,18 +353,11 @@ pub fn run(
     let context = QueryContext {
         root,
         require_current,
+        snapshot: std::cell::RefCell::new(None),
     };
     let root = &context;
     match cmd {
-        QueryCommand::Search {
-            keyword,
-            body,
-            status,
-            limit,
-        } => {
-            let statuses = status.map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
-            filter::run_search(root, &keyword, body, statuses, limit, pretty)
-        }
+        QueryCommand::Search(args) => filter::run_search(root, args, pretty),
         QueryCommand::Backlinks { id, limit } => traverse::run_backlinks(root, &id, limit, pretty),
         QueryCommand::Chain { id } => traverse::run_chain(root, &id, pretty),
         QueryCommand::Orphans { limit } => detect::run_orphans(root, limit, pretty, today),

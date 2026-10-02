@@ -3,11 +3,11 @@ use chrono::NaiveDate;
 
 use nodex_core::query::recent::{RecentOptions, RecentSince};
 
-use crate::format::{ItemsEnvelope, emit_read_with};
+use crate::format::ItemsEnvelope;
 
 use super::{
-    NodesArgs, RecentArgs, reject_empty_csv_entries, reject_unknown_vocabulary, reject_zero_u32,
-    reject_zero_usize,
+    NodesArgs, RecentArgs, SearchArgs, reject_empty_csv_entries, reject_unknown_vocabulary,
+    reject_zero_u32, reject_zero_usize,
 };
 
 /// True when `field` is one of the five `NodeRef` identity spine
@@ -109,7 +109,7 @@ pub(crate) fn run_nodes(
         args.fields.iter().cloned().partition(|f| is_spine_field(f))
     };
     let items = nodex_core::find_nodes_projected(graph, &filter, &spine_fields, &extra_fields);
-    emit_read_with(
+    context.emit_read_with(
         ItemsEnvelope::capped(items, args.limit),
         warnings,
         &config,
@@ -120,12 +120,21 @@ pub(crate) fn run_nodes(
 
 pub(crate) fn run_search(
     context: &super::QueryContext<'_>,
-    keyword: &str,
-    body: bool,
-    statuses: Option<Vec<String>>,
-    limit: Option<usize>,
+    args: SearchArgs,
     pretty: bool,
 ) -> Result<()> {
+    let keyword = &args.keyword;
+    let statuses: Option<Vec<String>> = args.status.map(|value| {
+        value
+            .split(',')
+            .map(|status| status.trim().to_string())
+            .collect()
+    });
+    let options = nodex_core::BodySearchOptions {
+        limit: args.limit,
+        max_matches: args.max_matches.map(|value| value.get()),
+        max_line_chars: args.max_line_chars.map(|value| value.get()),
+    };
     // An empty keyword is a substring of every document, so it would
     // "match" the whole corpus at partial weight — the opposite of a
     // keyword search and a silent surprise, not an error the operator
@@ -148,14 +157,19 @@ pub(crate) fn run_search(
         reject_empty_csv_entries("--status", statuses)?;
         reject_unknown_vocabulary("--status", statuses, &config.statuses.allowed)?;
     }
-    if let Some(n) = limit {
+    if let Some(n) = options.limit {
         reject_zero_usize(n, "--limit")?;
     }
     let snapshot = context.load_graph(&config)?;
     let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
-    if body {
-        let items =
-            nodex_core::search_bodies(&snapshot, context.root, keyword, statuses.as_deref())?;
+    if args.body {
+        let result = nodex_core::search_bodies(
+            &snapshot,
+            context.root,
+            keyword,
+            statuses.as_deref(),
+            options,
+        )?;
         if !graph.parse_failures().is_empty() {
             let paths: Vec<_> = graph
                 .parse_failures()
@@ -167,16 +181,11 @@ pub(crate) fn run_search(
                 format!("body search could not include documents with parse failures: {paths:?}; run `nodex check`"),
             ));
         }
-        emit_read_with(
-            ItemsEnvelope::capped(items, limit),
-            warnings,
-            &config,
-            pretty,
-        );
+        context.emit_read_with(result, warnings, &config, pretty);
     } else {
         let items = nodex_core::search(graph, &config.search.weights, keyword, statuses.as_deref());
-        emit_read_with(
-            ItemsEnvelope::capped(items, limit),
+        context.emit_read_with(
+            ItemsEnvelope::capped(items, options.limit),
             warnings,
             &config,
             pretty,
@@ -219,6 +228,6 @@ pub(crate) fn run_recent(
         limit: Some(args.limit),
     };
     let items = nodex_core::query::recent::find_recent(graph, &opts, today);
-    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
+    context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

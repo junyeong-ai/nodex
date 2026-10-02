@@ -34,6 +34,7 @@ pub use ancestry::{Ancestry, Lines, Position, Positions, Priors, Step};
 pub use command_result::{
     BuildResult, CheckResult, FileWriteFailure, IdStability, InitResult, LifecycleResult,
     MigrateResult, MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
+    WriteCompletion,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
@@ -74,7 +75,8 @@ pub use query::issues::{IssueReport, IssueSummary, UnresolvedEdge, find_issues};
 pub use query::listing::{NodeFilter, find_nodes, find_nodes_projected};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
 pub use query::search::{
-    BodyMatch, BodySearchEntry, SearchComponents, SearchEntry, search, search_bodies,
+    BodyMatch, BodySearchEntry, BodySearchOptions, BodySearchResult, SearchComponents, SearchEntry,
+    search, search_bodies,
 };
 pub use query::similar::{
     SimilarityComponents, SimilarityEntry, SimilarityOptions, SimilarityTarget, compute_similarity,
@@ -97,8 +99,9 @@ pub use rules::{
 };
 pub use scaffold::{ScaffoldResult, ScaffoldSpec, scaffold};
 pub use status::{
-    DivergenceOutcome, DivergenceProbe, GraphState, Snapshot, SnapshotDivergence, StatusReport,
-    compute_divergence, compute_status, load_current_graph, load_graph,
+    DivergenceOutcome, DivergenceProbe, GraphState, Snapshot, SnapshotChanges, SnapshotDivergence,
+    SnapshotRead, SnapshotVerification, StatusReport, compute_divergence, compute_status,
+    load_current_graph, load_graph,
 };
 pub use warning::{Warning, WarningCode};
 
