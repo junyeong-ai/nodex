@@ -174,14 +174,17 @@ impl BuildCache {
 
     /// Get cached parse result if fresh.
     pub fn get(&self, rel_path: &Path, content: &str) -> Option<&CacheEntry> {
-        let digest = hash::sha256_hex(content);
+        self.get_by_hash(rel_path, &hash::sha256_hex(content))
+    }
+
+    pub(crate) fn get_by_hash(&self, rel_path: &Path, digest: &str) -> Option<&CacheEntry> {
         self.entries
             .get(rel_path)
             .filter(|entry| entry.content_hash == digest)
             .or_else(|| {
                 self.revisions
                     .as_ref()?
-                    .get(&(rel_path.to_path_buf(), digest))
+                    .get(&(rel_path.to_path_buf(), digest.to_owned()))
             })
     }
 

@@ -581,11 +581,11 @@ struct WalkPolicy<'a> {
 }
 
 impl WalkPolicy<'_> {
-    /// Whether `path` resolves inside the output directory.
-    fn leads_to_output(&self, path: &Path) -> bool {
-        self.output.is_some_and(|output| {
-            std::fs::canonicalize(path).is_ok_and(|real| real.starts_with(output))
-        })
+    /// Whether a resolved entry lies inside the output directory.
+    fn leads_to_output(&self, resolved: Option<&Path>) -> bool {
+        self.output
+            .zip(resolved)
+            .is_some_and(|(output, real)| real.starts_with(output))
     }
 
     /// Whether any `scope.include` pattern could match a path below `rel`.
@@ -604,18 +604,13 @@ impl WalkPolicy<'_> {
 }
 
 impl WalkPolicy<'_> {
-    /// Whether `path` resolves outside the root this scan is confined to.
+    /// Whether a resolved entry lies outside the root this scan is confined to.
     /// Always false for an unconfined scan.
-    fn escapes(&self, path: &Path) -> bool {
+    fn escapes(&self, resolved: Option<&Path>) -> bool {
         let Some(confine) = self.confine else {
             return false;
         };
-        match std::fs::canonicalize(path) {
-            Ok(real) => !real.starts_with(confine),
-            // Unresolvable is not an escape — a dangling entry is classified
-            // as dangling, which is a fact of its own.
-            Err(_) => false,
-        }
+        resolved.is_some_and(|real| !real.starts_with(confine))
     }
 }
 
@@ -1102,6 +1097,12 @@ fn hidden_admitted(leads: &[IncludeLead], rel: &str) -> bool {
     })
 }
 
+struct WalkDirectory {
+    path: PathBuf,
+    resolved: Option<PathBuf>,
+    ancestors: Vec<PathBuf>,
+}
+
 fn walk_dir(
     base: &Path,
     root: &Path,
@@ -1109,7 +1110,7 @@ fn walk_dir(
     found: &mut WalkFindings,
 ) -> Result<()> {
     // Iterative DFS over an explicit stack: the scanner follows symlinks on
-    // read (`is_dir` / `is_file` resolve them), so a symlinked directory that
+    // read (filesystem metadata resolves them), so a symlinked directory that
     // points back into the tree — or a pathologically deep one — must not
     // recurse the call stack into an overflow, which aborted `nodex build`
     // with SIGABRT, outside the JSON envelope.
@@ -1120,7 +1121,11 @@ fn walk_dir(
     // cycle, and both are walked — which spelling represents a document is
     // decided by [`documents_by_file`], where the scope globs have been
     // applied and the question can be answered instead of guessed.
-    let mut stack: Vec<(PathBuf, Vec<PathBuf>)> = vec![(root.to_path_buf(), Vec::new())];
+    let mut stack = vec![WalkDirectory {
+        path: root.to_path_buf(),
+        resolved: std::fs::canonicalize(root).ok(),
+        ancestors: Vec::new(),
+    }];
     // Which directories the walk has reached, by identity rather than by name.
     // Arriving twice is what makes a document's name ambiguous, and the walk is
     // the only place that knows: it already resolves each directory's identity
@@ -1128,8 +1133,13 @@ fn walk_dir(
     // later step could ask without re-resolving every path.
     let mut reached: BTreeSet<PathBuf> = BTreeSet::new();
 
-    while let Some((dir, ancestors)) = stack.pop() {
-        let identity = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+    while let Some(WalkDirectory {
+        path: dir,
+        resolved,
+        ancestors,
+    }) = stack.pop()
+    {
+        let identity = resolved.as_ref().cloned().unwrap_or_else(|| dir.clone());
         if ancestors.contains(&identity) {
             // The directory is one the descent already passed through, so it
             // holds nothing new. Recorded like every other decline: a proposal
@@ -1188,22 +1198,40 @@ fn walk_dir(
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let rel_str = crate::path_guard::forward_string(rel);
             let segments: Vec<&str> = rel_str.split('/').collect();
+            let metadata = std::fs::symlink_metadata(&path);
+            let linked = metadata
+                .as_ref()
+                .is_ok_and(|metadata| metadata.is_symlink());
+            // Unix non-symlink entries inherit their directory's real location.
+            // Windows reparse points still require OS resolution.
+            let plain = cfg!(unix) && metadata.is_ok() && !linked;
+            let file_type = match metadata.as_ref() {
+                Ok(metadata) if plain => Some(metadata.file_type()),
+                _ => std::fs::metadata(&path)
+                    .ok()
+                    .map(|metadata| metadata.file_type()),
+            };
+            let resolve = || match resolved.as_ref() {
+                Some(parent) if plain => Some(parent.join(entry.file_name())),
+                _ => std::fs::canonicalize(&path).ok(),
+            };
 
-            if path.is_dir() {
+            if file_type.is_some_and(|file_type| file_type.is_dir()) {
                 // `scope.prune_dirs` basenames (node_modules / target / …)
                 // are pruned at any depth regardless of include patterns;
                 // dot-prefixed trees are also caught by the hidden guard.
                 if !policy.walks(&segments) {
                     continue;
                 }
-                if policy.escapes(&path) {
+                let target = resolve();
+                if policy.escapes(target.as_deref()) {
                     // A whole subtree the ref does not carry. Recorded rather
                     // than merely skipped: nothing below it will ever surface,
                     // so this entry is the only chance to say it was not read.
                     found.escaping.push(rel.to_path_buf());
                     continue;
                 }
-                if !policy.follow_symlinks && crate::path_guard::is_symlink(&path) {
+                if !policy.follow_symlinks && linked {
                     // The project's path space stays a tree: one name per
                     // directory, so every rule that keys on a path has one
                     // path to key on. Recorded because documents below it are
@@ -1214,16 +1242,20 @@ fn walk_dir(
                     // to nodex's own output directory holds none under any
                     // configuration, and one no include pattern can reach
                     // below holds none the scan would have admitted.
-                    if policy.could_admit_below(rel) && !policy.leads_to_output(&path) {
+                    if policy.could_admit_below(rel) && !policy.leads_to_output(target.as_deref()) {
                         found.unfollowed_in_scope.push(rel.to_path_buf());
                     }
                     found.undescended.push(rel.to_path_buf());
                     continue;
                 }
-                stack.push((path, descended.clone()));
-            } else if path.is_file() {
+                stack.push(WalkDirectory {
+                    path,
+                    resolved: target,
+                    ancestors: descended.clone(),
+                });
+            } else if file_type.is_some_and(|file_type| file_type.is_file()) {
                 if policy.admits(rel) {
-                    if policy.escapes(&path) {
+                    if policy.confine.is_some() && policy.escapes(resolve().as_deref()) {
                         found.escaping.push(rel.to_path_buf());
                     } else {
                         found.paths.push(rel.to_path_buf());
@@ -1577,6 +1609,58 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.iter().any(|p| p.ends_with("guide.md")));
         assert!(paths.iter().any(|p| p.ends_with("README.md")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_ref_scan_reads_current_entry_types_through_a_linked_project_root() {
+        use std::os::unix::fs::symlink;
+        let checkout = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let project = checkout.path().join("project");
+        let nested = project.join("docs/nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("a.md"), "# A").unwrap();
+        fs::write(outside.path().join("b.md"), "# B").unwrap();
+        let view = outside.path().join("view");
+        symlink(&project, &view).unwrap();
+        symlink("missing", project.join("docs/gone.md")).unwrap();
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".into()];
+        config.scope.follow_symlinks = true;
+        let scan = || scan_ref(&view, checkout.path(), &config).unwrap();
+
+        let original = scan();
+        assert_eq!(original.paths, vec![PathBuf::from("docs/nested/a.md")]);
+        assert_eq!(original.dangling, vec![PathBuf::from("docs/gone.md")]);
+        assert!(original.escaping.is_empty());
+
+        fs::remove_file(nested.join("a.md")).unwrap();
+        symlink(outside.path().join("b.md"), nested.join("a.md")).unwrap();
+        let linked_file = scan();
+        assert!(linked_file.paths.is_empty());
+        assert_eq!(linked_file.escaping, original.paths);
+        assert_eq!(linked_file.dangling, original.dangling);
+
+        fs::remove_file(nested.join("a.md")).unwrap();
+        fs::write(nested.join("a.md"), "# Restored").unwrap();
+        let saved = checkout.path().join("saved");
+        fs::rename(&nested, &saved).unwrap();
+        symlink(outside.path(), &nested).unwrap();
+        let linked_directory = scan();
+        assert!(linked_directory.paths.is_empty());
+        assert_eq!(
+            linked_directory.escaping,
+            vec![PathBuf::from("docs/nested")]
+        );
+        assert_eq!(linked_directory.dangling, original.dangling);
+
+        fs::remove_file(&nested).unwrap();
+        fs::rename(&saved, &nested).unwrap();
+        let restored = scan();
+        assert_eq!(restored.paths, original.paths);
+        assert!(restored.escaping.is_empty());
+        assert_eq!(restored.dangling, original.dangling);
     }
 
     /// An entry that resolves to neither a file nor a directory is recorded
