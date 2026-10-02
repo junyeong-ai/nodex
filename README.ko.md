@@ -481,9 +481,9 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 
 | Code | 의미 |
 |---|---|
-| `0` | 성공 |
+| `0` | 명령 오류나 실제 배치 쓰기 실패 없이 완료. 의도적인 보존과 범위 경고는 남을 수 있음 |
 | `1` | `nodex check` 가 `severity = error` 위반 발견 |
-| `2` | 런타임 실패 — error envelope 발생, 또는 stdout 이 출력을 받지 못함 (먼저 닫힌 파이프, 가득 찬 디스크) |
+| `2` | error envelope, 부분 결과를 유지하는 실제 배치 쓰기 실패, 또는 stdout 출력 실패 (먼저 닫힌 파이프, 가득 찬 디스크) |
 
 ### 전역 플래그
 
@@ -573,7 +573,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 커스텀 룰을 추가하려면 `nodex-core/src/rules/` 에 `Rule` trait 을 구현하고 `registered_rules()` 에 등록합니다.
 
 배치 수정은 `completion: planned | complete | partial`을 보고합니다.
-`partial`이면 종료 코드 0과 `ok: true`여도 보존 사유와 실패를 확인해야 합니다.
+실제 쓰기 실패가 있으면 `ok: true`인 부분 결과 JSON을 유지하면서 종료 코드 2를 반환합니다.
+의도적인 보존만 있으면 종료 코드 0이며, 보존 사유와 범위 경고를 확인해야 합니다.
 완료 여부는 설정된 읽기 가능한 범위의 수정에 대한 것이므로 범위 경고도 확인합니다.
 수정할 내용이 없으면 `complete`일 수 있습니다.
 
@@ -581,6 +582,8 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 이동 실패 시 원본 내용은 그대로입니다. 이동 후 목적지 재작성에 실패하면 외부 참조
 재작성을 중단하고 `partial`과 `failures`를 보고합니다. `id_stability.type: anchor_failed`는 보존하지 못한 이전 id를 밝힙니다. 재시도 전에 이동된 파일을 확인하세요.
 이동과 여러 파일 재작성은 하나의 파일시스템 트랜잭션이 아니며 자동 복구하지 않습니다.
+
+> **0.52.0 업그레이드:** `migrate`, `rename`, `retarget`은 `data.failures`가 비어 있지 않으면 부분 결과 JSON을 유지하면서 종료 코드 2를 반환합니다. 호출 도구는 비정상 종료에서도 stdout을 읽어야 합니다. 이미 변경된 파일은 롤백하지 않으며 의도적인 보존만 있으면 종료 코드 0입니다.
 
 > **0.51.0 업그레이드:** `id_stability: anchor_failed`에 맞춰 rename 응답 타입을 갱신합니다. 이동 후 목적지 내용 쓰기가 실패하면 `completion: partial`로 보고하고 들어오는 참조 수정을 중단합니다.
 
@@ -698,7 +701,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.51, <0.52"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.52, <0.53"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -1077,7 +1080,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.51, <0.52" build
+nodex --check-version ">=0.52, <0.53" build
 ```
 
 ---

@@ -10,7 +10,7 @@ use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
 use nodex_core::parser::frontmatter;
 use nodex_core::parser::identity;
 
-use crate::format::emit_write;
+use crate::format::emit_batch_write;
 
 /// Args for `nodex migrate`.
 #[derive(Args)]
@@ -92,7 +92,12 @@ struct ExistingId {
     id: String,
 }
 
-pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Result<()> {
+pub fn run(
+    root: &Path,
+    args: MigrateArgs,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<std::process::ExitCode> {
     let apply = args.apply;
     let config = nodex_core::load_project(root)?;
     // The version pin gates the actual write. A dry-run (the default)
@@ -408,25 +413,25 @@ pub fn run(root: &Path, args: MigrateArgs, pretty: bool, today: NaiveDate) -> Re
     }
 
     let total = changes.len();
-    emit_write(
-        MigrateResult {
-            completion: nodex_core::WriteCompletion::of(
-                apply,
-                warnings
-                    .iter()
-                    .any(|warning| warning.code == nodex_core::WarningCode::FileSkipped),
-            ),
-            failures,
-            changes,
-            total,
-            applied: apply,
-        },
+    let data = MigrateResult {
+        completion: nodex_core::WriteCompletion::of(
+            apply,
+            warnings
+                .iter()
+                .any(|warning| warning.code == nodex_core::WarningCode::FileSkipped),
+        ),
+        failures,
+        changes,
+        total,
+        applied: apply,
+    };
+    Ok(emit_batch_write(
+        &data,
+        &data.failures,
         warnings,
         &probe,
         pretty,
-    );
-
-    Ok(())
+    ))
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ A failed destination commit reports a partial move and stops reference commits.
 - `envelope.rs` is the shared encoder for nodex and contract-gate (path inclusion).
   `format.rs` owns Envelope / ItemsEnvelope and typed error classification.
   `emit_read*` merges binary compatibility; `emit_write` merges baseline advisories.
+  Batch writes use `emit_batch_write` and return their exit status to main so
+  actual write failures keep their result and normal resource cleanup.
   Snapshot queries use `commands/query/mod.rs::QueryContext::emit_read_with` to
   attach probe metadata before the read emitter. Do not bypass it in a query leaf.
 - Project reads use `nodex_core::load_project` (config validation + preflight).
