@@ -101,7 +101,7 @@ enum Command {
     },
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
@@ -116,7 +116,7 @@ fn main() {
             _ => {
                 let envelope = format::ErrorEnvelope::from_clap_error(&err);
                 format::print_json(&envelope, false);
-                std::process::exit(2);
+                return std::process::ExitCode::from(2);
             }
         },
     };
@@ -130,7 +130,7 @@ fn main() {
             &format::ErrorEnvelope::new("INTERNAL_ERROR", error.to_string()),
             cli.pretty,
         );
-        std::process::exit(2);
+        return std::process::ExitCode::from(2);
     }
 
     // The project root is absolute from here on. `-C <dir>` accepts a
@@ -157,7 +157,7 @@ fn main() {
             let anyhow_err: anyhow::Error = err.into();
             let envelope = format::ErrorEnvelope::from_error(&anyhow_err);
             format::print_json(&envelope, false);
-            std::process::exit(2);
+            return std::process::ExitCode::from(2);
         }
     };
     let pretty = cli.pretty;
@@ -172,7 +172,7 @@ fn main() {
         let anyhow_err: anyhow::Error = err.into();
         let envelope = format::ErrorEnvelope::from_error(&anyhow_err);
         format::print_json(&envelope, pretty);
-        std::process::exit(2);
+        return std::process::ExitCode::from(2);
     }
 
     let writes_documents = match &cli.command {
@@ -184,9 +184,8 @@ fn main() {
     let lock = writes_documents
         .then(|| nodex_core::mutate::ProjectLock::acquire(&root))
         .transpose();
-    let result = lock
-        .map_err(anyhow::Error::from)
-        .and_then(|_lock| match cli.command {
+    let result = lock.map_err(anyhow::Error::from).and_then(|_lock| {
+        match cli.command {
             Command::Init => commands::init::run(&root, pretty),
             Command::Build(args) => commands::build::run(&root, args, pretty),
             Command::Status => commands::status::run(&root, pretty),
@@ -199,17 +198,22 @@ fn main() {
             Command::Check(args) => commands::check::run(&root, args, pretty, today),
             Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
             Command::Report(args) => commands::report::run(&root, args, pretty, today),
-            Command::Migrate(args) => commands::migrate::run(&root, args, pretty, today),
-            Command::Rename(args) => commands::rename::run(&root, args, pretty, today),
-            Command::Retarget(args) => commands::retarget::run(&root, args, pretty, today),
+            Command::Migrate(args) => return commands::migrate::run(&root, args, pretty, today),
+            Command::Rename(args) => return commands::rename::run(&root, args, pretty, today),
+            Command::Retarget(args) => return commands::retarget::run(&root, args, pretty, today),
             Command::Scaffold(args) => commands::scaffold::run(&root, args, pretty, today),
             Command::Export { sub } => commands::export::run(&root, sub, pretty),
-        });
+        }?;
+        Ok(std::process::ExitCode::SUCCESS)
+    });
 
-    if let Err(err) = result {
-        let envelope = format::ErrorEnvelope::from_error(&err);
-        format::print_json(&envelope, pretty);
-        std::process::exit(2);
+    match result {
+        Ok(code) => code,
+        Err(err) => {
+            let envelope = format::ErrorEnvelope::from_error(&err);
+            format::print_json(&envelope, pretty);
+            std::process::ExitCode::from(2)
+        }
     }
 }
 

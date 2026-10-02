@@ -603,10 +603,10 @@ impl Snapshot {
     ///   (`GRAPH_OUTDATED` — rebuild);
     /// - the working tree could not be read, so nothing about it has been
     ///   established at all. That is neither absence nor staleness, and a
-    ///   rebuild cannot fix it — it fails the same way. The probe's own error
-    ///   is the answer, naming the condition whose repair is the remedy.
+    ///   rebuild cannot restore access. The probe's own error names the
+    ///   condition that must be repaired before absence can be established.
     fn absence_of(&self, root: &Path, config: &Config, asked: crate::error::Lookup) -> Error {
-        match compute_divergence(&self.graph, config, root, DivergenceProbe::Content) {
+        match measure_divergence(&self.graph, config, root, DivergenceProbe::Content, true) {
             Ok(outcome) if outcome.divergence.is_divergent() => Error::StaleGraph {
                 asked,
                 divergence: divergence_cause(&outcome.divergence),

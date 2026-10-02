@@ -9782,6 +9782,46 @@ fn a_working_tree_that_cannot_be_read_is_not_a_stale_snapshot() {
     );
 }
 
+#[test]
+#[cfg(unix)]
+fn a_missed_lookup_preserves_file_read_errors_before_and_after_rebuilding() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(root, "docs/a.md", "---\nid: a\n---\nBody\n");
+    nodex(root).arg("build").assert().success();
+    let path = root.join("docs/a.md");
+    let permissions = fs::metadata(&path).unwrap().permissions();
+    let miss = || {
+        let output = nodex(root)
+            .args(["query", "node", "missing"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let before = miss();
+    let hit = run_envelope(nodex(root).args(["query", "node", "a"]));
+    let status = run_json(nodex(root).arg("status"));
+    nodex(root).arg("build").assert().success();
+    let after = miss();
+    fs::set_permissions(&path, permissions).unwrap();
+    let repaired = miss();
+    nodex(root).arg("build").assert().success();
+    let current = miss();
+    for error in [before, after] {
+        assert_eq!(error["ok"], false);
+        assert_eq!(error["error"]["code"], "IO_ERROR");
+        assert!(error["error"]["message"].as_str().unwrap().contains("a.md"));
+    }
+    assert_eq!(hit["data"]["node"]["id"], "a");
+    assert_eq!(status["state"], "outdated");
+    assert_eq!(repaired["error"]["code"], "GRAPH_OUTDATED");
+    assert_eq!(current["error"]["code"], "NOT_FOUND");
+}
+
 /// Graphing the baseline runs the same build `check` runs, so it fails the
 /// same typed ways — a duplicate id at the baseline is a duplicate id on
 /// either plane. Reporting one condition under two codes is what a consumer
@@ -19316,6 +19356,55 @@ fn init_refuses_dangling_symlinked_nodex_toml() {
         Some("SYMLINK_TARGET")
     );
     assert!(!ghost.exists(), "nothing was written through the link");
+}
+
+#[cfg(unix)]
+#[test]
+fn migrate_write_failure_preserves_partial_results_and_exits_nonzero() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(tmp.path(), "docs/good.md", "# Good\n");
+    write_doc(tmp.path(), "blocked/bad.md", "# Bad\n");
+    let blocked = tmp.path().join("blocked");
+    let permissions = fs::metadata(&blocked).unwrap().permissions();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o555)).unwrap();
+    let output = nodex(tmp.path())
+        .args(["migrate", "--apply"])
+        .output()
+        .unwrap();
+    fs::set_permissions(&blocked, permissions).unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["ok"], true);
+    assert!(envelope.get("error").is_none());
+    let data = &envelope["data"];
+    assert_eq!(data["completion"], "partial");
+    assert_eq!(data["total"], 1);
+    assert_eq!(data["changes"][0]["path"], "docs/good.md");
+    assert_eq!(data["failures"].as_array().unwrap().len(), 1);
+    assert_eq!(data["failures"][0]["path"], "blocked/bad.md");
+    assert_eq!(data["failures"][0]["code"], "IO_ERROR");
+    assert!(
+        fs::read_to_string(tmp.path().join("docs/good.md"))
+            .unwrap()
+            .starts_with("---\n")
+    );
+    assert_eq!(
+        fs::read_to_string(blocked.join("bad.md")).unwrap(),
+        "# Bad\n"
+    );
+    assert_eq!(fs::read_dir(&blocked).unwrap().count(), 1);
+    nodex(tmp.path())
+        .args(["migrate", "--apply"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(blocked.join("bad.md"))
+            .unwrap()
+            .starts_with("---\n")
+    );
 }
 
 // ─── migrate batch resilience ───────────────────────────────────────

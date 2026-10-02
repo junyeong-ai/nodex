@@ -10,7 +10,7 @@ paths:
    `#[derive(Args)]` — use `Args` to group four or more flat flags so
    dispatch stays a single-argument forward) and the
    `pub fn run(root: &Path, …typed args…, pretty: bool) -> Result<()>`
-   handler; a command whose answer is date-relative also takes
+   handler (batch writes return `Result<ExitCode>` through `emit_batch_write`); a command whose answer is date-relative also takes
    `today: NaiveDate` from `main`, the one place the clock is read.
 2. Register the module in `commands/mod.rs`.
 3. Add the variant to the top-level `Command` enum in `main.rs` and a

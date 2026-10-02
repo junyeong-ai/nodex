@@ -59,6 +59,21 @@ pub fn emit_write<T: Serialize>(
     print_json(&Envelope::with_warnings(data, warnings), pretty);
 }
 
+pub fn emit_batch_write<T: Serialize>(
+    data: &T,
+    failures: &[nodex_core::FileWriteFailure],
+    warnings: Vec<Warning>,
+    probe: &nodex_core::BaselineProbe,
+    pretty: bool,
+) -> std::process::ExitCode {
+    emit_write(data, warnings, probe, pretty);
+    if failures.is_empty() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::from(2)
+    }
+}
+
 /// Standard JSON envelope for all CLI output.
 #[derive(Serialize)]
 pub struct Envelope<T: Serialize> {
