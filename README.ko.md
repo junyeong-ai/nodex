@@ -464,7 +464,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | Code | 의미 |
 |---|---|
 | `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언, 어느 `identity` 룰도 이름 짓지 않는 문서, walk 가 읽지 못한 트리 부분, scope 가 받지 않는 `check --content` 경로 |
-| `snapshot_divergence` | `graph.json` 이 더 이상 워킹 트리를 대변하지 않음 — `nodex build` 실행 |
+| `snapshot_divergence` | 스냅샷 변경 또는 최신성 검사 실패 — 변경 시 재빌드, 검사 실패 시 메시지에 표시된 원인 해결 |
 | `build_recommended` | 변경 명령이 그래프를 일관되게 만들 후속 조치를 남김 (메시지가 지목) |
 | `binary_compat` | 바이너리가 `[meta] nodex_version` 핀 밖 — 읽기는 실행, 쓰기는 거부 |
 | `gate_suppression` | 나열된 위반이 판정한 집합과 다름(`--severity`, 또는 프로젝트를 담지 않은 `--since` ref); `has_errors` 와 exit code 는 판정한 위반 전체에 대해 답함 |
