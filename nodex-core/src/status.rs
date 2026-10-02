@@ -404,6 +404,12 @@ fn read_snapshot(root: &Path, config: &Config, require_current: bool) -> Result<
     })?;
 
     let mut warnings = Vec::new();
+    let mut read = SnapshotRead {
+        verification: SnapshotVerification::Unavailable,
+        divergence: None,
+        unbuildable: graph.parse_failures().len(),
+        unfollowed: None,
+    };
     let probe = if require_current {
         DivergenceProbe::Content
     } else {
@@ -411,6 +417,18 @@ fn read_snapshot(root: &Path, config: &Config, require_current: bool) -> Result<
     };
     match measure_divergence(&graph, config, root, probe, require_current) {
         Ok(outcome) => {
+            read.verification = if require_current {
+                SnapshotVerification::Content
+            } else {
+                SnapshotVerification::Membership
+            };
+            read.unfollowed = Some(outcome.scan.unfollowed_in_scope.len());
+            read.divergence = outcome.divergence.is_divergent().then(|| SnapshotChanges {
+                config_changed: outcome.divergence.config_changed,
+                added: outcome.divergence.added_paths.len(),
+                removed: outcome.divergence.removed_paths.len(),
+                changed: outcome.divergence.changed_paths.as_ref().map(Vec::len),
+            });
             if outcome.divergence.is_divergent() {
                 if require_current {
                     return Err(Error::StaleGraph {
@@ -467,7 +485,11 @@ fn read_snapshot(root: &Path, config: &Config, require_current: bool) -> Result<
             ));
         }
     }
-    Ok(Snapshot { graph, warnings })
+    Ok(Snapshot {
+        graph,
+        warnings,
+        read,
+    })
 }
 
 /// A graph read from `graph.json`, together with what is known about how far
@@ -488,9 +510,41 @@ fn read_snapshot(root: &Path, config: &Config, require_current: bool) -> Result<
 pub struct Snapshot {
     graph: Graph,
     warnings: Vec<crate::Warning>,
+    read: SnapshotRead,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SnapshotRead {
+    /// Scope of the successful freshness probe; unavailable means it failed.
+    pub verification: SnapshotVerification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub divergence: Option<SnapshotChanges>,
+    pub unbuildable: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unfollowed: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotVerification {
+    Membership,
+    Content,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SnapshotChanges {
+    pub config_changed: bool,
+    pub added: usize,
+    pub removed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<usize>,
 }
 
 impl Snapshot {
+    pub fn read_info(&self) -> &SnapshotRead {
+        &self.read
+    }
     /// The graph as the snapshot holds it.
     pub fn graph(&self) -> &Graph {
         &self.graph

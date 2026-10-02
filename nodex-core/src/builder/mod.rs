@@ -135,16 +135,27 @@ enum BuildMode<'a> {
     Ref { checkout: &'a Path },
 }
 
-/// Invocation-local reuse for materialised refs, keyed by actual file bytes,
-/// paths, configuration and scan disclosures. No ref data is persisted.
+/// Invocation-local reuse keyed by actual file bytes, paths, configuration
+/// and scan disclosures. Read-only builds never persist their cache.
 #[derive(Default)]
 pub struct BuildSession {
     cache: BuildCache,
     prepared: Arc<OnceLock<parser::PreparedPatterns>>,
     previous: Option<(String, BuildOutcome)>,
+    cache_warning: Option<String>,
+    overlay_root: Option<PathBuf>,
 }
 
 impl BuildSession {
+    pub fn build_with_overlay(
+        &mut self,
+        root: &Path,
+        config: &Config,
+        overlay: &[(PathBuf, Proposed)],
+    ) -> Result<BuildOutcome> {
+        build_inner(root, config, BuildMode::Overlay(overlay), Some(self))
+    }
+
     pub fn build_of_ref(
         &mut self,
         root: &Path,
@@ -278,12 +289,23 @@ fn build_inner(
     let config_hash = parse_config.cache_key();
     let mut local_cache;
     let (cache, cache_warning, previous) = if let Some(session) = session {
-        if session.cache.config_hash != config_hash {
+        let overlay_root = matches!(mode, BuildMode::Overlay(_)).then(|| root.to_path_buf());
+        if session.cache.config_hash != config_hash || session.overlay_root != overlay_root {
             *session = BuildSession::default();
+            session.overlay_root = overlay_root;
+            if matches!(mode, BuildMode::Overlay(_)) {
+                (session.cache, session.cache_warning) =
+                    BuildCache::load(&cache_path, &config_hash);
+            }
         }
-        session.cache.remember_revisions();
+        let previous = if matches!(mode, BuildMode::Ref { .. }) {
+            session.cache.remember_revisions();
+            Some(&mut session.previous)
+        } else {
+            None
+        };
         parse_config.prepared = Arc::clone(&session.prepared);
-        (&mut session.cache, None, Some(&mut session.previous))
+        (&mut session.cache, session.cache_warning.clone(), previous)
     } else {
         let (loaded, warning) = if full_rebuild {
             (BuildCache::default(), None)
@@ -1070,6 +1092,61 @@ mod tests {
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn overlay_session_reuses_parsing_without_persisting_proposals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        let config = Config::default();
+        std::fs::write(root.join("docs/a.md"), "---\nid: a\n---\n[A](b.md)\n").unwrap();
+        std::fs::write(root.join("docs/b.md"), "---\nid: b\n---\nBody\n").unwrap();
+        build(root, &config, false).unwrap();
+        let cache_path = root.join(&config.output.dir).join("cache.json");
+        let original_cache = std::fs::read(&cache_path).unwrap();
+        let mut session = BuildSession::default();
+        let before = session.build_with_overlay(root, &config, &[]).unwrap();
+        assert_eq!(before.stats.parsed, 0);
+        let overlay = vec![(
+            PathBuf::from("docs/b.md"),
+            Proposed::Content("---\nid: replacement\n---\nProposed\n".into()),
+        )];
+        let after = session.build_with_overlay(root, &config, &overlay).unwrap();
+        assert_eq!(after.stats.parsed, 1);
+        let fresh = build_with_overlay(root, &config, &overlay).unwrap();
+        assert_eq!(
+            serde_json::to_value(&after.graph).unwrap(),
+            serde_json::to_value(&fresh.graph).unwrap()
+        );
+        assert_eq!(std::fs::read(&cache_path).unwrap(), original_cache);
+        assert!(
+            build(root, &config, false)
+                .unwrap()
+                .graph
+                .node("b")
+                .is_some()
+        );
+        std::fs::write(root.join("docs/a.md"), "---\nid: changed\n---\nChanged\n").unwrap();
+        let changed = session.build_with_overlay(root, &config, &[]).unwrap();
+        assert!(changed.graph.node("changed").is_some());
+        std::fs::remove_file(&cache_path).unwrap();
+        let mut cold = BuildSession::default();
+        assert_eq!(
+            cold.build_with_overlay(root, &config, &[])
+                .unwrap()
+                .stats
+                .parsed,
+            2
+        );
+        assert_eq!(
+            cold.build_with_overlay(root, &config, &overlay)
+                .unwrap()
+                .stats
+                .parsed,
+            1
+        );
+        assert!(!cache_path.exists());
+    }
 
     #[test]
     fn a_ref_session_reuses_revisions_and_resolves_each_document_scope() {

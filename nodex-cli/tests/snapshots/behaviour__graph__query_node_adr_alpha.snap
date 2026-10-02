@@ -51,5 +51,10 @@ exit: 0
     },
     "outgoing": []
   },
-  "ok": true
+  "ok": true,
+  "snapshot": {
+    "unbuildable": 0,
+    "unfollowed": 0,
+    "verification": "membership"
+  }
 }

@@ -28,5 +28,10 @@ exit: 0
     "relations": [],
     "root_id": "adr-beta"
   },
-  "ok": true
+  "ok": true,
+  "snapshot": {
+    "unbuildable": 0,
+    "unfollowed": 0,
+    "verification": "membership"
+  }
 }

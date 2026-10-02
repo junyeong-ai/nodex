@@ -71,10 +71,31 @@ impl FileWriteFailure {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteCompletion {
+    Planned,
+    Complete,
+    Partial,
+}
+
+impl WriteCompletion {
+    pub fn of(applied: bool, incomplete: bool) -> Self {
+        if !applied {
+            Self::Planned
+        } else if incomplete {
+            Self::Partial
+        } else {
+            Self::Complete
+        }
+    }
+}
+
 /// `migrate [--apply]` result. `applied = false` means the planned
 /// changes were not written (default dry-run mode).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MigrateResult {
+    pub completion: WriteCompletion,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<FileWriteFailure>,
     pub changes: Vec<MigrationChange>,
@@ -109,6 +130,7 @@ pub enum IdStability {
 /// `rename <old> <new>` result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RenameResult {
+    pub completion: WriteCompletion,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<FileWriteFailure>,
     pub old_path: String,
@@ -121,6 +143,7 @@ pub struct RenameResult {
 /// `retarget <old-id> <new-id>` result.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RetargetResult {
+    pub completion: WriteCompletion,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<FileWriteFailure>,
     pub old_id: String,

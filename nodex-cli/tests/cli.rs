@@ -572,6 +572,14 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         assert_eq!(keys(envelope), ["ok", "data"].into());
         &envelope["data"]
     }
+    fn snapshot_data(envelope: &Value) -> &Value {
+        assert_eq!(keys(envelope), ["ok", "data", "snapshot"].into());
+        assert_eq!(
+            envelope["snapshot"],
+            json!({"verification": "membership", "unbuildable": 0, "unfollowed": 0})
+        );
+        &envelope["data"]
+    }
     /// The named fields of `value`, for comparing some of an object at once.
     fn shown(value: &Value, fields: &[&str]) -> Value {
         fields
@@ -644,7 +652,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     );
 
     let chain = run_envelope(nodex(root).args(["query", "chain", "adr-0001-rest-api"]));
-    let chain = data(&chain);
+    let chain = snapshot_data(&chain);
     assert_eq!(keys(chain), ["items", "total"].into());
     assert_eq!(
         each(&chain["items"], &["id", "title", "status"]),
@@ -656,7 +664,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     assert_eq!(chain["total"], 2);
 
     let backlinks = run_envelope(nodex(root).args(["query", "backlinks", "adr-0002-graphql-api"]));
-    let backlinks = data(&backlinks);
+    let backlinks = snapshot_data(&backlinks);
     assert_eq!(keys(backlinks), ["items", "total"].into());
     assert_eq!(
         each(&backlinks["items"], &["id", "relation", "location"]),
@@ -8143,6 +8151,7 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     // a lock warning and left byte-identical.
     let env = run_envelope(nodex(root).args(["rename", "docs/target.md", "docs/target-v2.md"]));
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(env["data"]["completion"], "partial");
     let updated: Vec<&str> = env
         .pointer("/data/references_updated")
         .and_then(Value::as_array)
@@ -8172,6 +8181,7 @@ fn rename_and_retarget_skip_locked_bodies_with_a_warning() {
     nodex(root).arg("build").assert().success();
     let env = run_envelope(nodex(root).args(["retarget", "generic-target", "generic-successor"]));
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(env["data"]["completion"], "partial");
     let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
     assert!(
         warnings
@@ -25227,14 +25237,17 @@ fn queries_can_require_current_content_and_reject_drift_without_writing() {
     nodex(tmp.path()).arg("build").assert().success();
     let snapshot_path = tmp.path().join("_index/graph.json");
     let snapshot = fs::read(&snapshot_path).unwrap();
-    run_json(nodex(tmp.path()).args(["query", "nodes", "--require-current"]));
+    let current = run_envelope(nodex(tmp.path()).args(["query", "nodes", "--require-current"]));
+    assert_eq!(current["snapshot"]["verification"], "content");
+    assert_eq!(current["snapshot"]["unbuildable"], 0);
     write_doc(
         tmp.path(),
         "docs/a.md",
         &original.replace("status: active", "status: archived"),
     );
-    let held = run_json(nodex(tmp.path()).args(["query", "nodes", "--status", "active"]));
-    assert_eq!(held["total"], 1);
+    let held = run_envelope(nodex(tmp.path()).args(["query", "nodes", "--status", "active"]));
+    assert_eq!(held["data"]["total"], 1);
+    assert_eq!(held["snapshot"]["verification"], "membership");
     for args in [
         vec!["query", "nodes", "--require-current"],
         vec!["query", "--require-current", "backlinks", "a"],
@@ -25277,4 +25290,65 @@ fn body_search_reports_literal_matches_and_refuses_mixed_revisions() {
     assert_eq!(output.status.code(), Some(2));
     let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["error"]["code"], "GRAPH_OUTDATED");
+}
+
+#[test]
+fn body_search_limits_preserve_totals_and_check_every_selected_revision() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(tmp.path(), "docs/z.md", "---\nid: z\n---\n토큰 마지막\n");
+    write_doc(
+        tmp.path(),
+        "docs/a.md",
+        "---\nid: a\n---\n토큰 한글😀\n토큰 두번째\n",
+    );
+    nodex(tmp.path()).arg("build").assert().success();
+    let args = [
+        "--jobs",
+        "2",
+        "query",
+        "search",
+        "토큰",
+        "--body",
+        "--max-matches",
+        "1",
+        "--max-line-chars",
+        "4",
+    ];
+    let result = run_json(nodex(tmp.path()).args(args));
+    assert_eq!(result["total"], 2);
+    assert_eq!(result["returned"], 1);
+    assert_eq!(result["match_total"], 3);
+    assert_eq!(result["match_returned"], 1);
+    assert_eq!(result["items"][0]["id"], "a");
+    assert_eq!(result["items"][0]["matches"][0]["text"], "토큰 한");
+    assert_eq!(result["items"][0]["matches"][0]["truncated"], true);
+    write_doc(tmp.path(), "docs/z.md", "---\nid: z\n---\nChanged\n");
+    let output = nodex(tmp.path()).args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "GRAPH_OUTDATED");
+    for invalid in [
+        vec!["--jobs", "0", "query", "nodes"],
+        vec!["query", "search", "x", "--max-matches", "1"],
+        vec!["query", "search", "x", "--body", "--max-line-chars", "0"],
+    ] {
+        let output = nodex(tmp.path()).args(invalid).output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
+    }
+}
+
+#[test]
+fn strict_query_discloses_unbuildable_documents_separately_from_freshness() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(tmp.path(), "docs/a.md", "---\nid: a\n---\nBody\n");
+    write_doc(tmp.path(), "docs/bad.md", "---\nid: [\n---\nBody\n");
+    nodex(tmp.path()).arg("build").assert().success();
+    let answer = run_envelope(nodex(tmp.path()).args(["query", "--require-current", "nodes"]));
+    assert_eq!(answer["snapshot"]["verification"], "content");
+    assert_eq!(answer["snapshot"]["unbuildable"], 1);
+    assert_eq!(answer["data"]["total"], 1);
 }

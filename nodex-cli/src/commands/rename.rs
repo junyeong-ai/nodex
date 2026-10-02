@@ -486,6 +486,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         ));
     }
     warnings.extend(introduced.advisories());
+    let completion = nodex_core::WriteCompletion::of(true, !skipped.is_empty());
     warnings.extend(
         skipped
             .into_iter()
@@ -493,6 +494,7 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
     );
 
     let data = RenameResult {
+        completion,
         failures,
         old_path: nodex_core::path_guard::forward_str(old_path),
         new_path: nodex_core::path_guard::forward_str(new_path),

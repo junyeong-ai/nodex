@@ -243,6 +243,7 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
     }
 
     let data = RetargetResult {
+        completion: nodex_core::WriteCompletion::of(true, !skipped.is_empty()),
         failures,
         old_id: args.old_id,
         new_id: args.new_id,

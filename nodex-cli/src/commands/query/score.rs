@@ -4,7 +4,7 @@ use chrono::NaiveDate;
 use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
 use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
 
-use crate::format::{ItemsEnvelope, emit_read_with};
+use crate::format::ItemsEnvelope;
 
 use super::{
     SimilarityArgs, TrustArgs, reject_non_finite_or_out_of_unit_range, reject_unknown_vocabulary,
@@ -41,7 +41,7 @@ pub(crate) fn run_trust(
             &config,
             nodex_core::query::trust::compute_trust(graph, &config, context.root, &id, today),
         )?;
-        emit_read_with(report, warnings, &config, pretty);
+        context.emit_read_with(report, warnings, &config, pretty);
         return Ok(());
     }
 
@@ -106,7 +106,7 @@ pub(crate) fn run_trust(
             ),
         ));
     }
-    emit_read_with(
+    context.emit_read_with(
         ItemsEnvelope::new(outcome.entries),
         warnings,
         &config,
@@ -202,6 +202,6 @@ pub(crate) fn run_similar(
             ),
         ));
     }
-    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
+    context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

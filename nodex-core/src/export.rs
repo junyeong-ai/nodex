@@ -1381,6 +1381,7 @@ fn envelope_shape() -> Value {
                 "properties": {
                     "ok": { "const": true },
                     "data": true,
+                    "snapshot": inline_schema_refs(&schema_of::<crate::SnapshotRead>()).expect("snapshot schema references resolve"),
                     "warnings": {
                         "type": "array",
                         "items": {
@@ -1443,7 +1444,7 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::detect::{OrphanEntry, StaleEntry};
     use crate::query::issues::IssueReport;
     use crate::query::recent::RecentEntry;
-    use crate::query::search::{BodySearchEntry, SearchEntry};
+    use crate::query::search::{BodySearchResult, SearchEntry};
     use crate::query::similar::SimilarityEntry;
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
@@ -1459,10 +1460,7 @@ fn per_command_schemas() -> Map<String, Value> {
     // non-null.
     out.insert("query.nodes".into(), items_envelope::<NodeListingEntry>());
     out.insert("query.search".into(), items_envelope::<SearchEntry>());
-    out.insert(
-        "query.search-body".into(),
-        items_envelope::<BodySearchEntry>(),
-    );
+    out.insert("query.search-body".into(), schema_of::<BodySearchResult>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
     out.insert("query.orphans".into(), items_envelope::<OrphanEntry>());
@@ -2483,6 +2481,7 @@ mod tests {
             (
                 "migrate",
                 serde_json::to_value(MigrateResult {
+                    completion: crate::WriteCompletion::Planned,
                     failures: vec![crate::FileWriteFailure::of(
                         std::path::Path::new("docs/b.md"),
                         &crate::Error::WriteConflict("docs/b.md".into()),
@@ -2500,6 +2499,7 @@ mod tests {
             (
                 "rename",
                 serde_json::to_value(RenameResult {
+                    completion: crate::WriteCompletion::Complete,
                     failures: vec![],
                     old_path: "docs/a.md".into(),
                     new_path: "docs/b.md".into(),

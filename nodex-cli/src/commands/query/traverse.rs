@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::format::{ItemsEnvelope, emit_read_with};
+use crate::format::ItemsEnvelope;
 
 use super::{reject_zero_u32, reject_zero_usize};
 
@@ -19,7 +19,7 @@ pub(crate) fn run_backlinks(
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     snapshot.require(context.root, &config, graph.require_node(node_id))?;
     let items = nodex_core::query::traverse::find_backlinks(graph, node_id);
-    emit_read_with(
+    context.emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
         &config,
@@ -38,7 +38,7 @@ pub(crate) fn run_chain(
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     snapshot.require(context.root, &config, graph.require_node(node_id))?;
     let items = nodex_core::query::traverse::find_chain(graph, node_id);
-    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
+    context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }
 
@@ -79,7 +79,7 @@ pub(crate) fn run_node(
         detail.body = Some(snapshot.body(context.root, &resolved_id)?);
     }
 
-    emit_read_with(detail, warnings, &config, pretty);
+    context.emit_read_with(detail, warnings, &config, pretty);
     Ok(())
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn run_covered_by(
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items =
         nodex_core::query::traverse::find_covered_by(graph, &normalised, &config.parser.extensions);
-    emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
+    context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }
 
@@ -137,7 +137,7 @@ pub(crate) fn run_dependents(
         &config,
         nodex_core::query::dependents::find_dependents(graph, id, depth, &relations),
     )?;
-    emit_read_with(report, warnings, &config, pretty);
+    context.emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }
 
@@ -162,7 +162,7 @@ pub(crate) fn run_neighborhood(
         &config,
         nodex_core::query::structure::find_neighborhood(graph, id, depth),
     )?;
-    emit_read_with(result, warnings, &config, pretty);
+    context.emit_read_with(result, warnings, &config, pretty);
     Ok(())
 }
 
@@ -178,7 +178,7 @@ pub(crate) fn run_components(
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
     let items = nodex_core::query::structure::find_components(graph);
-    emit_read_with(
+    context.emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
         &config,

@@ -15,6 +15,81 @@ exit: 0
             "ok": {
               "const": true
             },
+            "snapshot": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "properties": {
+                "divergence": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "added": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "changed": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "config_changed": {
+                          "type": "boolean"
+                        },
+                        "removed": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "config_changed",
+                        "added",
+                        "removed"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "unbuildable": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "unfollowed": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "verification": {
+                  "allOf": [
+                    {
+                      "enum": [
+                        "membership",
+                        "content",
+                        "unavailable"
+                      ],
+                      "type": "string"
+                    }
+                  ],
+                  "description": "Scope of the successful freshness probe; unavailable means it failed."
+                }
+              },
+              "required": [
+                "verification",
+                "unbuildable"
+              ],
+              "title": "SnapshotRead",
+              "type": "object"
+            },
             "warnings": {
               "items": {
                 "additionalProperties": false,
@@ -2783,6 +2858,14 @@ exit: 0
               "kind"
             ],
             "type": "object"
+          },
+          "WriteCompletion": {
+            "enum": [
+              "planned",
+              "complete",
+              "partial"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2797,6 +2880,9 @@ exit: 0
             },
             "type": "array"
           },
+          "completion": {
+            "$ref": "#/$defs/WriteCompletion"
+          },
           "failures": {
             "items": {
               "$ref": "#/$defs/FileWriteFailure"
@@ -2810,6 +2896,7 @@ exit: 0
           }
         },
         "required": [
+          "completion",
           "changes",
           "total",
           "applied"
@@ -5324,6 +5411,12 @@ exit: 0
               },
               "text": {
                 "type": "string"
+              },
+              "truncated": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -5376,6 +5469,19 @@ exit: 0
             },
             "type": "array"
           },
+          "match_returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "match_total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "returned": {
             "format": "uint",
             "minimum": 0,
@@ -5392,9 +5498,10 @@ exit: 0
         },
         "required": [
           "items",
-          "total"
+          "total",
+          "match_total"
         ],
-        "title": "ItemsEnvelopeShape",
+        "title": "BodySearchResult",
         "type": "object"
       },
       "query.similar": {
@@ -5896,11 +6003,22 @@ exit: 0
                 "type": "object"
               }
             ]
+          },
+          "WriteCompletion": {
+            "enum": [
+              "planned",
+              "complete",
+              "partial"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "`rename <old> <new>` result.",
         "properties": {
+          "completion": {
+            "$ref": "#/$defs/WriteCompletion"
+          },
           "failures": {
             "items": {
               "$ref": "#/$defs/FileWriteFailure"
@@ -5929,6 +6047,7 @@ exit: 0
           }
         },
         "required": [
+          "completion",
           "old_path",
           "new_path",
           "references_updated",
@@ -5979,11 +6098,22 @@ exit: 0
               "message"
             ],
             "type": "object"
+          },
+          "WriteCompletion": {
+            "enum": [
+              "planned",
+              "complete",
+              "partial"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "`retarget <old-id> <new-id>` result.",
         "properties": {
+          "completion": {
+            "$ref": "#/$defs/WriteCompletion"
+          },
           "failures": {
             "items": {
               "$ref": "#/$defs/FileWriteFailure"
@@ -6009,6 +6139,7 @@ exit: 0
           }
         },
         "required": [
+          "completion",
           "old_id",
           "new_id",
           "references_updated",
@@ -6273,7 +6404,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.49.0"
+    "version": "0.50.0"
   },
   "ok": true
 }

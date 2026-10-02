@@ -488,7 +488,7 @@ exactly the Error-severity violations the overlay *introduces*
 (`rules::introduced_violations` — a count-aware multiset difference by
 `rules::finding_identity`: a duplicate of a pre-existing violation still
 refuses; a pre-existing violation elsewhere never blocks).
-`BuildSession` shares parsing and prepared patterns across ref builds within one invocation. It reuses the previous complete outcome only when actual scoped bytes, paths, configuration, version and scan disclosures match; git conversions still run before those bytes are read. No ref cache is persisted.
+`BuildSession` shares parsing and prepared patterns across read-only builds within one invocation. Overlay builds load the disk cache once, retain actual-byte hash checks, and never persist proposals. It reuses the previous complete outcome only when actual scoped bytes, paths, configuration, version and scan disclosures match; git conversions still run before those bytes are read. No ref cache is persisted.
 The private `scanner::scan` behind `scan_scope`, `scan_scope_with_overlay` and `scan_ref` is
 the single scope authority, so an overlay graph and the real post-write build never disagree
 about membership.
@@ -1021,8 +1021,12 @@ and a rebuild fails the same way, so reporting it as either would
 prescribe a remedy that cannot succeed. The escalation is on the error
 path that ends the command, so it is paid at most once per process.
 
+`Snapshot::read_info` carries the successful probe scope, measured divergence and
+coverage counts. Content fidelity and successful parsing are separate facts.
 `Snapshot::body` owns revision-checked canonical body reads for node detail and
-body search.
+body search. Body-search limits bound retained output, never revision validation.
+`BuildSession::build_with_overlay` reuses parsing within a proposal gate without
+persisting proposed bytes.
 
 ## Adding a validation rule
 
