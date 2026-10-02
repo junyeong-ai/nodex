@@ -18,7 +18,8 @@ paths:
    `main.rs` never contains a command's CLI shape. A document-writing mode
    also joins `writes_documents` so `ProjectLock` covers the handler's first
    read through its final write; dry runs remain read-only.
-4. Emit output through `format::emit_read*` for a read command, which
+4. Snapshot query leaves use `QueryContext::emit_read_with` to retain probe
+   metadata. Other read commands use `format::emit_read*`, which
    merges the binary-compat advisory, or `format::emit_write` for one
    that writes documents, which merges the advisories of the
    `BaselineProbe` its writes locked against (obtained from

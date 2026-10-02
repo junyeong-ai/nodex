@@ -119,6 +119,8 @@ pub enum IdStability {
     /// from other docs (`related`, `supersedes`, `implements`,
     /// `superseded_by`) remain valid.
     Anchored { id: String },
+    /// The move landed, but the prepared content preserving this id did not.
+    AnchorFailed { id: String },
     /// The doc has no frontmatter at all (a bare markdown file). The
     /// runtime infers an id from the path, which the rename has
     /// changed; the caller must either add frontmatter to the moved

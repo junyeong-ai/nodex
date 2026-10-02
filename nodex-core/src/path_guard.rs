@@ -378,12 +378,9 @@ fn canonicalize_deepest_existing(path: &Path) -> Option<PathBuf> {
 
 /// Content written to its staging file and waiting to be renamed into place.
 ///
-/// The two halves of an atomic write, held apart so a *batch* of them can be
-/// all-or-nothing. Everything that can fail — the directory does not exist or
-/// is not writable, the disk is full — fails while staging, where nothing has
-/// been replaced yet and dropping the staged writes leaves the tree as it was.
-/// What remains is a same-directory rename per file, which is the atomic
-/// primitive itself.
+/// Preparing all replacements first detects staging failures before any target
+/// changes. Each commit still verifies its expected revision and can fail;
+/// replacement is atomic per file, not across a batch.
 ///
 /// A staged write that is never committed removes its temp file on drop, so a
 /// batch abandoned halfway litters nothing.
@@ -547,12 +544,9 @@ pub fn write_atomic_in_root(root: &Path, target: &Path, content: &str) -> Result
 /// the content is on disk beside its target, waiting for the rename that puts
 /// it there.
 ///
-/// This is what makes a multi-file write all-or-nothing. A batch stages every
-/// file first, so the failures that actually happen — an unwritable directory,
-/// a full disk — happen while the tree is still untouched and every staged
-/// write is dropped; only then does it commit, and a commit is a
-/// same-directory rename. Without it a batch could pass its gate, write half
-/// of itself, and leave the project in a state nothing had judged.
+/// Staging prepares a replacement without changing its target. The caller
+/// records each commit's outcome; preparing a batch does not make its commits
+/// a filesystem transaction.
 pub fn stage_in_root(root: &Path, target: &Path, content: &str) -> Result<Staged> {
     if is_symlink(target) {
         return Err(Error::SymlinkTarget(target.to_path_buf()));

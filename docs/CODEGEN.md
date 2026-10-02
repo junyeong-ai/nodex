@@ -229,6 +229,14 @@ reviewer's machine.
   self-contained (no `$ref` / `$defs` anywhere) for tools that do not
   follow references (notably `json-schema-to-zod`). Two emission forms,
   one canonical model.
+- Snapshot query envelopes additionally carry `snapshot` (verification scope and
+  coverage). It is envelope metadata, not part of the generated command `data`
+  model. A content-verified snapshot can still report unbuildable documents.
+- Batch payload `completion` is `planned | complete | partial`; inspect it and
+  optional `failures` even after exit 0. Rename's `id_stability` union includes
+  `anchor_failed` when a move succeeded but preserving its old id did not.
+  Regenerate discriminated unions on upgrades rather than assuming a closed set
+  copied from a previous release.
 - `data.version` (on the `envelope-schema` manifest itself) carries
   the producing nodex version. Use it for visible drift markers in
   generated file headers if your codegen tool supports them.
@@ -266,5 +274,5 @@ before any envelope hits the consumer, so the codegen-generated
 client never sees output it wasn't generated for.
 
 ```bash
-nodex --check-version ">=0.50, <0.51" query annotations ...
+nodex --check-version ">=0.51, <0.52" query annotations ...
 ```
