@@ -18511,7 +18511,7 @@ fn query_node_with_body_on_stale_graph_emits_io_error() {
         env["error"]["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("docs/a.md"),
+            .contains(&tmp.path().join("docs/a.md").display().to_string()),
         "read failure must identify the affected file: {env}"
     );
 }
