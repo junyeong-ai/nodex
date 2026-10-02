@@ -233,7 +233,9 @@ reviewer's machine.
   coverage). It is envelope metadata, not part of the generated command `data`
   model. A content-verified snapshot can still report unbuildable documents.
 - Batch payload `completion` is `planned | complete | partial`; inspect it and
-  optional `failures` even after exit 0. Rename's `id_stability` union includes
+  optional `failures`. Non-empty failures exit 2 while retaining `ok: true` and
+  the partial result; wrappers must read stdout on nonzero exits. Policy holds
+  alone exit 0. Rename's `id_stability` union includes
   `anchor_failed` when a move succeeded but preserving its old id did not.
   Regenerate discriminated unions on upgrades rather than assuming a closed set
   copied from a previous release.
@@ -274,5 +276,5 @@ before any envelope hits the consumer, so the codegen-generated
 client never sees output it wasn't generated for.
 
 ```bash
-nodex --check-version ">=0.51, <0.52" query annotations ...
+nodex --check-version ">=0.52, <0.53" query annotations ...
 ```

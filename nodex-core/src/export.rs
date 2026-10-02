@@ -728,7 +728,7 @@ pub fn export_diagnostics() -> DiagnosticsManifest {
         exit_codes: vec![
             ExitCodeEntry {
                 code: 0,
-                meaning: "success".to_string(),
+                meaning: "completed without a command error or batch write failure; policy holds and scope advisories may remain".to_string(),
             },
             ExitCodeEntry {
                 code: 1,
@@ -736,7 +736,7 @@ pub fn export_diagnostics() -> DiagnosticsManifest {
             },
             ExitCodeEntry {
                 code: 2,
-                meaning: "error envelope (config, parse, IO, version, CLI-arg, runtime), or \
+                meaning: "error envelope (config, parse, IO, version, CLI-arg, runtime), batch write failures in a result envelope, or \
                           output stdout would not take (a pipe closed early, a full disk)"
                     .to_string(),
             },

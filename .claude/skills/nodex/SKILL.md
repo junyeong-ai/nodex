@@ -15,7 +15,7 @@ description: >-
   body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.51.0
+  version: 0.52.0
 ---
 
 # nodex — markdown document graph CLI
@@ -33,7 +33,7 @@ Every command (bar clap's `--help` / `help` / `--version`) emits one of:
 
 Branch on `error.code` and `warnings[].code`, never on message text. `warnings` is always at envelope level, never inside `data`, and is omitted when empty. **An error envelope carries no `warnings`** — a failing command loses every advisory it had, so anything it must still tell you is in the `error.message`.
 
-Exit codes: `0` ok · `1` `check` found Error-severity violations · `2` every error envelope, and output stdout would not take (a pipe closed early).
+Exit codes: `0` ok · `1` `check` found Error-severity violations · `2` every error envelope, batch write failures with the result JSON retained, and output stdout would not take (a pipe closed early).
 
 List results use `{items, total}`. Listings count all matches and add `returned` when capped by `--limit`; selection queries (`trust --top/--bottom`, `similar`, `recent`) count the selected items.
 
@@ -115,7 +115,8 @@ untouched source, commits prepared destination bytes, then inbound references. A
 move leaves source content unchanged; a failed destination rewrite after moving reports
 `completion: partial` / `failures` and stops inbound rewrites. Batch commits can fail
 individually. Batch `completion` is `planned` (dry run), `complete` or `partial`;
-inspect warnings/failures even with exit 0 and recompute after a partial result.
+Non-empty `failures` exits 2 with `ok: true`; holds alone exit 0. Read stdout on
+nonzero exits, inspect warnings and recompute the plan before retrying.
 Scaffold candidates are comparisons, not duplication or supersession verdicts.
 
 Read these write advisories before continuing (details: `reference/commands.md`):

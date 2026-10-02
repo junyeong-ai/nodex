@@ -12,7 +12,7 @@ use nodex_core::parser::editor::{FrontmatterEditor, Scalar};
 use nodex_core::parser::frontmatter::{canonicalize, split_frontmatter};
 use nodex_core::parser::identity::{infer_id, infer_kind};
 
-use crate::format::emit_write;
+use crate::format::emit_batch_write;
 
 /// Args for `nodex rename`.
 #[derive(Args)]
@@ -23,7 +23,12 @@ pub struct RenameArgs {
     pub new: String,
 }
 
-pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Result<()> {
+pub fn run(
+    root: &Path,
+    args: RenameArgs,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<std::process::ExitCode> {
     let config = nodex_core::load_project_for_mutation(root)?;
 
     // The one canonical normalization every user-supplied document path
@@ -498,9 +503,13 @@ pub fn run(root: &Path, args: RenameArgs, pretty: bool, today: NaiveDate) -> Res
         id_stability: stability,
     };
 
-    emit_write(data, warnings, &probe, pretty);
-
-    Ok(())
+    Ok(emit_batch_write(
+        &data,
+        &data.failures,
+        warnings,
+        &probe,
+        pretty,
+    ))
 }
 
 /// Move unchanged source bytes before committing a prepared destination rewrite.

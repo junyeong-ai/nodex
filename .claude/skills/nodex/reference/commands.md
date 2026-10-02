@@ -195,7 +195,8 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 `planned` is migrate's dry run. `partial` means a requested edit was held or failed;
 inspect warnings and `failures` before continuing. A no-op may be complete.
 Completion answers for the configured, readable corpus; scope warnings still matter.
-`ok` and exit 0 mean the command returned a result, not that every edit landed.
+Actual write failures retain the `ok: true` result and exit 2. Policy holds alone
+exit 0. Read stdout even on nonzero exits; already-written files remain changed.
 
 ## rename / retarget
 

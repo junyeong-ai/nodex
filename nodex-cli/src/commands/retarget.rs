@@ -6,7 +6,7 @@ use std::path::Path;
 use nodex_core::command_result::RetargetResult;
 use nodex_core::error::Error as CoreError;
 
-use crate::format::emit_write;
+use crate::format::emit_batch_write;
 
 /// Args for `nodex retarget`.
 #[derive(Args)]
@@ -35,7 +35,12 @@ fn self_edge_sites(held: &nodex_core::retarget::SelfEdges) -> String {
     sites.join("; ")
 }
 
-pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> Result<()> {
+pub fn run(
+    root: &Path,
+    args: RetargetArgs,
+    pretty: bool,
+    today: NaiveDate,
+) -> Result<std::process::ExitCode> {
     if args.old_id == args.new_id {
         return Err(CoreError::Config(
             "old-id and new-id are the same; nothing to retarget".into(),
@@ -206,12 +211,8 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         return Err(refusal.into());
     }
 
-    // A repoint is one edit across several files, and the gate judged it
-    // whole, so it lands whole: every write is staged first — where an
-    // unwritable directory or a full disk fails while the tree is still
-    // untouched and every staged write is dropped — and only then committed.
-    // Unlike `rename` there is no irreversible step to strand, so a staging
-    // failure refuses the command outright.
+    // Stage every write before committing any file. A staging failure leaves
+    // the tree untouched; a later commit failure preserves the partial result.
     let mut staged = Vec::new();
     for plan in &writable {
         staged.push((
@@ -263,7 +264,11 @@ pub fn run(root: &Path, args: RetargetArgs, pretty: bool, today: NaiveDate) -> R
         kept.into_iter()
             .map(|w| nodex_core::Warning::new(nodex_core::WarningCode::ReferenceKept, w)),
     );
-    emit_write(data, warnings, &probe, pretty);
-
-    Ok(())
+    Ok(emit_batch_write(
+        &data,
+        &data.failures,
+        warnings,
+        &probe,
+        pretty,
+    ))
 }

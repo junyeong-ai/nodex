@@ -498,9 +498,9 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 
 | Code | Meaning |
 |---|---|
-| `0` | Success |
+| `0` | Completed without a command error or batch write failure; policy holds and scope advisories may remain |
 | `1` | `nodex check` found `severity = error` violations |
-| `2` | Runtime failure — anything that produced an error envelope, or output stdout would not take (a pipe closed early, a full disk) |
+| `2` | Error envelope, actual batch write failures with the result envelope retained, or output stdout would not take (a pipe closed early, a full disk) |
 
 ### Global Flags
 
@@ -590,7 +590,8 @@ A `warnings[]` entry is advisory: the command succeeded, and its `code` says wha
 Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
 
 Batch writes report `completion: planned | complete | partial`. A partial result
-requires inspecting holds and failures even when `ok` is true and the exit is 0.
+with actual write failures keeps its result JSON and exits 2. Policy holds alone
+exit 0; inspect holds and scope warnings before continuing.
 Completion describes edits over the configured readable corpus; scope warnings
 still matter. A no-op can be complete.
 
@@ -600,6 +601,8 @@ moving, inbound references stay unchanged and the result reports `partial` and
 `failures`; `id_stability.type: anchor_failed` names the id it could not preserve.
 Inspect the moved file before retrying. The move and file rewrites are not a filesystem
 transaction and have no automatic rollback.
+
+> **Upgrading to 0.52.0:** `migrate`, `rename` and `retarget` exit 2 when `data.failures` is non-empty, retaining the `ok: true` partial-result envelope. Process wrappers must read stdout on nonzero exits; already-written files are not rolled back. Policy holds alone still exit 0.
 
 > **Upgrading to 0.51.0:** regenerate rename response types for `id_stability: anchor_failed`. A move whose destination rewrite fails reports `completion: partial` and stops inbound-reference edits.
 
@@ -718,7 +721,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.51, <0.52"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.52, <0.53"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -1115,7 +1118,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.51, <0.52" build
+nodex --check-version ">=0.52, <0.53" build
 ```
 
 ---
