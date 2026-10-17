@@ -17,9 +17,10 @@ pub(crate) fn run_orphans(
     }
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::detect::find_orphans(graph, &config, today).entries;
+    let outcome = nodex_core::query::detect::find_orphans(graph, &config, today);
     context.emit_read_with(
-        ItemsEnvelope::capped(items, limit),
+        ItemsEnvelope::capped(outcome.entries, limit)
+            .with_coverage(outcome.subjects, outcome.unjudged),
         warnings,
         &config,
         pretty,
@@ -39,8 +40,8 @@ pub(crate) fn run_stale(
     }
     let snapshot = context.load_graph(&config)?;
     let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = match nodex_core::query::detect::find_stale(graph, &config, today) {
-        Some(outcome) => outcome.entries,
+    let outcome = match nodex_core::query::detect::find_stale(graph, &config, today) {
+        Some(outcome) => outcome,
         None => {
             warnings.push(nodex_core::Warning::new(
                 nodex_core::WarningCode::ThresholdUndeclared,
@@ -48,11 +49,12 @@ pub(crate) fn run_stale(
                  was measured; set it to list the documents whose `reviewed` date is that many \
                  days old",
             ));
-            Vec::new()
+            nodex_core::query::DetectionOutcome::inert()
         }
     };
     context.emit_read_with(
-        ItemsEnvelope::capped(items, limit),
+        ItemsEnvelope::capped(outcome.entries, limit)
+            .with_coverage(outcome.subjects, outcome.unjudged),
         warnings,
         &config,
         pretty,

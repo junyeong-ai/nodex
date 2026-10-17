@@ -27,7 +27,7 @@ pub struct CacheEntry {
 /// error), so a cache written by a binary with a different entry shape
 /// can never deserialize leniently into defaulted fields and serve
 /// stale nodes.
-const CACHE_SCHEMA_VERSION: u32 = 4;
+const CACHE_SCHEMA_VERSION: u32 = 5;
 
 /// Incremental build cache. Maps relative path → CacheEntry.
 ///

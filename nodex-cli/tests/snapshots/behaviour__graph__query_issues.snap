@@ -84,11 +84,17 @@ exit: 0
         "rule_id": "stale_review",
         "subjects": 6,
         "unit": "nodes",
-        "unjudged": 0
+        "unjudged": 1
       },
       {
         "rule_id": "superseded_reference",
         "subjects": 4,
+        "unit": "edges",
+        "unjudged": 0
+      },
+      {
+        "rule_id": "unresolved_reference",
+        "subjects": 2,
         "unit": "edges",
         "unjudged": 0
       }
@@ -126,10 +132,10 @@ exit: 0
     "summary": {
       "by_category": {
         "excluded_target": 1,
-        "unresolved_edge": 1,
         "violation_orphan": 3,
         "violation_required_field": 1,
-        "violation_stale_review": 3
+        "violation_stale_review": 3,
+        "violation_unresolved_reference": 1
       },
       "total": 8
     },
@@ -141,8 +147,12 @@ exit: 0
         "reason": "nothing in scope resolves this target",
         "relation": "references",
         "severity": "warning",
+        "sought": [
+          "docs/does-not-exist.md"
+        ],
         "source": "adr-gamma",
-        "source_path": "docs/decisions/gamma.md"
+        "source_path": "docs/decisions/gamma.md",
+        "syntax": "markdown"
       },
       {
         "cause": "excluded_from_scope",
@@ -152,8 +162,13 @@ exit: 0
         "reason": "target exists on disk but is excluded from scope",
         "relation": "covers",
         "severity": "info",
+        "sought": [
+          "nodex.toml",
+          "docs/nodex.toml"
+        ],
         "source": "guide-index",
-        "source_path": "docs/index.md"
+        "source_path": "docs/index.md",
+        "syntax": "frontmatter"
       }
     ],
     "violations": [
@@ -233,6 +248,20 @@ exit: 0
         "path": "docs/runbooks/deploy.md",
         "rule_id": "stale_review",
         "severity": "warning"
+      },
+      {
+        "details": {
+          "cause": "missing",
+          "location": "L5",
+          "raw_target": "../does-not-exist.md",
+          "relation": "references",
+          "type": "unresolved_reference"
+        },
+        "message": "references reference \"../does-not-exist.md\" (L5) does not resolve: nothing in scope resolves this target",
+        "node_id": "adr-gamma",
+        "path": "docs/decisions/gamma.md",
+        "rule_id": "unresolved_reference",
+        "severity": "warning"
       }
     ]
   },
@@ -240,6 +269,6 @@ exit: 0
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

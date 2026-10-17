@@ -68,11 +68,17 @@ exit: 0
         "rule_id": "stale_review",
         "subjects": 2,
         "unit": "nodes",
-        "unjudged": 0
+        "unjudged": 1
       },
       {
         "rule_id": "superseded_reference",
         "subjects": 2,
+        "unit": "edges",
+        "unjudged": 0
+      },
+      {
+        "rule_id": "unresolved_reference",
+        "subjects": 1,
         "unit": "edges",
         "unjudged": 0
       }
@@ -95,8 +101,13 @@ exit: 0
         "reason": "target exists on disk but is excluded from scope",
         "relation": "covers",
         "severity": "info",
+        "sought": [
+          "nodex.toml",
+          "docs/nodex.toml"
+        ],
         "source": "guide-overview",
-        "source_path": "docs/overview.md"
+        "source_path": "docs/overview.md",
+        "syntax": "frontmatter"
       }
     ],
     "violations": [
@@ -116,6 +127,6 @@ exit: 0
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

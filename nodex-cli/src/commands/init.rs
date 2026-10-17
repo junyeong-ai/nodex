@@ -69,7 +69,7 @@ terminal = ["superseded", "archived", "deprecated", "abandoned"]
 # ID template rules
 [[identity.id_rules]]
 kind = "*"
-template = "{kind}-{stem}"
+template = "{kind}-{path_slug}"
 
 [scaffold.paths]
 generic = "{stem}.md"
@@ -81,7 +81,7 @@ generic = "{stem}.md"
 [schema]
 # Fields every document must author. id / title / kind / status / orphan_ok
 # are resolved by the parser for every document (identity rules, H1 fallback,
-# the [statuses.flow] initial of a governed kind, else statuses.initial) —
+# the [[statuses.flow]] initial of a governed kind, else statuses.initial) —
 # listing them here is rejected at load.
 # required = ["created", "owner"]
 #
@@ -131,6 +131,7 @@ cross_field = [
 # forbidden = ["covers"]         # a decision record does not describe live code
 
 [rules]
+severity = { unresolved_reference = "error" }
 # Ref that `nodex check` diffs against when `--since` is omitted, so the
 # diff-aware immutability rules below are enforced by default (against
 # the last commit) instead of only when a ref is passed. Set to a branch

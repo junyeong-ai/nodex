@@ -460,7 +460,7 @@ pub struct StatusesConfig {
     /// it — `statuses.terminal` stays the only statement nodex has about
     /// how a lifecycle ends, and no transition is judged.
     #[serde(default)]
-    pub flow: Option<StatusFlowConfig>,
+    pub flow: Vec<StatusFlowConfig>,
 }
 
 /// One declared lifecycle: which statuses follow which, over the kinds
@@ -509,7 +509,7 @@ impl Default for StatusesConfig {
             allowed: default_statuses(),
             terminal: default_terminal(),
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         }
     }
 }
@@ -703,6 +703,9 @@ pub struct CrossFieldSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesConfig {
+    /// Project severity for registered rules; unresolved policy rows own their own severity.
+    #[serde(default)]
+    pub severity: BTreeMap<String, crate::rules::Severity>,
     #[serde(default)]
     pub naming: Vec<NamingRuleConfig>,
     /// Lock declared frontmatter fields against further edits once a
@@ -754,6 +757,7 @@ pub struct RulesConfig {
 impl Default for RulesConfig {
     fn default() -> Self {
         Self {
+            severity: BTreeMap::new(),
             naming: Vec::new(),
             frontmatter_immutable: Vec::new(),
             body_immutable: Vec::new(),
@@ -1197,7 +1201,7 @@ impl Default for DetectionConfig {
 pub struct UnresolvedPolicyRuleConfig {
     /// Stable identifier. Keys the `summary.by_category` bucket (info
     /// rows), the violation `rule_id` (`unresolved_reference/<name>`,
-    /// error rows), and the per-edge `policy_name` attribution. Must
+    /// non-info rows), and the per-edge `policy_name` attribution. Must
     /// be unique across rows and must not collide with a reserved
     /// summary category.
     pub name: String,

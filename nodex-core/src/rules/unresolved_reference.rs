@@ -1,20 +1,6 @@
-//! Gate-plane unresolved references.
-//!
-//! One [`UnresolvedReferenceRule`] instance per error-severity
-//! `[[detection.unresolved_policy]]` row. Each instance fires one
-//! Error violation per unresolved edge the policy classifies to its
-//! row, attributed to the edge's source node — so the violations
-//! narrow correctly under `--since` / `--content` and `query issues`
-//! counts them per row (`violation_unresolved_reference/<name>`).
-//!
-//! Classification performs stat-only filesystem probes under
-//! `ctx.root` (the cause classifier's disk probe — the same in-root
-//! access class as `git_drift`), never content reads. The probes run
-//! once per registry: every error-row instance created by one
-//! `registered_rules` pass shares one [`SharedClassification`] cell,
-//! filled on first check against that pass's context — `rules::check`
-//! builds a fresh registry per pass, so the cell can never carry a
-//! stale graph's classification.
+//! Policy-classified unresolved references, shared by checks and issue listings.
+//! Non-info rows and the unmatched fallback each register one rule. Classification
+//! uses stat-only probes and is shared once within a registry evaluation.
 
 use std::sync::{Arc, OnceLock};
 
@@ -28,26 +14,33 @@ use super::{
     detail::Evidence,
 };
 
-/// The unresolved-edge classification shared by every error-row rule
+/// The unresolved-edge classification shared by every unresolved-reference rule
 /// instance in one registry, computed once on first check.
 pub type SharedClassification = Arc<OnceLock<Vec<UnresolvedEdge>>>;
 
-/// One error-severity `[[detection.unresolved_policy]]` row as a
-/// `Rule` trait object.
+/// One non-info policy row or the unmatched fallback as a rule.
 pub struct UnresolvedReferenceRule {
-    row: UnresolvedPolicyRuleConfig,
+    row: Option<UnresolvedPolicyRuleConfig>,
     qualified_id: String,
     classified: SharedClassification,
 }
 
 impl UnresolvedReferenceRule {
+    pub fn fallback(classified: SharedClassification) -> Self {
+        Self {
+            row: None,
+            qualified_id: "unresolved_reference".into(),
+            classified,
+        }
+    }
+
     /// Construct a rule instance for one policy row. `qualified_id`
     /// is cached so [`Rule::id`] can return `&str` without allocating
     /// every call; `classified` is the registry-wide shared cell.
     pub fn new(row: UnresolvedPolicyRuleConfig, classified: SharedClassification) -> Self {
         let qualified_id = format!("unresolved_reference/{}", row.name);
         Self {
-            row,
+            row: Some(row),
             qualified_id,
             classified,
         }
@@ -60,16 +53,22 @@ impl Rule for UnresolvedReferenceRule {
     }
 
     fn severity(&self) -> Severity {
-        Severity::Error
+        match self.row.as_ref().map(|row| row.severity) {
+            Some(crate::config::UnresolvedSeverity::Error) => Severity::Error,
+            _ => Severity::Warning,
+        }
     }
 
     fn description(&self) -> &str {
-        "Unresolved references this [[detection.unresolved_policy]] error row classifies \
-         fail check"
+        "Unresolved references classified by this policy rule"
     }
 
     fn source(&self) -> RuleSource {
-        RuleSource::Config
+        if self.row.is_some() {
+            RuleSource::Config
+        } else {
+            RuleSource::Builtin
+        }
     }
 
     fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
@@ -79,9 +78,11 @@ impl Rule for UnresolvedReferenceRule {
         // row over every relation and a `null` glob one over every
         // target.
         let mut m = Map::new();
-        m.insert("cause".into(), json!(self.row.cause));
-        m.insert("relations".into(), json!(self.row.relations));
-        m.insert("glob".into(), json!(self.row.glob));
+        if let Some(row) = &self.row {
+            m.insert("cause".into(), json!(row.cause));
+            m.insert("relations".into(), json!(row.relations));
+            m.insert("glob".into(), json!(row.glob));
+        }
         m
     }
 
@@ -95,14 +96,14 @@ impl Rule for UnresolvedReferenceRule {
             .get_or_init(|| find_unresolved_edges(ctx.graph, ctx.config, ctx.files));
         // Row names are unique (Config::validate), so an edge whose
         // `policy_name` equals this row's name was classified by this
-        // row — and this instance exists only for error rows.
+        // row. The fallback matches edges without a policy name.
         let violations: Vec<Violation> = edges
             .iter()
-            .filter(|e| e.policy_name.as_deref() == Some(self.row.name.as_str()))
+            .filter(|e| e.policy_name.as_deref() == self.row.as_ref().map(|row| row.name.as_str()))
             .map(|e| {
                 Violation::new(
                     self.qualified_id.clone(),
-                    Severity::Error,
+                    self.configured_severity(ctx.config),
                     Some(e.source.clone()),
                     Some(e.source_path.clone()),
                     ViolationDetails::UnresolvedReference {
@@ -162,6 +163,7 @@ mod tests {
 
     fn dangling(source: &str, raw: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.to_string(),
             target: ResolvedTarget::unresolved(raw, UnresolvedCause::Missing),
             relation: "references".to_string(),

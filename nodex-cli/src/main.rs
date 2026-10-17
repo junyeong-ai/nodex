@@ -71,9 +71,9 @@ enum Command {
     Impact(ImpactArgs),
     /// Search and explore the graph
     Query {
-        /// Require snapshot configuration, scope and content to match the working tree.
+        /// Read the indexed snapshot without verifying document content.
         #[arg(long, global = true)]
-        require_current: bool,
+        allow_stale: bool,
         #[command(subcommand)]
         sub: QueryCommand,
     },
@@ -191,10 +191,9 @@ fn main() -> std::process::ExitCode {
             Command::Status => commands::status::run(&root, pretty),
             Command::Diff(args) => commands::diff::run(&root, args, pretty),
             Command::Impact(args) => commands::impact::run(&root, args, pretty),
-            Command::Query {
-                sub,
-                require_current,
-            } => commands::query::run(&root, sub, require_current, pretty, today),
+            Command::Query { sub, allow_stale } => {
+                commands::query::run(&root, sub, !allow_stale, pretty, today)
+            }
             Command::Check(args) => commands::check::run(&root, args, pretty, today),
             Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
             Command::Report(args) => commands::report::run(&root, args, pretty, today),

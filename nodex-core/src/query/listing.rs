@@ -59,6 +59,7 @@ pub struct NodeFilter {
     /// `cross_field` refuses equals/in on one at load — equality on a
     /// collection compares against a comma-joined string.
     pub field_equals: Vec<(String, String)>,
+    pub missing_fields: Vec<String>,
 }
 
 impl NodeFilter {
@@ -77,6 +78,17 @@ impl NodeFilter {
             if !crate::rules::schema::predicate_matches_node(&predicate, node) {
                 return false;
             }
+        }
+        for field in &self.missing_fields {
+            if crate::rules::schema::predicate_matches_node(
+                &crate::config::WhenPredicate::NotExists {
+                    field: field.clone(),
+                },
+                node,
+            ) {
+                continue;
+            }
+            return false;
         }
         if !self.tags.is_empty() {
             // Case-insensitive tag comparison: tags authored as

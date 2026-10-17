@@ -718,6 +718,15 @@ impl Planned {
         }
     }
 
+    pub(crate) fn replacing(rel_path: PathBuf, content: String, revision: String) -> Self {
+        Self {
+            rel_path,
+            content,
+            source: Source::Composed,
+            revision: Some(revision),
+        }
+    }
+
     /// This plan as the proposal entry the gate judges.
     pub fn proposed(&self) -> (PathBuf, Proposed) {
         (
@@ -1484,7 +1493,7 @@ pub fn evicted(
 fn gate_rules(config: &Config) -> Vec<Box<dyn crate::rules::Rule>> {
     crate::rules::registered_rules(config)
         .into_iter()
-        .filter(|rule| rule.severity() == crate::rules::Severity::Error)
+        .filter(|rule| rule.configured_severity(config) == crate::rules::Severity::Error)
         .collect()
 }
 

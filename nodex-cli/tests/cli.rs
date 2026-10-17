@@ -680,7 +680,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         assert_eq!(keys(envelope), ["ok", "data", "snapshot"].into());
         assert_eq!(
             envelope["snapshot"],
-            json!({"verification": "membership", "unbuildable": 0, "unfollowed": 0})
+            json!({"verification": "content", "unbuildable": 0, "unfollowed": 0})
         );
         &envelope["data"]
     }
@@ -772,7 +772,9 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     assert_eq!(keys(backlinks), ["items", "total"].into());
     assert_eq!(
         each(&backlinks["items"], &["id", "relation", "location"]),
-        [json!({ "id": "guide-api-setup", "relation": "references", "location": "L2" })]
+        [
+            json!({ "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L2" })
+        ]
     );
     assert_eq!(backlinks["total"], 1);
 
@@ -793,7 +795,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         check["violations"],
         json!([{
             "rule_id": "orphan", "severity": "warning",
-            "node_id": "guide-api-setup", "path": "docs/guides/api-setup.md",
+            "node_id": "guide-docs-guides-api-setup", "path": "docs/guides/api-setup.md",
             "message": ORPHAN,
             "details": { "type": "orphan" }
         }])
@@ -887,13 +889,16 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
         &format!("{GUIDE}See [the missing decision](../decisions/0009-missing.md).\n"),
     );
     nodex(root).arg("build").assert().success();
+    let unresolved = run_json(nodex(root).arg("check"));
     assert_eq!(
-        run_json(nodex(root).arg("check"))["violations"],
-        check["violations"],
-        "a broken link is no check finding under the default policy"
+        unresolved["violations"].as_array().unwrap().len(),
+        check["violations"].as_array().unwrap().len() + 1
     );
     let issues = run_json(nodex(root).args(["query", "issues"]));
-    assert_eq!(issues["summary"]["by_category"]["unresolved_edge"], 1);
+    assert_eq!(
+        issues["summary"]["by_category"]["violation_unresolved_reference"],
+        1
+    );
     write_doc(
         root,
         "nodex.toml",
@@ -915,8 +920,8 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
             &["rule_id", "severity", "node_id"]
         ),
         [
-            json!({ "rule_id": "orphan", "severity": "warning", "node_id": "guide-api-setup" }),
-            json!({ "rule_id": "unresolved_reference/broken", "severity": "error", "node_id": "guide-api-setup" })
+            json!({ "rule_id": "orphan", "severity": "warning", "node_id": "guide-docs-guides-api-setup" }),
+            json!({ "rule_id": "unresolved_reference/broken", "severity": "error", "node_id": "guide-docs-guides-api-setup" })
         ]
     );
 
@@ -1958,8 +1963,8 @@ fn superseding_a_cited_document_reports_each_live_citation() {
     run_envelope(nodex(root).args(["retarget", "old", "new"]));
     assert_eq!(
         stale_citations(),
-        ["references"].map(String::from).into(),
-        "retarget moved the id reference; the path link is the author's to repoint"
+        std::collections::BTreeSet::new(),
+        "retarget carries both id and path references to the successor"
     );
 }
 
@@ -2882,7 +2887,7 @@ orphan_ok_kinds = ["generic"]
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [gone](docs/missing.md) and [excluded](specs/x/sub.md).\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [gone](missing.md) and [excluded](../specs/x/sub.md).\n",
     );
     write_doc(
         tmp.path(),
@@ -2912,13 +2917,13 @@ orphan_ok_kinds = ["generic"]
         })
         .collect();
     assert_eq!(
-        by_target.get("docs/missing.md").copied(),
+        by_target.get("missing.md").copied(),
         Some(("missing", "warning", None)),
         "truly absent target must be `missing` — the unattributed warning fallthrough; \
          got {by_target:?}"
     );
     assert_eq!(
-        by_target.get("specs/x/sub.md").copied(),
+        by_target.get("../specs/x/sub.md").copied(),
         Some(("excluded_from_scope", "info", Some("excluded_target"))),
         "on-disk-but-excluded target must be `excluded_from_scope`, classified info by the \
          default excluded_target policy row; got {by_target:?}"
@@ -2930,7 +2935,9 @@ orphan_ok_kinds = ["generic"]
     let summary = data.get("summary").expect("summary");
     let by_category = summary.get("by_category").expect("by_category");
     assert_eq!(
-        by_category.get("unresolved_edge").and_then(Value::as_u64),
+        by_category
+            .get("violation_unresolved_reference")
+            .and_then(Value::as_u64),
         Some(1),
         "only the missing link is a broken edge: {summary}"
     );
@@ -3037,7 +3044,7 @@ severity = "info"
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [spec](specs/x.md) and [gone](docs/missing.md).\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n\nSee [spec](../specs/x.md) and [gone](missing.md).\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
 
@@ -3056,12 +3063,12 @@ severity = "info"
         })
         .collect();
     assert_eq!(
-        by_target.get("specs/x.md").copied(),
+        by_target.get("../specs/x.md").copied(),
         Some(("info", Some("ephemeral-specs"))),
         "the declared info row classifies the specs link: {by_target:?}"
     );
     assert_eq!(
-        by_target.get("docs/missing.md").copied(),
+        by_target.get("missing.md").copied(),
         Some(("warning", None)),
         "the unmatched docs link takes the warning fallthrough: {by_target:?}"
     );
@@ -3074,7 +3081,9 @@ severity = "info"
         "info edges count under their row's name: {summary}"
     );
     assert_eq!(
-        by_category.get("unresolved_edge").and_then(Value::as_u64),
+        by_category
+            .get("violation_unresolved_reference")
+            .and_then(Value::as_u64),
         Some(1),
         "only the fallthrough edge is a counted broken edge: {summary}"
     );
@@ -5535,7 +5544,7 @@ fn a_placeholder_scaffold_advises_about_itself_and_refuses_the_rest() {
     // Overwriting under the inferred id would strand `docs/ref.md`.
     let output = nodex(root)
         .args(["scaffold", "--kind", "generic", "--title", "Target"])
-        .args(["--path", "docs/target.md", "--force"])
+        .args(["--path", "docs/target.md", "--force", "--id", "replacement"])
         .output()
         .expect("ran");
     assert_eq!(output.status.code(), Some(2));
@@ -7121,7 +7130,7 @@ fn a_repoint_says_the_frame_out_loud_where_the_plain_spelling_is_taken() {
     assert!(
         fs::read_to_string(root.join("a/ref.md"))
             .unwrap()
-            .contains("[x](./u.md)"),
+            .contains("[x](u.md)"),
         "spelled so nothing can take it"
     );
     nodex(root).arg("build").assert().success();
@@ -7175,7 +7184,7 @@ fn a_newcomer_at_the_root_does_not_take_a_reference_that_says_its_frame() {
     assert!(
         fs::read_to_string(root.join("a/ref.md"))
             .unwrap()
-            .contains("[target](./x.md)"),
+            .contains("[target](x.md)"),
         "spelled so nothing can take it"
     );
     nodex(root).arg("build").assert().success();
@@ -7458,7 +7467,7 @@ fn a_repoint_says_a_wikilink_frame_in_the_vocabulary_wikilinks_have() {
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
     let body = fs::read_to_string(root.join("a/ref.md")).unwrap();
     assert!(
-        body.contains("[[a/x]]") && body.contains("[x](./x.md)"),
+        body.contains("[[a/x]]") && body.contains("[x](x.md)"),
         "each form says its frame in its own words: {body}"
     );
     nodex(root).arg("build").assert().success();
@@ -9851,7 +9860,7 @@ fn a_working_tree_that_cannot_be_read_is_not_a_stale_snapshot() {
         .map(str::to_owned);
 
     let miss = nodex(project)
-        .args(["query", "node", "no-such-id"])
+        .args(["query", "--allow-stale", "node", "no-such-id"])
         .output()
         .expect("ran");
     let miss_envelope: Value =
@@ -9863,11 +9872,11 @@ fn a_working_tree_that_cannot_be_read_is_not_a_stale_snapshot() {
 
     // A read the snapshot can answer is still answered — the unreadable path
     // is an advisory there, never a gate.
-    let hit = run_envelope(nodex(project).args(["query", "node", "generic-a"]));
+    let hit = run_envelope(nodex(project).args(["query", "--allow-stale", "node", "generic-a"]));
 
     restore(&sub);
     let repaired = nodex(project)
-        .args(["query", "node", "no-such-id"])
+        .args(["query", "--allow-stale", "node", "no-such-id"])
         .output()
         .expect("ran");
     let repaired_envelope: Value =
@@ -9905,7 +9914,7 @@ fn a_missed_lookup_preserves_file_read_errors_before_and_after_rebuilding() {
     let permissions = fs::metadata(&path).unwrap().permissions();
     let miss = || {
         let output = nodex(root)
-            .args(["query", "node", "missing"])
+            .args(["query", "--allow-stale", "node", "missing"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -9913,7 +9922,7 @@ fn a_missed_lookup_preserves_file_read_errors_before_and_after_rebuilding() {
     };
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
     let before = miss();
-    let hit = run_envelope(nodex(root).args(["query", "node", "a"]));
+    let hit = run_envelope(nodex(root).args(["query", "--allow-stale", "node", "a"]));
     let status = run_json(nodex(root).arg("status"));
     nodex(root).arg("build").assert().success();
     let after = miss();
@@ -13589,6 +13598,13 @@ fn rename_rewriter_does_not_follow_symlinks() {
     let tmp = scratch();
     let outside = scratch();
     init_project(tmp.path());
+    let config = fs::read_to_string(tmp.path().join("nodex.toml"))
+        .unwrap()
+        .replace(
+            "unresolved_reference = \"error\"",
+            "unresolved_reference = \"warning\"",
+        );
+    fs::write(tmp.path().join("nodex.toml"), config).unwrap();
     write_doc(
         tmp.path(),
         "a.md",
@@ -14329,8 +14345,8 @@ fn retarget_counts_every_body_form_the_successor_keeps() {
         .unwrap_or_else(|| panic!("the successor's kept references are named: {warnings:?}"));
     assert!(named.contains("frontmatter `related`"), "{named}");
     assert!(
-        named.contains("3 body references"),
-        "wikilink, capture and code-span citation all count — a destination does not: {named}"
+        named.contains("4 body references"),
+        "all authored reference forms count: {named}"
     );
     assert!(!named.contains("supersedes"), "{named}");
     assert!(
@@ -14550,10 +14566,7 @@ fn rename_repoints_link_in_file_evicted_from_scope_by_the_move() {
 
 #[test]
 fn rename_does_not_repoint_link_bound_to_a_different_file() {
-    // End-to-end resolver-disagreement regression: s.md's
-    // `[x](shared.md)` binds the ROOT shared.md (literal-first).
-    // Renaming docs/sub/shared.md must leave it untouched and the
-    // root file's backlink intact.
+    // A root namesake never changes the meaning of a source-relative link.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -14572,20 +14585,20 @@ fn rename_does_not_repoint_link_bound_to_a_different_file() {
     nodex(tmp.path()).arg("build").assert().success();
 
     nodex(tmp.path())
-        .args(["rename", "docs/sub/shared.md", "docs/sub/renamed.md"])
+        .args(["rename", "shared.md", "renamed.md"])
         .assert()
         .success();
     assert_eq!(
         fs::read_to_string(tmp.path().join("docs/sub/s.md")).unwrap(),
         s_content,
-        "link bound to the root file must survive byte-identical"
+        "link bound to the local file must survive byte-identical"
     );
     nodex(tmp.path()).arg("build").assert().success();
-    let backlinks = run_json(nodex(tmp.path()).args(["query", "backlinks", "shared-root"]));
+    let backlinks = run_json(nodex(tmp.path()).args(["query", "backlinks", "shared-sub"]));
     assert_eq!(
         backlinks["total"].as_u64(),
         Some(1),
-        "the root file's incoming edge must survive the rename: {backlinks}"
+        "the local file's incoming edge must survive the rename: {backlinks}"
     );
 }
 
@@ -14724,7 +14737,7 @@ fn rename_rewrites_markdown_links_but_not_prose() {
         "---\nid: a\ntitle: A\nkind: generic\nstatus: active\n---\n\
          # A\n\
          Prose mention of docs/b.md must survive verbatim.\n\
-         But this [link](docs/b.md) and [anchored](docs/b.md#section) must update.\n",
+         But this [link](b.md) and [anchored](b.md#section) must update.\n",
     );
     write_doc(
         tmp.path(),
@@ -14743,9 +14756,9 @@ fn rename_rewrites_markdown_links_but_not_prose() {
         "prose was corrupted: {content}"
     );
     // Both markdown links MUST be rewritten, preserving anchor.
-    assert!(content.contains("[link](docs/c.md)"), "link not updated");
+    assert!(content.contains("[link](c.md)"), "link not updated");
     assert!(
-        content.contains("[anchored](docs/c.md#section)"),
+        content.contains("[anchored](c.md#section)"),
         "anchored link not updated"
     );
 }
@@ -14770,13 +14783,13 @@ fn rename_skips_a_broken_referencing_file_without_stranding_the_batch() {
         tmp.path(),
         "docs/healthy.md",
         "---\nid: healthy\ntitle: Healthy\nkind: generic\nstatus: active\n---\n\
-         # Healthy\n\nSee [target](docs/target.md).\n",
+         # Healthy\n\nSee [target](target.md).\n",
     );
     // Opened fence, never closed — unsplittable.
     write_doc(
         tmp.path(),
         "docs/broken.md",
-        "---\nid: broken\ntitle: Broken\nSee [target](docs/target.md).\n",
+        "---\nid: broken\ntitle: Broken\nSee [target](target.md).\n",
     );
     nodex(tmp.path()).arg("build").assert().success();
 
@@ -14788,12 +14801,12 @@ fn rename_skips_a_broken_referencing_file_without_stranding_the_batch() {
     );
     let healthy = fs::read_to_string(tmp.path().join("docs/healthy.md")).unwrap();
     assert!(
-        healthy.contains("docs/moved.md"),
+        healthy.contains("moved.md"),
         "the parseable referencing file is rewritten: {healthy}"
     );
     let broken = fs::read_to_string(tmp.path().join("docs/broken.md")).unwrap();
     assert!(
-        broken.contains("docs/target.md"),
+        broken.contains("target.md"),
         "the broken file is left untouched: {broken}"
     );
     let warnings = envelope
@@ -14829,7 +14842,7 @@ fn scaffold_rejects_path_traversal() {
 }
 
 #[test]
-fn rename_rewrites_both_root_and_file_relative_links() {
+fn rename_rewrites_sibling_and_parent_relative_links() {
     let tmp = scratch();
     init_project(tmp.path());
     // Link written **file-relative** from sibling inside same dir.
@@ -14838,11 +14851,11 @@ fn rename_rewrites_both_root_and_file_relative_links() {
         "docs/sibling.md",
         "---\nid: s\ntitle: S\nkind: generic\nstatus: active\n---\n# S\n[x](first.md)\n",
     );
-    // Link written **root-relative** from a different dir.
+    // A link crosses from notes into docs through their common parent.
     write_doc(
         tmp.path(),
         "notes/n.md",
-        "---\nid: n\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n[y](docs/first.md)\n",
+        "---\nid: n\ntitle: N\nkind: generic\nstatus: active\n---\n# N\n[y](../docs/first.md)\n",
     );
     write_doc(
         tmp.path(),
@@ -14861,7 +14874,7 @@ fn rename_rewrites_both_root_and_file_relative_links() {
     );
     let note = fs::read_to_string(tmp.path().join("notes/n.md")).unwrap();
     assert!(
-        note.contains("[y](docs/new.md)"),
+        note.contains("[y](../docs/new.md)"),
         "root-relative link should stay root-relative: {note}"
     );
 }
@@ -16104,7 +16117,7 @@ fn query_components_partitions_disconnected_subgraphs() {
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n[b](docs/b.md)\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n[b](b.md)\n",
     );
     write_doc(
         tmp.path(),
@@ -16131,12 +16144,12 @@ fn query_neighborhood_expands_by_depth() {
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n[b](docs/b.md)\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n[b](b.md)\n",
     );
     write_doc(
         tmp.path(),
         "docs/b.md",
-        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n[c](docs/c.md)\n",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\n---\n[c](c.md)\n",
     );
     write_doc(
         tmp.path(),
@@ -18690,7 +18703,7 @@ fn query_node_with_body_on_stale_graph_emits_io_error() {
     fs::remove_file(tmp.path().join("docs/a.md")).unwrap();
 
     let output = nodex(tmp.path())
-        .args(["query", "node", "doc-a", "--with-body"])
+        .args(["query", "--allow-stale", "node", "doc-a", "--with-body"])
         .output()
         .expect("ran");
     assert!(!output.status.success());
@@ -19780,14 +19793,14 @@ fn scaffold_malformed_field_pair_rejected_by_clap() {
 #[test]
 fn scaffold_field_supersedes_cycle_refused() {
     // The overlay build refuses structurally: once the scaffolded node
-    // exists, doc-a → generic-c resolves and generic-c → doc-a closes
+    // exists, doc-a → generic-docs-c resolves and generic-docs-c → doc-a closes
     // the supersession ring.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
         tmp.path(),
         "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nsupersedes: [generic-c]\n---\n# A\n",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\nsupersedes: [generic-docs-c]\n---\n# A\n",
     );
     let output = nodex(tmp.path())
         .args(["scaffold", "--kind", "generic", "--title", "C"])
@@ -20570,7 +20583,7 @@ fn query_after_unbuilt_change_carries_divergence_warning() {
     nodex(tmp.path()).arg("build").assert().success();
 
     // Fresh snapshot → no staleness warning.
-    let envelope = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
+    let envelope = run_envelope(nodex(tmp.path()).args(["query", "--allow-stale", "nodes"]));
     assert!(envelope.get("warnings").is_none(), "{envelope}");
 
     // Unbuilt new doc → the query still succeeds, with one advisory.
@@ -20579,7 +20592,7 @@ fn query_after_unbuilt_change_carries_divergence_warning() {
         "docs/b.md",
         "---\nid: doc-b\ntitle: B\n---\n# B\n",
     );
-    let envelope = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
+    let envelope = run_envelope(nodex(tmp.path()).args(["query", "--allow-stale", "nodes"]));
     let warnings = envelope["warnings"].as_array().expect("warnings array");
     assert!(
         warnings.iter().any(|w| {
@@ -20602,7 +20615,10 @@ fn export_config_emits_resolved_surface() {
     assert!(data["scope"]["include"].is_array());
     assert!(data["output"]["dir"].is_string());
     assert_eq!(data["identity"]["fallback_kind"], "generic");
-    assert_eq!(data["identity"]["fallback_id_template"], "{kind}-{stem}");
+    assert_eq!(
+        data["identity"]["fallback_id_template"],
+        "{kind}-{path_slug}"
+    );
     assert!(data["initial_status"].is_string());
 }
 
@@ -21712,7 +21728,7 @@ fn lifecycle_refuses_a_move_the_declared_flow_does_not_name() {
         "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"active\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
@@ -21772,7 +21788,7 @@ fn a_flow_naming_no_kinds_governs_every_kind() {
         "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\n\
-         [statuses.flow]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[identity.kind_rules]]\nglob = \"docs/decisions/**\"\nkind = \"adr\"\n\
@@ -21875,7 +21891,7 @@ fn scaffold_force_refuses_a_status_reset_the_declared_flow_does_not_name() {
         "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"active\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n",
@@ -21942,7 +21958,7 @@ fn a_write_seam_answers_for_what_it_introduces_not_for_a_drift_it_found() {
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n\
          [rules]\nimmutable_baseline = \"HEAD\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n",
     )
     .unwrap();
@@ -21993,7 +22009,7 @@ fn a_rename_refused_by_a_rule_that_is_not_a_lock_says_which_rule_and_what_it_sai
         "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\", \"notes/**/*.md\"]\n\
          [detection]\norphan_ok_kinds = [\"adr\", \"generic\"]\n\
@@ -22046,7 +22062,7 @@ fn flow_project(root: &std::path::Path, rules: &str) {
             "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
              [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
              terminal = [\"superseded\"]\n\
-             [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+             [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
              transitions = {{ proposed = [\"active\"], active = [\"superseded\"] }}\n\
              [scope]\ninclude = [\"docs/**/*.md\"]\n\
              [[identity.kind_rules]]\nglob = \"docs/**/*.md\"\nkind = \"adr\"\n\
@@ -22859,7 +22875,7 @@ fn two_terminals(root: &std::path::Path) {
         "[kinds]\nallowed = [\"adr\", \"note\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"archived\", \"superseded\"]\n\
          terminal = [\"archived\", \"superseded\"]\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\", \"archived\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
          [detection]\norphan_ok_kinds = [\"adr\", \"note\", \"generic\"]\n\
@@ -23092,7 +23108,7 @@ fn places_the_lines_agreed_that_disagree_leave_the_record_counted_rather_than_ju
         "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"review\", \"superseded\"]\n\
          terminal = [\"superseded\"]\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"review\"], \
          review = [\"active\", \"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
@@ -23162,7 +23178,7 @@ fn two_readings(main_kind: &str) -> (Vec<(String, u64, u64)>, Value) {
         "[kinds]\nallowed = [\"adr\", \"generic\", \"zzz\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\"]\n\
          [detection]\norphan_ok_kinds = [\"adr\", \"generic\", \"zzz\"]\n\
@@ -23418,7 +23434,7 @@ fn a_record_read_back_through_lines_that_disagree_keeps_every_line_s_answer() {
             "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
              [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\", \"archived\"]\n\
              terminal = [\"superseded\", \"archived\"]\n\
-             [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+             [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
              transitions = { proposed = [\"active\"], active = [\"superseded\", \"archived\"] }\n\
              [scope]\ninclude = [\"docs/**/*.md\"]\n\
              [detection]\norphan_ok_kinds = [\"adr\"]\n\
@@ -23516,7 +23532,7 @@ fn a_merge_that_took_one_side_s_bytes_reads_the_record_every_line_behind_it_held
             "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
              [statuses]\nallowed = [\"proposed\", \"active\", \"archived\"]\n\
              terminal = [\"archived\"]\n\
-             [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+             [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
              transitions = { proposed = [\"active\"], active = [\"archived\"] }\n\
              [scope]\ninclude = [\"docs/**/*.md\"]\n\
              [detection]\norphan_ok_kinds = [\"adr\"]\n\
@@ -23595,7 +23611,7 @@ fn a_commit_whose_tree_will_not_graph_is_counted_rather_than_fatal() {
         "[kinds]\nallowed = [\"adr\", \"generic\", \"memo\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [scope]\ninclude = [\"docs/**/*.md\", \"notes/**/*.md\", \"memos/**/*.md\"]\n\
          [detection]\norphan_ok_kinds = [\"adr\", \"generic\", \"memo\"]\n\
@@ -24527,7 +24543,7 @@ fn a_kind_locked_at_acceptance_is_frozen_from_the_commit_that_accepts_it() {
          [kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\
          [[rules.frontmatter_immutable]]\nname = \"adr-kind\"\nfields = [\"kind\"]\n\
          kinds = [\"adr\"]\ntrigger = \"status\"\n\
@@ -25465,7 +25481,7 @@ fn queries_can_require_current_content_and_reject_drift_without_writing() {
     nodex(tmp.path()).arg("build").assert().success();
     let snapshot_path = tmp.path().join("_index/graph.json");
     let snapshot = fs::read(&snapshot_path).unwrap();
-    let current = run_envelope(nodex(tmp.path()).args(["query", "nodes", "--require-current"]));
+    let current = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
     assert_eq!(current["snapshot"]["verification"], "content");
     assert_eq!(current["snapshot"]["unbuildable"], 0);
     write_doc(
@@ -25473,13 +25489,19 @@ fn queries_can_require_current_content_and_reject_drift_without_writing() {
         "docs/a.md",
         &original.replace("status: active", "status: archived"),
     );
-    let held = run_envelope(nodex(tmp.path()).args(["query", "nodes", "--status", "active"]));
+    let held = run_envelope(nodex(tmp.path()).args([
+        "query",
+        "--allow-stale",
+        "nodes",
+        "--status",
+        "active",
+    ]));
     assert_eq!(held["data"]["total"], 1);
     assert_eq!(held["snapshot"]["verification"], "membership");
     for args in [
-        vec!["query", "nodes", "--require-current"],
-        vec!["query", "--require-current", "backlinks", "a"],
-        vec!["query", "search", "Storage", "--require-current"],
+        vec!["query", "nodes"],
+        vec!["query", "backlinks", "a"],
+        vec!["query", "search", "Storage"],
     ] {
         let output = nodex(tmp.path()).args(args).output().unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -25575,8 +25597,445 @@ fn strict_query_discloses_unbuildable_documents_separately_from_freshness() {
     write_doc(tmp.path(), "docs/a.md", "---\nid: a\n---\nBody\n");
     write_doc(tmp.path(), "docs/bad.md", "---\nid: [\n---\nBody\n");
     nodex(tmp.path()).arg("build").assert().success();
-    let answer = run_envelope(nodex(tmp.path()).args(["query", "--require-current", "nodes"]));
+    let answer = run_envelope(nodex(tmp.path()).args(["query", "nodes"]));
     assert_eq!(answer["snapshot"]["verification"], "content");
     assert_eq!(answer["snapshot"]["unbuildable"], 1);
     assert_eq!(answer["data"]["total"], 1);
+}
+
+#[test]
+fn ai_markdown_reference_identity_survives_namesakes_and_moves() {
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(root, "nodex.toml", "[scope]\ninclude = [\"**/*.md\"]\n");
+    write_doc(root, "guide.md", "---\nid: root-guide\n---\n# Root\n");
+    write_doc(
+        root,
+        "docs/guide.md",
+        "---\nid: local-guide\n---\n# Local\n",
+    );
+    let source = "---\nid: start\n---\n[implicit](guide.md#local)\n[explicit](./guide.md)\n";
+    write_doc(root, "docs/start.md", source);
+    nodex(root).arg("build").assert().success();
+    let detail = run_json(nodex(root).args(["query", "node", "start"]));
+    assert_eq!(detail["outgoing"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["outgoing"][0]["target"], "local-guide");
+    assert_eq!(detail["outgoing"][0]["reference"]["syntax"], "markdown");
+    nodex(root)
+        .args(["rename", "guide.md", "renamed.md"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(root.join("docs/start.md")).unwrap(),
+        source
+    );
+    nodex(root)
+        .args(["rename", "docs/guide.md", "guides/current.md"])
+        .assert()
+        .success();
+    let changed = fs::read_to_string(root.join("docs/start.md")).unwrap();
+    assert!(changed.contains("../guides/current.md#local"));
+    nodex(root).arg("build").assert().success();
+    let detail = run_json(nodex(root).args([
+        "query",
+        "node",
+        "start",
+        "--with-body",
+        "--body-lines",
+        "1:1",
+    ]));
+    assert_eq!(detail["body_range"]["total"], 2);
+    assert_eq!(detail["body_range"]["start"], 1);
+    assert!(!detail["body"].as_str().unwrap().contains("[explicit]"));
+    assert!(detail["node"].get("body_lines_hash").is_none());
+}
+
+#[test]
+fn ai_replacement_judges_lifecycle_and_all_reference_syntaxes_together() {
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(
+        root,
+        "nodex.toml",
+        "[scope]\ninclude = [\"**/*.md\"]\n[parser]\nwikilink_enabled = true\n[rules.severity]\nsuperseded_reference = \"error\"\n",
+    );
+    write_doc(
+        root,
+        "decisions/old.md",
+        "---\nid: old\nstatus: active\n---\n# Old\n",
+    );
+    write_doc(
+        root,
+        "decisions/new.md",
+        "---\nid: new\nstatus: active\n---\n# New\n",
+    );
+    write_doc(
+        root,
+        "guides/use.md",
+        "---\nid: use\nrelated: [old]\n---\n[decision](../decisions/old.md#choice)\n[[old]]\n",
+    );
+    nodex(root)
+        .args(["lifecycle", "supersede", "old", "--to", "new"])
+        .assert()
+        .code(2);
+    assert!(
+        !fs::read_to_string(root.join("decisions/old.md"))
+            .unwrap()
+            .contains("superseded_by")
+    );
+    nodex(root)
+        .args(["retarget", "old", "new", "--supersede"])
+        .assert()
+        .success();
+    let old = fs::read_to_string(root.join("decisions/old.md")).unwrap();
+    assert!(old.contains("superseded_by: new") || old.contains("superseded_by: \"new\""));
+    let guide = fs::read_to_string(root.join("guides/use.md")).unwrap();
+    assert!(guide.contains("../decisions/new.md#choice"), "{guide}");
+    assert!(guide.contains("[[new]]"), "{guide}");
+    let checked = run_json(nodex(root).arg("check"));
+    assert_eq!(checked["has_errors"], false);
+}
+
+#[test]
+fn ai_node_reads_are_bounded_by_requested_information() {
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(
+        root,
+        "nodex.toml",
+        "[scope]\ninclude = [\"**/*.md\"]\n[detection]\nstale_days = 30\n",
+    );
+    write_doc(
+        root,
+        "long.md",
+        &format!(
+            "---\nid: long\ncreated: 2020-01-01\n---\n{}",
+            "A body line.\n".repeat(2000)
+        ),
+    );
+    nodex(root).arg("build").assert().success();
+    let detail = run_json(nodex(root).args(["query", "node", "long"]));
+    assert!(serde_json::to_vec(&detail).unwrap().len() < 2000);
+    assert!(detail["node"].get("body_structure").is_none());
+    let missing =
+        run_json(nodex(root).args(["query", "nodes", "--missing", "reviewed", "--fields", "id"]));
+    assert_eq!(missing["items"][0]["id"], "long");
+    let stale = run_json(nodex(root).args(["query", "stale"]));
+    assert_eq!(stale["total"], 0);
+    assert_eq!(stale["subjects"], 0);
+    assert_eq!(stale["unjudged"], 1);
+    nodex(root)
+        .args([
+            "query",
+            "node",
+            "long",
+            "--with-body",
+            "--body-lines",
+            "0:1",
+        ])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn ai_queries_verify_content_unless_snapshot_reads_are_explicit() {
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(root, "nodex.toml", "[scope]\ninclude = [\"**/*.md\"]\n");
+    write_doc(root, "a.md", "---\nid: a\nrelated: [b]\n---\n# A\n");
+    write_doc(root, "b.md", "---\nid: b\n---\n# B\n");
+    nodex(root).arg("build").assert().success();
+    write_doc(root, "a.md", "---\nid: a\n---\n# A\n");
+    let output = nodex(root)
+        .args(["query", "backlinks", "b"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let refused: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(refused["error"]["code"], "GRAPH_OUTDATED");
+    let old = run_envelope(nodex(root).args(["query", "--allow-stale", "backlinks", "b"]));
+    assert_eq!(old["data"]["total"], 1);
+    assert_eq!(old["snapshot"]["verification"], "membership");
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        run_json(nodex(root).args(["query", "backlinks", "b"]))["total"],
+        0
+    );
+}
+
+#[test]
+fn ai_init_supports_repeated_readmes_and_migrated_identity_survives_move() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(root, "apps/a/README.md", "# A\n");
+    write_doc(root, "apps/b/README.md", "# B\n");
+    nodex(root).arg("build").assert().success();
+    let nodes = run_json(nodex(root).args(["query", "nodes"]));
+    let items = nodes["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_ne!(items[0]["id"], items[1]["id"]);
+    let id = items
+        .iter()
+        .find(|node| node["path"] == "apps/a/README.md")
+        .unwrap()["id"]
+        .clone();
+    nodex(root).args(["migrate", "--apply"]).assert().success();
+    nodex(root)
+        .args(["rename", "apps/a/README.md", "apps/a/overview.md"])
+        .assert()
+        .success();
+    nodex(root).arg("build").assert().success();
+    let moved = run_json(nodex(root).args(["query", "node", "--path", "apps/a/overview.md"]));
+    assert_eq!(moved["node"]["id"], id);
+}
+
+#[test]
+fn ai_similarity_compares_tag_case_consistently_with_listings() {
+    let tmp = scratch();
+    let root = tmp.path();
+    write_doc(
+        root,
+        "nodex.toml",
+        "[scope]\ninclude = [\"**/*.md\"]\n[similarity.weights]\ntitle=0.0\ntags=1.0\nkind=0.0\ndirectory=0.0\nlinked=0.0\n",
+    );
+    write_doc(root, "a.md", "---\nid: a\ntags: [Auth]\n---\n# Policy\n");
+    nodex(root).arg("build").assert().success();
+    assert_eq!(
+        run_json(nodex(root).args(["query", "nodes", "--tag", "auth"]))["total"],
+        1
+    );
+    let similar =
+        run_json(nodex(root).args(["query", "similar", "--title", "Policy", "--tags", "auth"]));
+    assert_eq!(similar["items"][0]["components"]["tags"], 1.0);
+    assert_eq!(similar["items"][0]["score"], 1.0);
+}
+
+#[test]
+fn ai_independent_kind_flows_share_history_without_sharing_transitions() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    assert!(git(&["init", "-q"]).status.success());
+    let config = r#"
+[scope]
+include = ["docs/**/*.md"]
+[kinds]
+allowed = ["generic", "adr", "requirement"]
+[statuses]
+allowed = ["proposed", "active", "draft", "agreed", "archived"]
+terminal = ["archived"]
+initial = "active"
+[[statuses.flow]]
+kinds = ["adr"]
+initial = "proposed"
+transitions = { proposed = ["active"], active = ["archived"] }
+[[statuses.flow]]
+kinds = ["requirement"]
+initial = "draft"
+transitions = { draft = ["agreed"], agreed = ["archived"] }
+"#;
+    write_doc(root, "nodex.toml", config);
+    nodex(root)
+        .args([
+            "scaffold",
+            "--kind",
+            "adr",
+            "--title",
+            "Decision",
+            "--id",
+            "decision",
+            "--path",
+            "docs/decision.md",
+        ])
+        .assert()
+        .success();
+    nodex(root)
+        .args([
+            "scaffold",
+            "--kind",
+            "requirement",
+            "--title",
+            "Request",
+            "--id",
+            "request",
+            "--path",
+            "docs/request.md",
+        ])
+        .assert()
+        .success();
+    assert!(git(&["add", "nodex.toml", "docs"]).status.success());
+    assert!(git(&["commit", "-qm", "entry records"]).status.success());
+    nodex(root)
+        .args(["lifecycle", "set", "decision", "--status", "active"])
+        .assert()
+        .success();
+    nodex(root)
+        .args(["lifecycle", "set", "request", "--status", "agreed"])
+        .assert()
+        .success();
+    nodex(root).arg("check").assert().success();
+    let unchanged = fs::read_to_string(root.join("docs/request.md")).unwrap();
+    nodex(root)
+        .args(["lifecycle", "set", "request", "--status", "active"])
+        .assert()
+        .code(2);
+    assert_eq!(
+        fs::read_to_string(root.join("docs/request.md")).unwrap(),
+        unchanged
+    );
+    write_doc(
+        root,
+        "nodex.toml",
+        &format!(
+            "{config}\n[[statuses.flow]]\nkinds=[\"adr\"]\ninitial=\"active\"\ntransitions={{active=[\"archived\"]}}\n"
+        ),
+    );
+    let output = nodex(root).args(["export", "config"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR");
+}
+
+#[test]
+fn ai_replacement_preserves_frozen_historical_citations_and_reports_holds() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    assert!(git(&["init", "-q"]).status.success());
+    write_doc(
+        root,
+        "nodex.toml",
+        "[scope]\ninclude=[\"**/*.md\"]\n[rules]\nimmutable_baseline=\"HEAD\"\n[rules.severity]\nunresolved_reference=\"error\"\n[[rules.body_immutable]]\nname=\"records\"\nmode=\"frozen\"\ntrigger=\"creation\"\n",
+    );
+    write_doc(root, "old.md", "---\nid: old\n---\n# Old\n");
+    write_doc(root, "new.md", "---\nid: new\n---\n# New\n");
+    write_doc(root, "use.md", "---\nid: use\n---\n[old](old.md)\n");
+    assert!(
+        git(&["add", "nodex.toml", "old.md", "new.md", "use.md"])
+            .status
+            .success()
+    );
+    assert!(git(&["commit", "-qm", "frozen records"]).status.success());
+    let source = fs::read_to_string(root.join("old.md")).unwrap();
+    let citation = fs::read_to_string(root.join("use.md")).unwrap();
+    // A frozen citation is historical evidence and remains on the predecessor.
+    let result = run_json(nodex(root).args(["retarget", "old", "new", "--supersede"]));
+    assert_eq!(result["completion"], "partial");
+    assert_eq!(fs::read_to_string(root.join("use.md")).unwrap(), citation);
+    assert_ne!(fs::read_to_string(root.join("old.md")).unwrap(), source);
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
+fn ai_missing_fields_agree_with_schema_presence_for_collections() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_doc(
+        root,
+        "nodex.toml",
+        "[scope]\ninclude=[\"docs/**/*.md\"]\n[schema]\nrequired=[\"refs\"]\ncross_field=[{when=\"refs exists\", require=\"owner\"}]\n",
+    );
+    for (id, field) in [
+        ("array", "refs: [x, y]\n"),
+        ("object", "refs: {key: value}\n"),
+        ("empty-object", "refs: {}\n"),
+        ("false", "refs: false\n"),
+        ("zero", "refs: 0\n"),
+        ("empty-array", "refs: []\n"),
+        ("absent", ""),
+    ] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!("---\nid: '{id}'\ntitle: '{id}'\n{field}---\n"),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    let missing =
+        run_json(nodex(root).args(["query", "nodes", "--missing", "refs", "--fields", "id,refs"]));
+    assert_eq!(
+        missing["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["absent", "empty-array"]
+    );
+    let output = nodex(root).arg("check").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let check: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        check["data"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["rule_id"] == "required_field")
+            .map(|v| v["node_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["absent", "empty-array"]
+    );
+    assert_eq!(
+        check["data"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["rule_id"] == "cross_field")
+            .map(|v| v["node_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["array", "empty-object", "false", "object", "zero"]
+    );
+    let paths = run_json(nodex(root).args(["query", "nodes", "--missing", "path"]));
+    assert_eq!(paths["total"], 0);
+}
+
+#[test]
+fn ai_unresolved_grammars_cannot_hide_each_others_policy_findings() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_doc(
+        root,
+        "nodex.toml",
+        r#"[scope]
+include=["docs/**/*.md"]
+[parser]
+wikilink_enabled=true
+[[detection.unresolved_policy]]
+name="root"
+cause="missing"
+glob="missing.md"
+severity="error"
+[[detection.unresolved_policy]]
+name="local"
+cause="missing"
+glob="docs/missing.md"
+severity="info"
+"#,
+    );
+    for body in [
+        "[local](missing.md)\n[[missing.md]]",
+        "[[missing.md]]\n[local](missing.md)",
+    ] {
+        write_doc(
+            root,
+            "docs/a.md",
+            &format!("---\nid: a\ntitle: A\n---\n{body}\n"),
+        );
+        let output = nodex(root).arg("check").output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let check: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            check["data"]["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v["rule_id"] == "unresolved_reference/root")
+                .count(),
+            1
+        );
+        nodex(root).arg("build").assert().success();
+        let issues = run_json(nodex(root).args(["query", "issues"]));
+        assert_eq!(issues["unresolved_edges"].as_array().unwrap().len(), 2);
+    }
 }

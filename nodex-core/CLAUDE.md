@@ -169,7 +169,7 @@ safety: `src/git.rs` rustdoc.
   to a fixpoint; a synthetic node is not an equivalent schema reading.
 - `parser::Completion::resolve_identity` completes kind before id/status.
   Fallback kind is `generic` (required in allowed vocabulary), id is
-  `{kind}-{stem}`, status is `Config::initial_status_for(kind)` (governing flow's
+  `{kind}-{path_slug}`, status is `Config::initial_status_for(kind)` (governing flow's
   initial, global initial, then first allowed status). The parser, scope's bare-
   parent probe and lifecycle share this chain. Inferred built-ins cannot be
   meaningfully required by presence; load rejects them in required/cross-field
@@ -270,8 +270,11 @@ safety: `src/git.rs` rustdoc.
 
 - Body extraction (`parser::body`, pulldown-cmark destinations, wikilinks/custom
   patterns, optional whole-code-span citations) is shared with rewriting.
-  `reference_path_candidates` is the one ladder: literal/relative path, configured
-  extension candidates, bare id. `./` forces the document-relative frame.
+  `ReferenceSyntax` selects the resolution contract: Markdown paths are always
+  source-relative; wikilinks and configured patterns use the graph lookup ladder
+  (root/relative paths, configured extensions, then bare ids). `./` forces the
+  document-relative frame for graph syntax. Edges preserve the source syntax,
+  decoded target and location; unresolved listings expose sought lookup names.
   `resolver::frame_and_path` refuses root anchoring before collapsing empty/`.`
   segments; `..` remains an operation in its frame. `covers` is path-only;
   supersedes/superseded_by/implements/related are id-only, and custom patterns

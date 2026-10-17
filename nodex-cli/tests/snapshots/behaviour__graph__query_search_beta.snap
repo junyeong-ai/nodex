@@ -25,6 +25,6 @@ exit: 0
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

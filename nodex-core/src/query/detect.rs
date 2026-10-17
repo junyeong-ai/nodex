@@ -95,7 +95,11 @@ pub fn find_orphans(
         .collect();
 
     entries.sort_by(|a, b| a.node.id.cmp(&b.node.id));
-    DetectionOutcome { entries, subjects }
+    DetectionOutcome {
+        entries,
+        subjects,
+        unjudged: 0,
+    }
 }
 
 #[derive(Debug, serde::Serialize, JsonSchema)]
@@ -145,12 +149,16 @@ pub(crate) fn find_stale_past(
     };
 
     let mut subjects = 0;
+    let mut unjudged = 0;
     let mut entries: Vec<StaleEntry> = graph
         .nodes()
         .values()
         .filter(|node| !config.is_terminal(node.status.as_str()))
         .filter_map(|node| {
-            let reviewed = node.reviewed?;
+            let Some(reviewed) = node.reviewed else {
+                unjudged += 1;
+                return None;
+            };
             subjects += 1;
             // `stale_days = n` flags docs not reviewed for n+ days
             // (elapsed >= n), i.e. reviewed on/before the cutoff.
@@ -170,7 +178,11 @@ pub(crate) fn find_stale_past(
             .cmp(&b.reviewed)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
-    DetectionOutcome { entries, subjects }
+    DetectionOutcome {
+        entries,
+        subjects,
+        unjudged,
+    }
 }
 
 #[cfg(test)]
@@ -360,12 +372,14 @@ mod tests {
             ],
             vec![
                 Edge {
+                    reference: None,
                     source: "new".into(),
                     target: ResolvedTarget::resolved("old"),
                     relation: "supersedes".into(),
                     location: "frontmatter:supersedes".into(),
                 },
                 Edge {
+                    reference: None,
                     source: "one-sided-successor".into(),
                     target: ResolvedTarget::resolved("unpointed-old"),
                     relation: "supersedes".into(),
@@ -399,6 +413,7 @@ mod tests {
         config.detection.orphan_ok_kinds = vec!["guide".into()];
         config.detection.orphan_grace_days = 14;
         let self_edge = Edge {
+            reference: None,
             source: "self-citing".into(),
             target: ResolvedTarget::resolved("self-citing"),
             relation: "references".into(),
