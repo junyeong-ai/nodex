@@ -239,9 +239,10 @@ safety: `src/git.rs` rustdoc.
 - Shared detectors (`find_stale_past`, `find_orphans`, `find_unresolved_edges`)
   supply both listings and rule reach. `find_stale` returns None for an undeclared
   horizon: stale query warns `threshold_undeclared`, report says untracked, and
-  stale rule is absent. `IssueReport` counts each gated finding through its
-  violation once; only unresolved warning fallthrough counts independently, and
-  info rows stay outside total. Coverage assertion:
+  stale rule is absent. Missing review dates count as unjudged when the horizon
+  is declared. `IssueReport` counts each gated finding through its
+  violation once, including warning and error unresolved references. Info rows
+  stay outside total under their policy names. Coverage assertion:
   `every_listed_finding_is_counted_once_through_its_rule`.
 - Trust renormalizes over components the run can measure. Omitted stale horizon
   drops freshness. A positively weighted measurable axis missing document input

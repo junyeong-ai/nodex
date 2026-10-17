@@ -46,37 +46,21 @@ pub struct UnresolvedEdge {
     /// `IdNotFound` since they never had a path to stat. Named `cause`
     /// (not `kind`) to avoid colliding with a document's `kind`.
     pub cause: UnresolvedCause,
-    /// Severity the `[[detection.unresolved_policy]]` table assigns —
-    /// per-edge attribution, so a downgrade is visible, never silent.
-    /// Consumers branch on this instead of re-deriving the policy
-    /// (actionable ⇔ not `info`).
+    /// Effective severity assigned by the matching policy row or the
+    /// unmatched `unresolved_reference` rule, including configured promotion.
     pub severity: UnresolvedSeverity,
-    /// Name of the policy row that classified this edge; absent when
-    /// the built-in fallthrough (`warning`) applied. Invariant:
-    /// `severity == Info` ⇒ `policy_name` is `Some` — the fallthrough
-    /// is always `warning`.
+    /// Name of the matching policy row; absent for the unmatched rule.
+    /// Informational severity always names a policy row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_name: Option<String>,
 }
 
-/// Aggregate of all actionable problems in the graph.
+/// Aggregate of actionable findings and informational references.
 ///
-/// The typed listings and the rule violations are two views of one set
-/// of findings rather than two sets. `orphans` and `stale` carry the
-/// detail their detectors produce, and each finding also appears in
-/// `violations` as the gate record its rule emits (`orphan`,
-/// `stale_review`); every unresolved edge appears in
-/// `unresolved_edges` whatever its policy severity, and an
-/// error-severity one *also* appears in `violations`
-/// (`unresolved_reference/<name>`).
-///
-/// A finding with a gate record is counted once, through the violation.
-/// So `summary.total` counts problems rather than the number of times
-/// the report mentions them, and `by_category` keys each counted
-/// finding by the rule that found it. What has no rule record counts on
-/// its own: a warning-severity unresolved edge under `unresolved_edge`
-/// — the fallthrough plane, which no rule gates — and an info-severity
-/// one under its policy row's name, out of `total`.
+/// Typed listings and violations describe the same findings. Each warning or
+/// error finding contributes once through its violation under `violation_<rule_id>`.
+/// Every unresolved edge also appears in `unresolved_edges`; informational rows
+/// contribute only to their named category outside `summary.total`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct IssueReport {
     pub orphans: Vec<OrphanEntry>,
@@ -150,13 +134,8 @@ pub fn find_issues(
     );
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
-    // Each unresolved edge increments exactly one counter — never
-    // double-counted, never silently dropped. Warning-level edges (the
-    // fallthrough plane) count under `unresolved_edge` in `total`;
-    // info-level edges count under their policy row's name, out of
-    // `total`; error-level edges are counted solely through their
-    // `violation_unresolved_reference/<name>` category below.
-
+    // Warning and error findings count through their violations. Informational
+    // references have no rule record and count only under their policy name.
     for edge in &unresolved_edges {
         match edge.severity {
             UnresolvedSeverity::Warning => {}
@@ -1111,7 +1090,7 @@ mod tests {
     fn fallthrough_is_warning_and_unattributed() {
         // Default policy has only the excluded_target row; a Missing
         // edge matches no row → warning, no policy_name, counted in
-        // `summary.total` under `unresolved_edge`.
+        // `summary.total` through `violation_unresolved_reference`.
         let root = tempfile::tempdir().expect("tempdir");
         let graph = graph_of(
             vec![node("a")],

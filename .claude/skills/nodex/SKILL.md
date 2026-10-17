@@ -6,7 +6,7 @@ description: >-
   graph queries, guarded authoring and replacement, and machine-readable exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.54.0
+  version: 0.54.1
 ---
 
 # nodex — markdown document graph CLI
@@ -53,7 +53,7 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 
 ## Build first
 
-**Run `nodex build` before any `query`** — queries read the indexed `_index/graph.json`; without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. No other command needs a prior build.
+**Run `nodex build` before any `query`** — queries read `graph.json` under the configured output directory (`_index` by default); without one they fail `GRAPH_MISSING` (exit 2). Build is incremental and cheap to re-run. No other command needs a prior build.
 
 Queries read snapshots; rebuild after edits. Envelope `snapshot` separates verification
 (`membership` checks paths/config, `content` also checks bytes) from parsing coverage;
@@ -209,6 +209,7 @@ nodex build                              # reindex
 
 ```bash
 nodex check --severity error             # exit 1 on any error
+nodex build                              # refresh after document edits
 nodex query issues                       # everything actionable in one call
 ```
 
