@@ -489,6 +489,7 @@ impl<'a> Snapshots<'a> {
                     .collect();
                 self.unread.push(Warning {
                     code: WarningCode::HistoryUnread,
+                    details: None,
                     message: format!(
                         "this shallow clone holds no commit behind both {}, so the records \
                          they disagree about are counted rather than judged: fetch the \
@@ -640,6 +641,7 @@ impl<'a> Snapshots<'a> {
                 if self.cut.insert(path.to_string()) {
                     self.unread.push(Warning {
                         code: WarningCode::HistoryUnread,
+                        details: None,
                         message: format!(
                             "what {path} held before the change that broke it lies beyond this \
                              shallow clone's cut, so the records it may have stood for are \
@@ -725,6 +727,7 @@ impl<'a> Snapshots<'a> {
                 Some(refusal) => {
                     self.unread.push(Warning {
                         code: WarningCode::HistoryUnread,
+                        details: None,
                         message: format!(
                             "commit {short} could not be graphed under this project's config, so \
                              the records its step carried are counted rather than judged: \

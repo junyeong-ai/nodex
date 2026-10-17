@@ -467,33 +467,13 @@ fn read_markdown(content: &str) -> MarkdownReading {
     reading
 }
 
-/// The project path a markdown destination names, or `None` when it
-/// names something outside the project (an absolute URL, a bare
-/// `#fragment`) or nothing at all — trimmed, and cut at the first `#`.
-///
-/// The one reading of a destination: link extraction binds this string
-/// as an edge target and [`Destination`] hands it to the rewriter, so
-/// the two cannot bind and repoint different paths.
-pub(crate) fn destination_path(dest: &str) -> Option<&str> {
-    let dest = dest.trim();
-    if dest.starts_with("http://")
-        || dest.starts_with("https://")
-        || dest.starts_with("mailto:")
-        || dest.starts_with('#')
-        || dest.is_empty()
-    {
-        return None;
-    }
-    Some(dest.split('#').next().unwrap_or(dest))
-}
-
 fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Option<RawEdge> {
-    let path = destination_path(dest)?;
+    let path = super::destination::LocalDestination::parse(dest)?.path;
     if !extensions.iter().any(|ext| path.ends_with(ext)) {
         return None;
     }
     Some(RawEdge {
-        target_path: path.to_string(),
+        target_path: path,
         relation: "references".to_string(),
         location: format!("L{line_num}"),
     })
@@ -561,10 +541,10 @@ pub(crate) struct Destination {
     /// where it is knowable and the rewriter re-renders both halves.
     pub(crate) start: usize,
     pub(crate) end: usize,
-    /// What the parser reads out of that span, via [`destination_path`].
+    /// The decoded local file path.
     pub(crate) path: String,
-    /// The decoded remainder, leading `#` included, or empty.
-    pub(crate) fragment: String,
+    /// Query and fragment, with their delimiters, or empty.
+    pub(crate) suffix: String,
 }
 
 impl Destination {
@@ -662,13 +642,12 @@ fn markdown_destinations(content: &str, offset: usize) -> Vec<Destination> {
     found
         .into_iter()
         .filter_map(|((start, end), dest)| {
-            let dest = dest.trim();
-            let path = destination_path(dest)?;
+            let local = super::destination::LocalDestination::parse(&dest)?;
             Some(Destination {
                 start: offset + start,
                 end: offset + end,
-                fragment: dest[path.len()..].to_string(),
-                path: path.to_string(),
+                suffix: local.suffix.to_string(),
+                path: local.path,
             })
         })
         .collect()
@@ -1341,13 +1320,7 @@ mod tests {
         let destinations = Destination::in_document(content);
         let got: Vec<(&str, &str, &str)> = destinations
             .iter()
-            .map(|d| {
-                (
-                    &content[d.start..d.end],
-                    d.path.as_str(),
-                    d.fragment.as_str(),
-                )
-            })
+            .map(|d| (&content[d.start..d.end], d.path.as_str(), d.suffix.as_str()))
             .collect();
         assert_eq!(
             got,

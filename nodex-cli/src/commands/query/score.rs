@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::NaiveDate;
+use nodex_core::warning::{RankingExclusion, WarningDetails};
 
 use nodex_core::query::similar::{SimilarityOptions, SimilarityTarget};
 use nodex_core::query::trust::{TrustExtreme, TrustListOptions};
@@ -96,15 +97,21 @@ pub(crate) fn run_trust(
     // excluded from items and total — and the exclusion is never
     // silent: it rides the envelope warnings.
     if outcome.unscored > 0 {
-        warnings.push(nodex_core::Warning::new(
-            nodex_core::WarningCode::RankingUnscored,
-            format!(
-                "{} node(s) excluded from the ranking: they declare no input for a \
+        warnings.push(
+            nodex_core::Warning::new(
+                nodex_core::WarningCode::RankingUnscored,
+                format!(
+                    "{} node(s) excluded from the ranking: they declare no input for a \
              positively-weighted component this run can measure, or carry none of them at all \
              — `query trust <id>` names which",
-                outcome.unscored
-            ),
-        ));
+                    outcome.unscored
+                ),
+            )
+            .with_details(WarningDetails::RankingUnscored {
+                count: outcome.unscored,
+                reason: RankingExclusion::IncompleteBasis,
+            }),
+        );
     }
     context.emit_read_with(
         ItemsEnvelope::new(outcome.entries),
@@ -126,6 +133,9 @@ pub(crate) fn run_similar(
 ) -> Result<()> {
     let config = nodex_core::load_project(context.root)?;
 
+    if let Some(status) = args.status.as_deref() {
+        reject_unknown_vocabulary("--status", &[status.to_string()], &config.statuses.allowed)?;
+    }
     if let Some(kind) = args.kind.as_deref()
         && !config.kinds.allowed.iter().any(|k| k == kind)
     {
@@ -147,6 +157,7 @@ pub(crate) fn run_similar(
 
     let opts = SimilarityOptions {
         limit: args.limit.unwrap_or(config.similarity.default_limit),
+        status: args.status,
     };
 
     // clap's `ArgGroup(required=true)` on `similar_target` guarantees
@@ -193,14 +204,20 @@ pub(crate) fn run_similar(
     // satisfied by a fabricated 0.0) and the count is announced, never
     // silent.
     if outcome.unscored > 0 {
-        warnings.push(nodex_core::Warning::new(
-            nodex_core::WarningCode::RankingUnscored,
-            format!(
-                "{} candidate(s) excluded from the ranking: the target carries no \
+        warnings.push(
+            nodex_core::Warning::new(
+                nodex_core::WarningCode::RankingUnscored,
+                format!(
+                    "{} candidate(s) excluded from the ranking: the target carries no \
                  positively-weighted signal to rank by",
-                outcome.unscored
-            ),
-        ));
+                    outcome.unscored
+                ),
+            )
+            .with_details(WarningDetails::RankingUnscored {
+                count: outcome.unscored,
+                reason: RankingExclusion::TargetWithoutSignals,
+            }),
+        );
     }
     context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())

@@ -539,6 +539,7 @@ pub struct ConfigManifest {
     pub output: OutputConfig,
     pub parser: ParserConfig,
     pub identity: IdentityManifest,
+    pub scaffold: crate::config::ScaffoldConfig,
     /// The global initial status — where a newly created document, or one
     /// declaring no status, starts when no `statuses.flow` governs its kind:
     /// `statuses.initial` when declared, else the first allowed status.
@@ -566,6 +567,7 @@ pub fn export_config(config: &Config) -> ConfigManifest {
         scope: config.scope.clone(),
         output: config.output.clone(),
         parser: config.parser.clone(),
+        scaffold: config.scaffold.clone(),
         identity: IdentityManifest {
             kind_rules: config.identity.kind_rules.clone(),
             id_rules: config.identity.id_rules.clone(),
@@ -1395,7 +1397,8 @@ fn envelope_shape() -> Value {
                                 // advisory code instead of accepting any
                                 // string.
                                 "code": { "type": "string", "enum": warning_code_strings() },
-                                "message": { "type": "string" }
+                                "message": { "type": "string" },
+                                "details": inline_schema_refs(&schema_of::<crate::warning::WarningDetails>()).expect("warning details schema references resolve")
                             },
                             "additionalProperties": false
                         }
@@ -2452,6 +2455,22 @@ mod tests {
         }
         let _ = jsonschema::draft202012::new(&m.envelope)
             .expect("envelope schema must validate as draft 2020-12");
+    }
+
+    #[test]
+    fn envelope_schema_validates_typed_ranking_advisories() {
+        use crate::warning::{RankingExclusion, Warning, WarningCode, WarningDetails};
+        let warning = Warning::new(WarningCode::RankingUnscored, "missing evidence").with_details(
+            WarningDetails::RankingUnscored {
+                count: 2,
+                reason: RankingExclusion::TargetWithoutSignals,
+            },
+        );
+        let mut value = json!({"ok": true, "data": {}, "warnings": [warning]});
+        let validator = jsonschema::draft202012::new(&envelope_shape()).unwrap();
+        assert!(validator.is_valid(&value));
+        value["warnings"][0]["details"]["reason"] = json!("unknown");
+        assert!(!validator.is_valid(&value));
     }
 
     #[test]

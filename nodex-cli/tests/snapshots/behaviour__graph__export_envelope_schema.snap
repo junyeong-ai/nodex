@@ -112,6 +112,39 @@ exit: 0
                     ],
                     "type": "string"
                   },
+                  "details": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "description": "Structured evidence needed to act on an advisory without reading prose.",
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "count": {
+                            "format": "uint",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "reason": {
+                            "enum": [
+                              "incomplete_basis",
+                              "target_without_signals"
+                            ],
+                            "type": "string"
+                          },
+                          "type": {
+                            "const": "ranking_unscored",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "count",
+                          "reason"
+                        ],
+                        "type": "object"
+                      }
+                    ],
+                    "title": "WarningDetails"
+                  },
                   "message": {
                     "type": "string"
                   }
@@ -1960,6 +1993,21 @@ exit: 0
             },
             "type": "object"
           },
+          "ScaffoldConfig": {
+            "additionalProperties": false,
+            "description": "Creation paths are explicit templates, independent of classification globs.",
+            "properties": {
+              "paths": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {},
+                "description": "Kind → project-relative path. `{slug}` is the title slug, `{kind}`\nthe kind, and `{stem}` a filename stem with configured numbering.",
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
           "ScopeConfig": {
             "additionalProperties": false,
             "properties": {
@@ -2025,6 +2073,9 @@ exit: 0
           "parser": {
             "$ref": "#/$defs/ParserConfig"
           },
+          "scaffold": {
+            "$ref": "#/$defs/ScaffoldConfig"
+          },
           "scope": {
             "$ref": "#/$defs/ScopeConfig"
           },
@@ -2039,6 +2090,7 @@ exit: 0
           "output",
           "parser",
           "identity",
+          "scaffold",
           "initial_status"
         ],
         "title": "ConfigManifest",
@@ -5695,7 +5747,7 @@ exit: 0
       "query.trust": {
         "$defs": {
           "TrustComponent": {
-            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
+            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`crate::config::TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
             "enum": [
               "status",
               "freshness",
@@ -5746,6 +5798,13 @@ exit: 0
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
         "properties": {
+          "basis": {
+            "description": "Positively weighted, measured components contributing to the score.\nCompare scores only with their basis and project weights in view.",
+            "items": {
+              "$ref": "#/$defs/TrustComponent"
+            },
+            "type": "array"
+          },
           "components": {
             "$ref": "#/$defs/TrustComponents"
           },
@@ -5786,7 +5845,8 @@ exit: 0
           "kind",
           "status",
           "path",
-          "components"
+          "components",
+          "basis"
         ],
         "title": "TrustEntry",
         "type": "object"
@@ -5794,7 +5854,7 @@ exit: 0
       "query.trust-list": {
         "$defs": {
           "TrustComponent": {
-            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
+            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`crate::config::TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
             "enum": [
               "status",
               "freshness",
@@ -5844,6 +5904,13 @@ exit: 0
           "TrustEntry": {
             "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
             "properties": {
+              "basis": {
+                "description": "Positively weighted, measured components contributing to the score.\nCompare scores only with their basis and project weights in view.",
+                "items": {
+                  "$ref": "#/$defs/TrustComponent"
+                },
+                "type": "array"
+              },
               "components": {
                 "$ref": "#/$defs/TrustComponents"
               },
@@ -5884,7 +5951,8 @@ exit: 0
               "kind",
               "status",
               "path",
-              "components"
+              "components",
+              "basis"
             ],
             "type": "object"
           }
@@ -6421,7 +6489,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.52.0"
+    "version": "0.53.0"
   },
   "ok": true
 }

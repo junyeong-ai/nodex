@@ -8,9 +8,8 @@
 //! content through the one guarded creation seam instead of hand-
 //! writing files around it.
 //!
-//! Every decision prefers config over heuristic; heuristics only kick
-//! in when config is silent. Callers can override any inferred value
-//! by supplying it explicitly on [`ScaffoldSpec`].
+//! Creation paths come from `scaffold.paths` or an explicit path;
+//! classification globs never choose where a document is created.
 //!
 //! Validation rides the same full-graph overlay substrate as
 //! `check --content <path>=<source>`: the before-graph is built live from the
@@ -132,7 +131,7 @@ pub fn scaffold(
     //    graph that does not exist.
     let before = crate::builder::build_with_overlay(root, config, &[])?;
 
-    // 3. Resolve path (explicit override or infer from kind_rules).
+    // 3. Resolve the explicitly supplied or configured creation path.
     let rel_path = match spec.path.clone() {
         Some(p) => p,
         None => infer_path(&spec.kind, &spec.title, &before.graph, config)?,
@@ -497,55 +496,39 @@ fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
 // ─── path inference ─────────────────────────────────────────────────
 
 fn infer_path(kind: &Kind, title: &str, graph: &Graph, config: &Config) -> Result<PathBuf> {
-    // Find the first kind_rule that produces this kind.
-    let Some(rule) = config
-        .identity
-        .kind_rules
-        .iter()
-        .find(|r| r.kind == kind.as_str())
-    else {
-        return Err(Error::Config(format!(
-            "cannot infer path for kind {:?}: no identity.kind_rules match; \
-             supply `--path` explicitly",
-            kind.as_str()
-        )));
-    };
-
-    let dir = directory_from_glob(&rule.glob).ok_or_else(|| {
+    let template = config.scaffold.paths.get(kind.as_str()).ok_or_else(|| {
         Error::Config(format!(
-            "kind_rule glob {:?} does not yield a concrete directory; \
-             supply `--path` explicitly",
-            rule.glob
+            "no scaffold.paths template for kind {:?}; supply --path or declare a creation path",
+            kind.as_str()
         ))
     })?;
-
-    let stem = next_filename_stem(&dir, title, graph, config)?;
-    Ok(dir.join(format!("{stem}.md")))
-}
-
-/// Reduce a glob to its leading literal directory. `docs/decisions/**`
-/// → `docs/decisions`. Returns `None` when the glob lacks a literal prefix.
-fn directory_from_glob(glob: &str) -> Option<PathBuf> {
-    let mut parts = Vec::new();
-    for segment in glob.split('/') {
-        if segment.contains('*') || segment.contains('?') || segment.contains('[') {
-            break;
-        }
-        parts.push(segment);
+    let path = crate::path_guard::forward_str(template)
+        .replace("{kind}", kind.as_str())
+        .replace("{slug}", &crate::parser::identity::slugify(title));
+    if !path.contains("{stem}") {
+        return Ok(PathBuf::from(path));
     }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.iter().collect())
+    let dir = Path::new(&path).parent().unwrap_or(Path::new(""));
+    let extension = Path::new(&path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| Error::Config("scaffold path must have a document extension".into()))?;
+    let stem = next_filename_stem(dir, title, extension, graph, config)?;
+    Ok(PathBuf::from(path.replace("{stem}", &stem)))
 }
 
 /// Build the filename stem. When a naming rule has `sequential = true`
-/// and matches the target directory via directory-prefix containment,
+/// and matches the generated document path,
 /// use `NNNN-<slug>` with the next available number; otherwise plain
 /// `<slug>`.
-fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -> Result<String> {
+fn next_filename_stem(
+    dir: &Path,
+    title: &str,
+    extension: &str,
+    graph: &Graph,
+    config: &Config,
+) -> Result<String> {
     let slug = crate::parser::identity::slugify(title);
-    let dir_str = crate::path_guard::forward_string(dir);
 
     for rule in &config.rules.naming {
         if !rule.sequential {
@@ -555,53 +538,31 @@ fn next_filename_stem(dir: &Path, title: &str, graph: &Graph, config: &Config) -
             .expect("validated by Config::load")
             .compile_matcher();
 
-        // The rule's literal prefix (segments before the first
-        // wildcard) must equal the scaffolded directory.
-        if !rule_targets_directory(&rule.glob, &dir_str) {
-            continue;
+        let (maximum, width) = sequence_maximum(graph, &matcher, &rule.pattern);
+        let next = maximum.checked_add(1);
+        let number = match next {
+            Some(number) => number,
+            None => maximum,
+        };
+        let padded = format!("{:0>width$}", number, width = width);
+        let stem = format!("{padded}-{slug}");
+        if matcher.is_match(dir.join(format!("{stem}.{extension}"))) {
+            if next.is_none() {
+                return Err(Error::Config(format!(
+                    "sequence numbering is exhausted at {maximum}; supply --path or change the numbering rule"
+                )));
+            }
+            return Ok(stem);
         }
-        let (next, width) = next_sequence(graph, &matcher, &rule.pattern)?;
-        let padded = format!("{:0>width$}", next, width = width);
-        return Ok(format!("{padded}-{slug}"));
     }
 
     Ok(slug)
 }
 
-/// Does `glob` apply to files under `dir`? The glob's literal prefix
-/// (every segment before the first wildcard) must equal `dir`.
-///
-/// `directory_from_glob` already computes that prefix — delegating to
-/// it keeps the "literal prefix equality" contract documented at one
-/// place and dodges a class of broken glob-synthesis edge cases
-/// (`*.md`, `?*`, `[0-9]*.md`, middle-path wildcards) that the earlier
-/// synthesis approach silently mis-matched.
-///
-/// Examples (all verified in tests):
-///   glob = "docs/decisions/**",        dir = "docs/decisions"       → true
-///   glob = "docs/decisions/*.md",      dir = "docs/decisions"       → true
-///   glob = "docs/decisions/[0-9]*.md", dir = "docs/decisions"       → true
-///   glob = "docs/*/decisions/**",      dir = "docs"                 → true
-///   glob = "docs/guides/**",           dir = "docs/decisions"       → false
-fn rule_targets_directory(glob: &str, dir: &str) -> bool {
-    let Some(prefix) = directory_from_glob(glob) else {
-        return false;
-    };
-    crate::path_guard::forward_string(&prefix) == dir
-}
-
-/// Find the next sequence number for files matching `matcher`, preserving
-/// the digit width of existing filenames. Errors when the `u64` sequence
-/// space is exhausted (a matching file is already numbered `u64::MAX`):
-/// saturating would re-emit that number, writing a document that reds the
-/// project's own `UniqueNumberingRule` — a violation of the
-/// tool-written-must-pass invariant — so the only correct outcome is to
-/// refuse with a clear message.
-fn next_sequence(
-    graph: &Graph,
-    matcher: &globset::GlobMatcher,
-    pattern: &str,
-) -> Result<(u64, usize)> {
+/// Maximum declared sequence and digit width. At exhaustion, the caller uses
+/// that terminal number only to test whether the rule selects the creation
+/// path; an unrelated rule must not block creation, and no number is reused.
+fn sequence_maximum(graph: &Graph, matcher: &globset::GlobMatcher, pattern: &str) -> (u64, usize) {
     let digits_re = crate::rules::naming::leading_digits_re();
     let pattern_re =
         Regex::new(pattern).expect("naming pattern is validated as a regex by Config::load");
@@ -624,14 +585,7 @@ fn next_sequence(
         }
     }
 
-    let next = max_seen.checked_add(1).ok_or_else(|| {
-        Error::Config(format!(
-            "sequence numbering is exhausted — a matching document is already numbered \
-             {max_seen} (u64::MAX), so no next number exists. Renumber that file, or \
-             scaffold with an explicit --path"
-        ))
-    })?;
-    Ok((next, width))
+    (max_seen, width)
 }
 
 // ─── frontmatter rendering ──────────────────────────────────────────
@@ -879,6 +833,9 @@ mod tests {
             kinds: KindsConfig {
                 allowed: vec!["adr".into(), "guide".into()],
             },
+            scaffold: crate::config::ScaffoldConfig {
+                paths: [("adr".into(), "docs/decisions/{stem}.md".into())].into(),
+            },
             identity: IdentityConfig {
                 kind_rules: vec![KindRule {
                     glob: "docs/decisions/**".into(),
@@ -947,6 +904,96 @@ mod tests {
         );
         assert_eq!(result.id, "adr-0001-retry-policy");
         assert!(!result.written);
+    }
+
+    #[test]
+    fn creation_paths_are_independent_of_classification_globs() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut config = adr_config();
+        config.identity.kind_rules[0].glob = "specs/*/spec.md".into();
+        config.scaffold.paths.clear();
+        let probe = inert_probe(scratch.path(), &config);
+        assert!(
+            scaffold(
+                scratch.path(),
+                spec("adr", "New record", None, None),
+                &config,
+                &probe,
+                false,
+                false,
+                crate::test_today()
+            )
+            .is_err()
+        );
+
+        config
+            .scaffold
+            .paths
+            .insert("adr".into(), "specs/{slug}/spec.md".into());
+        let (record, _) = scaffold(
+            scratch.path(),
+            spec("adr", "New record", None, None),
+            &config,
+            &probe,
+            true,
+            false,
+            crate::test_today(),
+        )
+        .unwrap();
+        assert_eq!(record.path, Path::new("specs/new-record/spec.md"));
+        let rebuilt = crate::builder::build_with_overlay(scratch.path(), &config, &[]).unwrap();
+        assert_eq!(rebuilt.graph.node(&record.id).unwrap().path, record.path);
+    }
+
+    #[test]
+    fn numbering_matches_the_created_path_across_directory_wildcards() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut config = adr_config();
+        config
+            .scaffold
+            .paths
+            .insert("adr".into(), "docs/payments/decisions/{stem}.md".into());
+        config.rules.naming[0].glob = "docs/*/decisions/[0-9]*.md".into();
+        let probe = inert_probe(scratch.path(), &config);
+        let (record, _) = scaffold(
+            scratch.path(),
+            spec("adr", "New record", None, None),
+            &config,
+            &probe,
+            false,
+            false,
+            crate::test_today(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.path,
+            Path::new("docs/payments/decisions/0001-new-record.md")
+        );
+    }
+
+    #[test]
+    fn exhausted_numbering_blocks_only_a_path_the_rule_selects() {
+        let scratch = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(scratch.path().join("docs/decisions")).unwrap();
+        std::fs::write(
+            scratch
+                .path()
+                .join(format!("docs/decisions/{}-old.md", u64::MAX)),
+            "---\nid: old\nkind: adr\n---\n# Old\n",
+        )
+        .unwrap();
+        let mut config = adr_config();
+        config.rules.naming[0].pattern = r"^\d+-[a-z0-9-]+\.md$".into();
+        let graph = crate::builder::build_with_overlay(scratch.path(), &config, &[])
+            .unwrap()
+            .graph;
+        assert!(
+            next_filename_stem(Path::new("docs/decisions"), "New", "md", &graph, &config).is_err()
+        );
+        assert_eq!(
+            next_filename_stem(Path::new("docs/unrelated"), "New", "md", &graph, &config).unwrap(),
+            "new"
+        );
     }
 
     #[test]
@@ -1133,43 +1180,6 @@ mod tests {
             result.content
         );
         assert!(result.content.contains("owner: \"platform\""));
-    }
-
-    #[test]
-    fn directory_from_glob_handles_literals() {
-        assert_eq!(
-            directory_from_glob("docs/decisions/**"),
-            Some(PathBuf::from("docs/decisions"))
-        );
-        assert_eq!(directory_from_glob("**/SKILL.md"), None);
-    }
-
-    #[test]
-    fn rule_targets_directory_common_shapes() {
-        // Trailing ** is the canonical form.
-        assert!(rule_targets_directory(
-            "docs/decisions/**",
-            "docs/decisions"
-        ));
-        // Wildcard leaf globs must still target the parent directory.
-        assert!(rule_targets_directory(
-            "docs/decisions/*.md",
-            "docs/decisions"
-        ));
-        assert!(rule_targets_directory(
-            "docs/decisions/[0-9]*.md",
-            "docs/decisions"
-        ));
-        assert!(rule_targets_directory(
-            "docs/decisions/?*",
-            "docs/decisions"
-        ));
-        // Middle-path wildcard resolves its literal prefix only.
-        assert!(rule_targets_directory("docs/*/decisions/**", "docs"));
-        // Disjoint directories must not match.
-        assert!(!rule_targets_directory("docs/guides/**", "docs/decisions"));
-        // Leading wildcard has no literal prefix at all.
-        assert!(!rule_targets_directory("**/SKILL.md", "docs/decisions"));
     }
 
     #[test]

@@ -117,12 +117,16 @@ A component the run **can** measure that the document supplies no input for is d
 nodex query trust --bottom N [--kind K] [--status S] [--below S]
 nodex query trust --top    N [--kind K] [--status S] [--below S]
 ```
-Ranked listings; each item carries `score` + `components`. `--status active` is the review-queue read — terminal nodes legitimately score near zero and would drown the signal. `--below S` is an opt-in cutoff (strictly below). Mutually exclusive with each other and with the single-node form. A node with no composite is **not in the ranking's domain**: excluded from `items` and `total`, never a bottom-N slot, never satisfying `--below`. The exclusion rides the envelope warnings with a count.
+Ranked listings; each item carries `score` + `components`. `--status active` is the review-queue read — filtering keeps retired documents out of the maintenance queue. `--below S` is an opt-in cutoff (strictly below). Mutually exclusive with each other and with the single-node form. A node with no composite is **not in the ranking's domain**: excluded from `items` and `total`, never a bottom-N slot, never satisfying `--below`. The exclusion rides the envelope warnings; `details` carries `{type: ranking_unscored, count, reason: incomplete_basis}`. `basis` names the measured, positively weighted components. Scores are maintenance signals, not correctness or approval; non-terminal statuses share one status value.
 
 ```bash
-nodex query similar --id <id> [--limit N] [--min-score S]
-nodex query similar --title "<t>" [--kind <k>] [--tags a,b] [--parent-dir <dir>] [--limit N] [--min-score S]
+nodex query similar --id <id> [--status S] [--limit N] [--min-score S]
+nodex query similar --title "<t>" [--kind <k>] [--tags a,b] [--parent-dir <dir>] [--status S] [--limit N] [--min-score S]
 ```
+`query similar --status <status>` filters candidate documents before ranking; it
+never changes the target. Without `--status`, candidates include every status.
+Unscored similarity warnings carry `details.reason: target_without_signals`.
+
 `--limit` defaults to `similarity.default_limit`; `--min-score` is an opt-in cutoff (≥ S). The `--title` form probes before scaffolding: `--kind` is optional and validated against `kinds.allowed` when given, `--tags` / `--parent-dir` supply the tag and directory signals for the prospective doc.
 
 A component is omitted when the **target** carries nothing to rank on — an empty token or tag set, a spec field you did not pass, no graph id or no neighbours for `linked` — which holds for every candidate alike, so the composite renormalises over what the query does carry. What a **candidate** lacks is measured, not omitted: no overlap with a set the target has is `0.0`. So supplying fewer flags widens the field rather than penalising the documents that filled the field in. A query carrying no positively-weighted signal at all ranks nothing: every candidate is excluded rather than listed at a fabricated `0.00` (so `--min-score` cannot be gamed by absence), and the count is announced via `ranking_unscored`.
@@ -175,8 +179,8 @@ nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
 ## scaffold
 
 ```bash
-nodex scaffold --kind <k> --title "<t>"                    # id inferred; path inferred only when an
-                                                           # identity.kind_rule maps the kind to a dir
+nodex scaffold --kind <k> --title "<t>"                    # id inferred; path requires a
+                                                           # scaffold.paths template for that kind
 nodex scaffold --kind <k> --title "<t>" --id <explicit-id>
 nodex scaffold --kind <k> --title "<t>" --path docs/foo.md
 nodex scaffold --kind <k> --title "<t>" --dry-run          # preview, no write

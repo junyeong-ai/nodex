@@ -7,7 +7,7 @@ description: >-
   --staged`, typed violation `details` for
   auto-fix, `rule_coverage` ("did my rules actually check anything"). Use to query backlinks,
   supersession chains, orphans, stale docs, dependents, annotations, nodes by kind / status /
-  tag, a path's node, trust scores and similar docs; to scaffold, rename, migrate, retarget or
+  tag, a path's node, maintenance scores and similar docs; to scaffold, rename, migrate, retarget or
   supersede documents through one guarded write path; to diff graphs between git refs or ask
   "what breaks if I merge this"; to export schema / enums / rules / envelope-schema / config /
   commands for typed codegen and API drift. Also for `nodex status` and a stale graph.json,
@@ -15,7 +15,7 @@ description: >-
   body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.52.0
+  version: 0.53.0
 ---
 
 # nodex — markdown document graph CLI
@@ -99,6 +99,12 @@ Caveats:
 - The gate reports what a proposal *introduces*; a write seam's immutability verdict is **absolute**. A document that already drifted from its frozen baseline passes the gate and is still refused by the write. Revert the drift or supersede the record.
 
 `--severity` narrows the list, never the verdict: `has_errors` and the exit code answer for every violation checked, so `--severity warning` over a project holding errors still exits 1. A `gate_suppression` warning counts what the **envelope** stops carrying, which is not the same as what the list stops showing — in `--content` mode a filtered-out warning on a proposal path is still in `standing`, so no suppression is announced for it.
+
+`scaffold` needs `--path` or a `[scaffold.paths]` template for its kind.
+Classification globs do not choose creation paths. Trust scores describe maintenance
+signals, not approval or correctness; inspect `basis`, status and supersession.
+`query similar --status <status>` narrows comparison candidates. Ranking warnings
+include typed `details.count` and `details.reason`.
 
 ## Write seams
 
@@ -202,8 +208,8 @@ answer measured nothing).
 
 ```bash
 nodex build
-nodex query similar --title "<draft>"    # avoid duplicates
-nodex scaffold --kind <k> --title "<t>"
+nodex query similar --title "<draft>"    # inspect comparison candidates
+nodex scaffold --kind <k> --title "<t>" --path docs/new.md
 nodex build                              # reindex
 ```
 
@@ -233,7 +239,11 @@ nodex check          # superseded_reference: the path links left to repoint
 
 **Correcting a frozen record** — where its `body_immutable` block declares `append_section` (see `export rules`), append the correction under that heading at the end of the body and gate it with `check --content`; `details.refusal` names what to undo (`reference/config.md`). A decision that changed still takes `lifecycle supersede`.
 
-**Cleanup triage** — no single verb; compose: `query issues` (what's broken) → `check --severity error` (what blocks) → `query trust --bottom N --status active` (what to distrust; terminal docs score near zero by design and would drown the signal) → act with `lifecycle set --status archived`, `retarget`, or `rename`.
+**Cleanup triage** — compose `query issues` (findings), `check --severity error`
+(blocking findings), and `query trust --bottom N --status <live-status>`
+(maintenance review candidates). Choose a status the project declares, inspect
+`basis` and `undeclared`, and read the documents before choosing a lifecycle or
+reference edit. Low scores do not establish incorrectness or justify retirement.
 
 **Impact before a refactor**
 

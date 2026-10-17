@@ -44,7 +44,7 @@ This makes routine questions hard to answer:
 | "What changed between these refs?" | line diff at best | Added / removed nodes, status transitions, field changes |
 | "Find auth docs" | every file containing "auth" | Ranked by id / title / tag, each hit with its per-field score breakdown |
 
-nodex makes the implicit graph explicit. It parses your markdown once, builds a typed graph with adjacency indices, and answers structural questions from that snapshot without re-parsing the markdown. Routine workflows — pre-commit validation, PR diff gating, deduplication before authoring, vocabulary sync with external tooling — collapse into single JSON-emitting commands.
+nodex makes the implicit graph explicit. It parses your markdown once, builds a typed graph with adjacency indices, and answers structural questions from that snapshot without re-parsing the markdown. Routine workflows — pre-commit validation, PR diff gating, comparison before authoring, vocabulary sync with external tooling — collapse into single JSON-emitting commands.
 
 **Core properties:**
 
@@ -56,20 +56,6 @@ nodex makes the implicit graph explicit. It parses your markdown once, builds a 
 
 ---
 
-
-`nodex query --require-current <command>` checks snapshot configuration, scope and
-content before answering. Drift fails with `GRAPH_OUTDATED`; unreadable files fail
-with `IO_ERROR`. This is a probe of the working tree, not a filesystem transaction.
-
-`nodex query search <keyword> --body` searches canonical body lines, including code
-blocks. Hits carry one-based body line numbers and text, in node-id order; `--limit`
-caps documents. Each searched file must match its indexed revision. Documents with
-parse failures are omitted with a `scope_coverage` warning. Without `--body`, search
-continues to match id, title and tags.
-
-Scaffold returns `data.candidates` with similarity scores and component breakdowns
-when candidates exist. Ranking supplies comparison candidates; it does not decide
-whether a document is a duplicate or should be superseded.
 
 ## Quick Start
 
@@ -319,6 +305,11 @@ A body reference is resolved down a ladder: the path as written from the project
 
 Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — an AST-based parser, not regex — so links inside fenced code blocks are correctly ignored. Custom pattern captures skip code blocks *and* inline code spans the same way, and the reference rewriter (`rename` / `retarget`) honors the identical surface, so extraction and rewriting never disagree. For a corpus whose citation idiom lives inside spans — node ids written as `` `adr-001` `` — a pattern sets `code_spans = true`: an inline code span whose **entire content** matches the pattern is then a reference on both sides at once, while a partial match inside a span (`` `just adr-tool` ``) and anything in a code block stay code.
 
+Markdown destinations separate URI path, query and fragment before decoding the
+path. Percent-encoded local filenames resolve normally; external schemes and
+network-path references are not local graph edges. Rename preserves query and
+fragment. Heading-anchor validity remains outside the document graph.
+
 ### Frontmatter Schema
 
 | Field | Type | Required | Meaning |
@@ -380,6 +371,16 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 
 ### Index Once, Query Forever
 
+`nodex query --require-current <command>` checks snapshot configuration, scope and
+content before answering. Drift fails with `GRAPH_OUTDATED`; unreadable files fail
+with `IO_ERROR`. This is a probe of the working tree, not a filesystem transaction.
+
+`nodex query search <keyword> --body` searches canonical body lines, including code
+blocks. Hits carry one-based body line numbers and text, in node-id order; `--limit`
+caps documents. Each searched file must match its indexed revision. Documents with
+parse failures are omitted with a `scope_coverage` warning. Without `--body`, search
+continues to match id, title and tags.
+
 - **Build artifact**: `graph.json` — single source of truth
 - **Queries** read `graph.json` without rebuilding. By default they compare config and scope membership, warning `snapshot_divergence` on drift. `--require-current` also hashes all covered files and rejects drift; missed lookups escalate to a content probe. `query node --with-body` and `query search --body` read revision-checked bodies. `trust` / unresolved-edge checks additionally probe git / the filesystem
 - **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build
@@ -412,7 +413,7 @@ proposals or replacing content-hash validation.
 | `stale` | Active docs whose `reviewed` is `stale_days` or more days old | Linear scan, filter by status + `reviewed` |
 | `recent` | Docs with date in window | Linear scan + date filter |
 | `similar` | Score-ranked candidates | Token Jaccard + tag / kind / dir / neighbour overlap |
-| `trust <id>` | Composite reliability + components | Weighted average over the measured components (inapplicable ones dropped, denominator renormalised; a component the run can measure and the document leaves undeclared yields no composite) |
+| `trust <id>` | Document-maintenance score + components | Weighted average over the measured components (inapplicable ones dropped, denominator renormalised; a component the run can measure and the document leaves undeclared yields no composite) |
 | `components` | Connected component partition | Undirected BFS, deterministic ordering |
 | `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) |
 | `dependents <id>` | Every node whose dependency chain reaches it | Reverse BFS over incoming edges, bounded by `--depth` / `--relations` |
@@ -535,10 +536,10 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `nodex query node <id> \| --path <file> [--with-body]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter declares this code path. The declaring value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`; the `<path>` argument is a needle with no frame, so `./`, `..` and `\` in it normalise away |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules + per-rule coverage. Resolves `rules.immutable_baseline` exactly as a default `check`, so immutability violations surface here without `--since`. The typed listings and the violations are two views of one set of findings: `orphans` and `stale` each carry a gate record in `violations` (`orphan`, `stale_review`), and a finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions, and `by_category` keys each counted finding by the rule that found it. What no rule gates counts on its own: a warning-severity unresolved edge under `unresolved_edge`, an info-severity one under its policy row name, out of `total` |
-| `nodex query trust <id>` | Composite reliability + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when the run did not measure them. Two absences hide behind that omission and `undeclared` tells them apart: a component nothing the document could write would produce (which, per component: the `[trust]` block in [Configuration](#configuration)) is dropped and the composite renormalises over the rest; a component the run *can* measure that the document declares no input for is named in `undeclared` and leaves no composite at all, because renormalising there would impute for the missing component exactly the score the present ones produced. |
-| `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | Ranked listing of the N lowest-trust nodes (ascending). `--kind` / `--status` narrow the corpus (`--status active` is the review-queue read — terminal nodes legitimately score near zero and would drown the signal); `--below` is an opt-in score cutoff (keep entries strictly below `S`). Mutually exclusive with `--top` and with the single-node `<id>` form. |
-| `nodex query trust --top N    [--kind K] [--status S] [--below S]` | Ranked listing of the N highest-trust nodes (descending). Same filters as `--bottom`. |
-| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --parent-dir D --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when the *target* carries nothing to rank on (empty token / tag set, pre-creation spec without `--kind` or `--parent-dir`, no graph id or no neighbours for `linked`), which holds for every candidate alike. What a *candidate* lacks is measured, not omitted: no overlap with a set the target has is `0.0`. |
+| `nodex query trust <id>` | Document-maintenance score + per-component breakdown for a single node. `status` is always present; `freshness`, `drift`, `backlinks` are omitted from the JSON when the run did not measure them. Two absences hide behind that omission and `undeclared` tells them apart: a component nothing the document could write would produce (which, per component: the `[trust]` block in [Configuration](#configuration)) is dropped and the composite renormalises over the rest; a component the run *can* measure that the document declares no input for is named in `undeclared` and leaves no composite at all, because renormalising there would impute for the missing component exactly the score the present ones produced. |
+| `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | Ranked listing of the N lowest-scoring nodes (ascending). `--kind` / `--status` narrow the corpus (`--status active` keeps retired documents out of the maintenance queue); `--below` is an opt-in score cutoff (keep entries strictly below `S`). Mutually exclusive with `--top` and with the single-node `<id>` form. |
+| `nodex query trust --top N    [--kind K] [--status S] [--below S]` | Ranked listing of the N highest-scoring nodes (descending). Same filters as `--bottom`. |
+| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --parent-dir D --status S --limit N --min-score S]` | Vector-free similarity (token Jaccard + tag/kind/dir/neighbour overlap). `--limit` caps the candidates (defaults to `similarity.default_limit`); `--min-score S` is an opt-in cutoff that keeps only candidates scoring at least `S`. Every per-component field is conditional — each is omitted when the *target* carries nothing to rank on (empty token / tag set, pre-creation spec without `--kind` or `--parent-dir`, no graph id or no neighbours for `linked`), which holds for every candidate alike. What a *candidate* lacks is measured, not omitted: no overlap with a set the target has is `0.0`. |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components [--limit N]` | Partition the graph into connected components (undirected, largest first) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected) |
@@ -549,9 +550,32 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
 | `nodex export rules` | Registered-rules manifest — every rule the current config registers, with `id`, `severity`, `description`, `diff_aware` / `judges_steps` and a per-rule `params` payload (a registered rule can still report itself in `skipped_rules` when it runs) |
 | `nodex export envelope-schema [--inline-refs]` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers; `--inline-refs` emits each per-command schema fully self-contained (no `$ref`/`$defs`) for `$ref`-naive generators |
-| `nodex export config` | Resolved document-locating surface: scope, output, parser, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved global `initial_status` (a kind a `[statuses.flow]` governs starts at that flow's `initial`) |
+| `nodex export config` | Resolved document-locating surface: scope, output, parser, scaffold templates, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved global `initial_status` (a kind a `[statuses.flow]` governs starts at that flow's `initial`) |
 | `nodex export commands` | The authoritative list of leaves: every leaf's `path` tokens, its `per_command` schema key, its positionals (name, required) and flag-selected payload modes (e.g. `query.trust-list`); flags themselves are in `--help` |
 | `nodex export diagnostics` | Error-code and exit-code vocabularies — the closed sets of envelope `error.code` values (each tagged `core`/`cli` origin) and advisory `warnings[].code` values, plus the `0`/`1`/`2` exit-code contract, so a consumer codegens an exhaustive error enum instead of hard-coding it from prose |
+
+### Creation and ranking
+
+Scaffold returns `data.candidates` with similarity scores and component breakdowns
+when candidates exist. Ranking supplies comparison candidates; it does not decide
+whether a document is a duplicate or should be superseded.
+
+Creation uses `--path` or an explicit template in `[scaffold.paths]`; classification
+globs never choose a destination. `{slug}` is the title slug and `{stem}` adds
+configured sequence numbering when used as the complete filename stem.
+
+```toml
+[scaffold.paths]
+adr = "docs/decisions/{stem}.md"
+spec = "specs/{slug}/spec.md"
+```
+
+`query trust` ranks document-maintenance signals, not correctness, approval or
+authority. `basis` names the positively weighted signals actually measured;
+non-terminal statuses all contribute the same status value. Use explicit status
+filters and supersession records when deciding what governs. `query similar
+--status active` restricts comparison candidates without hiding history by default.
+Ranking exclusions include structured `warnings[].details` with `count` and `reason`.
 
 ---
 
@@ -721,7 +745,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.52, <0.53"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.53, <0.54"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -760,7 +784,7 @@ nodex export schema                         # JSON Schema (draft 2020-12) for th
 nodex export enums                          # kinds + statuses + per-field enums
 nodex export rules                          # active rules (built-in + config-driven) with `params`
 nodex export envelope-schema [--inline-refs]  # JSON Schema for every CLI envelope shape (typed-codegen contract)
-nodex export config                         # resolved scope / output / parser / identity surface + fallbacks
+nodex export config                         # resolved scope / output / parser / scaffold / identity surface + fallbacks
 nodex export commands                       # every leaf, its positionals and payload modes (flags: --help)
 nodex export diagnostics                     # error-code + warning-code + exit-code vocabularies (closed sets, for codegen)
 ```
@@ -802,6 +826,11 @@ terminal = ["superseded", "archived", "deprecated", "abandoned"]
 # declares none, where no [statuses.flow] governs its kind. Omitted = the
 # first `allowed` value:
 initial = "draft"
+
+[scaffold.paths]
+generic = "docs/{stem}.md"
+adr = "docs/decisions/{stem}.md"
+spec = "specs/{slug}/SPEC.md"
 
 [[identity.kind_rules]]
 glob = "docs/decisions/**"
@@ -998,6 +1027,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`). A directory reached through a symlink is not descended unless `follow_symlinks = true` — the default matches `git` / `ripgrep` / `fd` / `find` and keeps every path-keyed rule with exactly one path to key on; each undescended link is named in the build's `unfollowed_paths`, and each extra name a followed link admits in `aliased_paths`. An `include` entry may be a table `{ glob, may_be_empty = true }` (so may an `identity` or `conditional_exclude` rule) saying that selecting nothing is expected — it silences only that declaration's own `scope_coverage` warning |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
 | `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and a document declaring none receives, for kinds no flow governs; default: first allowed) + `flow` (see [Status flow](#status-flow)) |
+| `[scaffold.paths]` | Explicit per-kind creation path templates, or supply `--path` |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | Custom `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
 | `[rules]` | `immutable_baseline` (the ref a plain `check` diffs against; `nodex init` writes `"HEAD"`) + `acyclic_relations` (default `["implements"]`) + `naming` patterns + `frontmatter_immutable` (field lock) + `body_immutable` (body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check); both locks pick when they engage with `trigger` = `terminal` / `status` / `creation` |
@@ -1046,7 +1076,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 | `output/` | `graph.json` (single source of truth) + deterministic `GRAPH.md` |
 | `status.rs` | `load_graph` (the single snapshot-read seam: typed `GRAPH_MISSING`, exact membership-divergence warning) + `compute_status` / `compute_divergence` (the `nodex status` content probe) |
 | `lifecycle.rs` | Status transitions that mutate frontmatter |
-| `scaffold.rs` | Create new docs with valid frontmatter; deduplication via similarity |
+| `scaffold.rs` | Create new docs with valid frontmatter and ranked comparison candidates |
 | `path_guard.rs` | Reject `..` / symlinks; `write_atomic_in_root`, the single guarded write primitive |
 | `yaml_text.rs` | Line-level YAML scalar reading and quoting behind the minimal-diff frontmatter writes |
 | `hash.rs` | SHA-256 content fingerprints for the build cache and the `GRAPH.md` stamp |
@@ -1118,7 +1148,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.52, <0.53" build
+nodex --check-version ">=0.53, <0.54" build
 ```
 
 ---

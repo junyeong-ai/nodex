@@ -3,9 +3,9 @@
 `nodex export envelope-schema` emits a draft 2020-12 JSON Schema for
 every CLI envelope shape. It is the **canonical contract** between
 nodex and any downstream that parses its JSON output — types
-generated from it cannot drift from what the CLI actually serialises,
-because the schema is derived from the same Rust structs that produce
-the JSON.
+generated from it describe the published payload contract. Payload schemas are
+derived from the Rust response types; the generic envelope is assembled in
+`export.rs`. Contract tests validate real CLI responses against both layers.
 
 This guide is the recommended way to consume that schema. Skipping it
 and hand-rolling envelope types is supported but loses the contract
@@ -232,6 +232,9 @@ reviewer's machine.
 - Snapshot query envelopes additionally carry `snapshot` (verification scope and
   coverage). It is envelope metadata, not part of the generated command `data`
   model. A content-verified snapshot can still report unbuildable documents.
+- Envelope warnings can carry optional typed `details`. Ranking exclusions use
+  `{type: "ranking_unscored", count, reason}`; dispatch on these fields rather
+  than parsing warning messages. Payload-only codegen does not validate warnings.
 - Batch payload `completion` is `planned | complete | partial`; inspect it and
   optional `failures`. Non-empty failures exit 2 while retaining `ok: true` and
   the partial result; wrappers must read stdout on nonzero exits. Policy holds
@@ -276,5 +279,5 @@ before any envelope hits the consumer, so the codegen-generated
 client never sees output it wasn't generated for.
 
 ```bash
-nodex --check-version ">=0.52, <0.53" query annotations ...
+nodex --check-version ">=0.53, <0.54" query annotations ...
 ```

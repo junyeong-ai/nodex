@@ -40,6 +40,11 @@ exit: 0
       "link_patterns": [],
       "wikilink_enabled": false
     },
+    "scaffold": {
+      "paths": {
+        "adr": "docs/decisions/{stem}.md"
+      }
+    },
     "scope": {
       "conditional_exclude": [],
       "exclude": [],
@@ -55,7 +60,7 @@ exit: 0
         ".venv"
       ]
     },
-    "version": "0.52.0"
+    "version": "0.53.0"
   },
   "ok": true
 }

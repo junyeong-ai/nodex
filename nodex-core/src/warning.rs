@@ -5,8 +5,8 @@
 //! [`WarningCode`] an agent branches on, plus the rendered human detail
 //! in `message`. This mirrors the `error.code` discipline on the failure
 //! plane: a consumer matches the closed `code` vocabulary instead of
-//! regex-ing prose, and the message stays free to carry dynamic detail
-//! (paths, counts) without a per-field schema. The published
+//! regex-ing prose. Optional typed `details` carries actionable evidence;
+//! `message` supplies the readable context. The published
 //! `code` set is exported by `nodex export diagnostics`.
 
 use schemars::JsonSchema;
@@ -199,6 +199,25 @@ impl WarningCode {
 pub struct Warning {
     pub code: WarningCode,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<WarningDetails>,
+}
+
+/// Structured evidence needed to act on an advisory without reading prose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WarningDetails {
+    RankingUnscored {
+        count: usize,
+        reason: RankingExclusion,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RankingExclusion {
+    IncompleteBasis,
+    TargetWithoutSignals,
 }
 
 impl Warning {
@@ -207,7 +226,13 @@ impl Warning {
         Self {
             code,
             message: message.into(),
+            details: None,
         }
+    }
+
+    pub fn with_details(mut self, details: WarningDetails) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 

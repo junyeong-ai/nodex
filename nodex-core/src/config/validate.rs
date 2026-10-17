@@ -348,6 +348,7 @@ impl Config {
         self.validate_field_names()?;
         self.validate_identity()?;
         self.validate_extraction()?;
+        self.validate_scaffold()?;
         self.validate_relations()?;
         self.validate_immutability()?;
         self.validate_scoring()?;
@@ -356,6 +357,55 @@ impl Config {
         self.validate_merged_field_enums()?;
         self.validate_merged_cross_fields()?;
         self.validate_merged_forbidden()?;
+        Ok(())
+    }
+
+    fn validate_scaffold(&self) -> Result<()> {
+        for (kind, template) in &self.scaffold.paths {
+            let context = format!("scaffold.paths.{kind}");
+            if !self.kinds.allowed.contains(kind) {
+                return Err(Error::Config(format!("{context} names an unknown kind")));
+            }
+            if scan_template_malformed_braces(template)
+                || scan_template_placeholders(template)
+                    .iter()
+                    .any(|name| !["kind", "slug", "stem"].contains(&name.as_str()))
+            {
+                return Err(Error::Config(format!(
+                    "{context} accepts only {{kind}}, {{slug}} and {{stem}} placeholders"
+                )));
+            }
+            let expanded = template
+                .replace("{kind}", kind)
+                .replace("{slug}", "document")
+                .replace("{stem}", "document");
+            let expanded = crate::path_guard::forward_str(&expanded);
+            let path = Path::new(&expanded);
+            if template.trim().is_empty()
+                || expanded.contains('\0')
+                || crate::path_guard::reject_traversal(path).is_err()
+                || !self
+                    .parser
+                    .extensions
+                    .iter()
+                    .any(|extension| expanded.ends_with(extension))
+            {
+                return Err(Error::Config(format!(
+                    "{context} must be a project-relative document path without parent traversal"
+                )));
+            }
+            if template.contains("{stem}")
+                && (template.matches("{stem}").count() != 1
+                    || Path::new(&crate::path_guard::forward_str(template))
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        != Some("{stem}"))
+            {
+                return Err(Error::Config(format!(
+                    "{context}: {{stem}} must be the complete filename stem; use {{slug}} in directories"
+                )));
+            }
+        }
         Ok(())
     }
 

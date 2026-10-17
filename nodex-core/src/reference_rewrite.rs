@@ -226,7 +226,7 @@ enum ReferenceForm {
     /// so the target arrives decoded, the `#fragment` rides along, and
     /// the replacement is chosen from the spellings the parser reads
     /// back.
-    Destination { fragment: String },
+    Destination { suffix: String },
     /// A `[[wikilink]]` or `[[parser.link_patterns]]` capture in prose.
     /// The surrounding syntax is the document's own, so the target is
     /// written as it reads and the pattern has to re-capture exactly it:
@@ -246,7 +246,7 @@ impl ReferenceForm {
     /// form is written as the target reads.
     fn spellings(&self, target: &str) -> Vec<String> {
         match self {
-            Self::Destination { fragment } => destination_spellings(target, fragment).to_vec(),
+            Self::Destination { suffix } => destination_spellings(target, suffix).to_vec(),
             Self::Capture(_) | Self::Citation(_) => vec![target.to_string()],
         }
     }
@@ -270,11 +270,11 @@ impl ReferenceForm {
             // or wider than them (padding the author left inside the
             // brackets). Destinations never overlap each other, so overlap
             // names this one.
-            Self::Destination { fragment } => reading.destinations().iter().any(|destination| {
+            Self::Destination { suffix } => reading.destinations().iter().any(|destination| {
                 destination.start < written.end
                     && destination.end > written.start
                     && names(&destination.path)
-                    && destination.fragment == *fragment
+                    && destination.suffix == *suffix
             }),
             // Where a line sits in the markdown is not a property of the
             // line: an indented continuation is paragraph text after a
@@ -526,7 +526,7 @@ fn references(
                 target: destination.path,
                 relation: crate::model::edge::BODY_REFERENCE_RELATION.to_string(),
                 form: ReferenceForm::Destination {
-                    fragment: destination.fragment,
+                    suffix: destination.suffix,
                 },
             });
         }
@@ -1601,42 +1601,29 @@ fn reads(
     }
 }
 
-/// The spellings `path` + `fragment` can take as a markdown destination,
-/// in the order a rewrite prefers them: as the path is written, then with
-/// the destination grammar's escapes, then inside pointy brackets. The
-/// author's plain spelling survives every ordinary rename, and a name a
-/// plain destination cannot carry still gets repointed rather than left
-/// behind — a destination carrying a space ends where the space is, so
-/// `[x](old.md)` rewritten to `[x](new name.md)` is no link at all, while
-/// pointy brackets admit the space and a backslash admits the delimiters.
-/// `&` is escaped with them: a raw one opens an entity, so `a&copy;.md`
-/// written plainly is read back as `a©.md` and names a different file.
-/// The brackets are markdown the document did not have before, and a
-/// `[[parser.link_patterns]]` regex that matches past its capture can
-/// match across them — a reference the project reads that its author did
-/// not write, exactly as if the author had typed the brackets. It is the
-/// pattern's reach, not the spelling, and `check` reports what it binds.
-///
-/// What no spelling reaches is a name a *destination* cannot mean: one
-/// carrying `#`, which [`body::destination_path`] reads as the start of a
-/// fragment; one spelled with edge whitespace, which it trims; and one
-/// beginning `http://`, `https://` or `mailto:`, which it reads as
-/// leaving the project. Such a document is unreachable by markdown link
-/// whatever a rewrite does, so a move onto that name strands the links to
-/// it — and the write gate refuses the move exactly when the project's
-/// own `[[detection.unresolved_policy]]` calls a stranded reference an
-/// error.
-fn destination_spellings(path: &str, fragment: &str) -> [String; 3] {
+/// Try the author's readable path first, then Markdown escapes and angle
+/// brackets, then URI encoding. The round-trip guard chooses only a
+/// spelling that resolves to the intended file and preserves other references.
+fn destination_spellings(path: &str, fragment: &str) -> [String; 4] {
     let plain = format!("{path}{fragment}");
-    let mut escaped = String::with_capacity(plain.len());
-    for character in plain.chars() {
+    let escaped = escape_destination(&plain);
+    let pointy = format!("<{escaped}>");
+    let encoded = escape_destination(&format!(
+        "{}{fragment}",
+        crate::parser::destination::encode_path(path)
+    ));
+    [plain, escaped, pointy, encoded]
+}
+
+fn escape_destination(destination: &str) -> String {
+    let mut escaped = String::with_capacity(destination.len());
+    for character in destination.chars() {
         if matches!(character, '\\' | '&' | '(' | ')' | '<' | '>') {
             escaped.push('\\');
         }
         escaped.push(character);
     }
-    let pointy = format!("<{escaped}>");
-    [plain, escaped, pointy]
+    escaped
 }
 
 /// The byte range of the line holding `offset`, its newline excluded.
@@ -1698,7 +1685,7 @@ mod tests {
                 target: target.to_string(),
                 relation: relation.to_string(),
                 form: ReferenceForm::Destination {
-                    fragment: String::new(),
+                    suffix: String::new(),
                 },
             },
             repoint: None,
@@ -1815,6 +1802,49 @@ mod tests {
             &parser(),
         );
         assert_eq!(out, "[x](docs/b.md#section)");
+    }
+
+    #[test]
+    fn uri_encoding_and_markdown_escaping_preserve_one_destination() {
+        let config = parser();
+        for target in [
+            "docs/new#&copy;(1).md",
+            "docs/percent%20?.md",
+            "docs/ name .md",
+        ] {
+            let rewritten = rewrite(
+                "[x](docs/a.md?plain=1#part)",
+                "",
+                "docs/a.md",
+                target,
+                &config,
+            );
+            let links = body::extract_links(&rewritten, &config);
+            assert_eq!(links.len(), 1, "{rewritten}");
+            assert_eq!(links[0].target_path, target);
+            let destinations = body::Destination::in_document(&rewritten);
+            assert_eq!(destinations[0].suffix, "?plain=1#part");
+        }
+    }
+
+    #[test]
+    fn uri_encoding_preserves_root_frame_with_a_colon_in_the_first_segment() {
+        let config = parser();
+        for source_dir in ["", "nested"] {
+            for target in ["name:colon.md", "name:directory/a.md"] {
+                let rewritten = rewrite(
+                    "[x](old.md?plain=1#part)",
+                    source_dir,
+                    "old.md",
+                    target,
+                    &config,
+                );
+                let destinations = body::Destination::in_document(&rewritten);
+                assert_eq!(destinations.len(), 1, "{rewritten}");
+                assert_eq!(destinations[0].path, target);
+                assert_eq!(destinations[0].suffix, "?plain=1#part");
+            }
+        }
     }
 
     #[test]
@@ -2213,10 +2243,16 @@ mod tests {
         // reference stood on out from under it: `a.md` bound the root
         // document by the literal frame, and once that path is gone the
         // source-relative frame answers with the neighbour instead. No
-        // spelling of `a#1.md` reads back, so the reference is left — and
+        // configured capture can spell `a#1.md`, so it is left — and
         // the graph it leaves is valid, which is why nothing else says so.
+        let mut config = parser();
+        config.link_patterns.push(crate::config::LinkPattern {
+            pattern: r"@ref\(([a-z]+)\)".into(),
+            relation: "references".into(),
+            code_spans: false,
+        });
         let rewritten = rewrite_for_move(
-            "[x](a.md)",
+            "@ref(a)",
             Rewriting::Referrer(Path::new("docs")),
             Path::new("a.md"),
             Path::new("a#1.md"),
@@ -2230,7 +2266,7 @@ mod tests {
                     (Path::new("docs/a.md"), "shadow"),
                 ]),
             },
-            &parser(),
+            &config,
         )
         .unwrap();
         assert_eq!(rewritten.content, None, "no spelling of it reads back");

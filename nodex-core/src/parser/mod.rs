@@ -1,4 +1,5 @@
 pub mod body;
+pub(crate) mod destination;
 pub mod editor;
 pub mod frontmatter;
 pub mod identity;

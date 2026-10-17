@@ -42,3 +42,7 @@ The `.claude/rules/` directory holds the authoritative rules:
 - `releasing.md` — choosing, bumping, publishing and verifying a version (path-scoped: `Cargo.toml`, `.github/workflows/release.yml`)
 
 When in doubt, read the rule file. Don't restate it here.
+
+CLI usage workflows live in `.claude/skills/nodex/SKILL.md` and its `reference/`
+files. Validate those instructions against the working-tree binary's help and
+exports; an installed binary or skill may describe a different release.
