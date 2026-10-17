@@ -1,42 +1,22 @@
-//! Composite reliability score for a node.
+//! Composite document-maintenance score for a node.
 //!
-//! Agents call this to decide whether a piece of memory is still
-//! authoritative. The score collapses four orthogonal signals into a
-//! single number in `[0, 1]`, but the per-component breakdown is
-//! always returned so the consumer can re-rank with its own weights
-//! or surface the *why* alongside the *what*.
+//! Lifecycle, review age, source changes and incoming attention are maintenance
+//! signals, not correctness, approval or authority. Components remain inspectable;
+//! [`TrustEntry::basis`] names those measured with positive weights.
 //!
-//! A component goes missing for two reasons that read alike and score
-//! nothing alike. Either nothing this document declares would produce
-//! it in this run — no staleness horizon is configured, no repository
-//! can be measured, the node covers no source, no document anywhere is
-//! linked — or the run *can* measure it and this document declares no
-//! input. The first is a property of the run and holds for every node
-//! alike, so the composite renormalises over it: a mean over the
-//! components that apply is the best-defined summary there is. The
-//! second is a property of the document, and renormalising over it is
-//! not an exclusion at all. Dropping a component and rescaling the
-//! rest imputes, for the missing one, exactly the score the present
-//! ones produced — a high value for any document that looks healthy on
-//! what is left, granted *because* the datum is absent. A ranking
-//! built that way pays a document to withhold evidence, and pays most
-//! the ones with the least to show.
-//!
-//! So a composite exists only over a complete basis. A
-//! positively-weighted component the document could have declared and
-//! did not leaves the node with no score, named in
-//! [`TrustEntry::undeclared`] and outside every ranking's domain. A
-//! project that does not track review dates declares that in
-//! `[trust.weights]`, per kind if it varies: a zero weight carries no
-//! evidence either way, so it neither suppresses a composite nor asks
-//! for a declaration.
+//! Inapplicable components (an unconfigured horizon, an unavailable measurement,
+//! or no subject to measure) are dropped and the remaining weights renormalized.
+//! A measurable component missing its document input instead leaves no composite:
+//! [`TrustEntry::undeclared`] names it and rankings exclude the node. This avoids
+//! rewarding a document for withholding evidence. A zero weight declares that
+//! the project does not track the component, globally or for the matching kind.
 
 use chrono::NaiveDate;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, TrustWeights};
+use crate::config::Config;
 use crate::error::Result;
 use crate::model::{Graph, Node};
 
@@ -57,6 +37,9 @@ pub struct TrustEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
     pub components: TrustComponents,
+    /// Positively weighted, measured components contributing to the score.
+    /// Compare scores only with their basis and project weights in view.
+    pub basis: Vec<TrustComponent>,
     /// The positively-weighted components this run can measure and
     /// this document declares no input for — non-empty exactly when
     /// that is why `score` is absent. The entry names them rather than
@@ -67,7 +50,7 @@ pub struct TrustEntry {
 }
 
 /// The four component names — the vocabulary [`TrustComponents`],
-/// [`TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside
+/// [`crate::config::TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside
 /// the struct so the three cannot drift. Only `Freshness` and `Drift`
 /// ever reach `undeclared`: `Status` and `Backlinks` are derived from
 /// the graph, and nothing a document declares produces them.
@@ -153,8 +136,8 @@ pub fn compute_trust(
 /// Which end of the trust distribution `compute_trust_ranking` walks.
 ///
 /// `Bottom` ranks ascending (lowest trust first) — the operator's
-/// "what needs attention" query. `Top` ranks descending — the "what
-/// can I rely on right now" query. Both share the same filter +
+/// "what needs maintenance review" query. `Top` ranks descending —
+/// the highest measured maintenance scores. Both share the same filter +
 /// ranking pipeline so a `--below` cutoff is interpreted identically:
 /// keep only entries whose composite is strictly below the cutoff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,9 +149,8 @@ pub enum TrustExtreme {
 /// Knobs for [`compute_trust_ranking`]. `limit` is the operator's capacity (top-K
 /// is the timeless contract); `below` is an explicit opt-in cutoff and
 /// defaults to "no cutoff — every node enters the ranking". `status`
-/// restricts the corpus to one lifecycle status — the review-queue
-/// read (`--status active`) where terminal nodes legitimately score
-/// near zero and would otherwise drown the signal.
+/// restricts the corpus to one lifecycle status, keeping retired documents
+/// out of a maintenance queue when a live status is selected.
 #[derive(Debug, Clone)]
 pub struct TrustListOptions {
     pub extreme: TrustExtreme,
@@ -183,8 +165,8 @@ pub struct TrustListOptions {
 /// tie-break, truncate to `limit`. Top-K is the operator-capacity
 /// contract; the cutoff is opt-in.
 ///
-/// The ranking is a total order over composite scores, and two
-/// composites are only comparable over the same basis, so a node with
+/// The ranking orders composite scores; consumers must inspect each entry's
+/// basis and configured weights when comparing them. A node with
 /// no composite is excluded before the cutoff, the sort, and the
 /// truncation — it can never occupy a slot, satisfy `below`, or sort
 /// as an extreme — and is counted in [`RankingOutcome::unscored`].
@@ -256,19 +238,21 @@ fn score_node(
         drift: drift.measured(),
         backlinks: backlinks.measured(),
     };
-    let (score, undeclared) = compose(
-        status,
-        &weights,
-        [
-            (TrustComponent::Freshness, weights.freshness, freshness),
-            (TrustComponent::Drift, weights.drift, drift),
-            (TrustComponent::Backlinks, weights.backlinks, backlinks),
-        ],
-    );
+    let (score, basis, undeclared) = compose([
+        (
+            TrustComponent::Status,
+            weights.status,
+            Signal::Measured(status),
+        ),
+        (TrustComponent::Freshness, weights.freshness, freshness),
+        (TrustComponent::Drift, weights.drift, drift),
+        (TrustComponent::Backlinks, weights.backlinks, backlinks),
+    ]);
     TrustEntry {
         node: NodeRef::from_node(node),
         score,
         components,
+        basis,
         undeclared,
     }
 }
@@ -285,18 +269,20 @@ fn score_node(
 /// present at all (weights are load-validated finite and non-negative,
 /// so a zero sum means nothing else).
 fn compose(
-    status: f64,
-    w: &TrustWeights,
-    basis: [(TrustComponent, f64, Signal); 3],
-) -> (Option<f64>, Vec<TrustComponent>) {
-    let mut weighted = status * w.status;
-    let mut weight_sum = w.status;
+    signals: [(TrustComponent, f64, Signal); 4],
+) -> (Option<f64>, Vec<TrustComponent>, Vec<TrustComponent>) {
+    let mut weighted = 0.0;
+    let mut weight_sum = 0.0;
+    let mut basis = Vec::new();
     let mut undeclared = Vec::new();
-    for (component, weight, signal) in basis {
+    for (component, weight, signal) in signals {
         match signal {
             Signal::Measured(value) => {
                 weighted += value * weight;
                 weight_sum += weight;
+                if weight > 0.0 {
+                    basis.push(component);
+                }
             }
             // A zero-weighted component carries no evidence either way,
             // so its absence neither suppresses the composite nor asks
@@ -307,7 +293,7 @@ fn compose(
     }
     let score = (undeclared.is_empty() && weight_sum > 0.0)
         .then(|| (weighted / weight_sum).clamp(0.0, 1.0));
-    (score, undeclared)
+    (score, basis, undeclared)
 }
 
 fn status_score(config: &Config, status: &str) -> f64 {
@@ -441,6 +427,7 @@ fn max_incoming(graph: &Graph) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TrustWeights;
     use crate::model::{Edge, Kind, ResolvedTarget, Status};
     use chrono::Duration;
     use indexmap::IndexMap;

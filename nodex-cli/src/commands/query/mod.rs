@@ -74,7 +74,7 @@ pub enum QueryCommand {
     CoveredBy { path: String },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
     Issues,
-    /// Composite reliability score: single-node lookup, or top-K /
+    /// Document-maintenance score (not approval or correctness): single-node lookup, or top-K /
     /// bottom-K listing of the whole graph. Exactly one of `<id>`,
     /// `--bottom`, or `--top` is required. `--kind` / `--status` /
     /// `--below` are listing-only filters.
@@ -241,6 +241,9 @@ pub struct TrustArgs {
         .args(["id", "title"])
 ))]
 pub struct SimilarityArgs {
+    /// Restrict comparison candidates to this lifecycle status.
+    #[arg(long)]
+    pub status: Option<String>,
     /// Existing node id to search neighbours of. Mutually exclusive
     /// with `--title` (pick exactly one).
     #[arg(long)]

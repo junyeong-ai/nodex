@@ -223,6 +223,11 @@ safety: `src/git.rs` rustdoc.
 
 ## Detection and rankings
 
+- Scores describe maintenance signals and comparison candidates, never document
+  correctness, approval or duplication. `TrustEntry::basis` records measured,
+  positively weighted components; compare it and the configured weights with
+  each score. Similarity's status option filters candidates before selection,
+  without changing the target or the graph's historical evidence.
 - `stale_days` / `git_drift_threshold`: omitted = disabled; zero rejected. Init's
   visible config sets startup choices, not serde defaults that erase "disabled".
   `orphan_grace_days` is a duration and permits zero. Orphan also exempts terminal
@@ -272,9 +277,11 @@ safety: `src/git.rs` rustdoc.
   supersedes/superseded_by/implements/related are id-only, and custom patterns
   cannot manufacture those code-fixed relations. `resolver::sought_names` / typed
   `Sought` distinguish lookup names from raw authored targets and disk-probe paths.
-- `body::Destination` pairs decoded path with source span: entities, escaping and
-  fragments follow the parser's grammar, including nested links and escaped
-  delimiters. Never resolve raw spelling or edit using decoded offsets.
+- `parser::destination::LocalDestination` separates path from query/fragment before
+  percent-decoding the path once; external schemes and network-path references
+  are outside the local graph. Extraction and rewriting share this interpretation.
+  `body::Destination` pairs the decoded path and suffix with a source span after
+  Markdown entity/escape parsing. Never edit using decoded offsets.
 - `reference_rewrite::apply_proposals` round-trips each proposal with its own
   `ReferenceForm` in the evolving document, preserving the frontmatter boundary.
   It then verifies all original references, including untouched ones. Dependent
@@ -289,7 +296,8 @@ safety: `src/git.rs` rustdoc.
   scanned filenames. `Rewritten::rebound` examines standing references in the
   finished document and names those now bound elsewhere; a valid graph alone
   cannot reveal this change. CLI warns once per reference.
-- Destinations try original, escaped, then pointy encodings; forms try their
+- Destinations try original, escaped, pointy, then URI-encoded and Markdown-escaped
+  spellings while retaining the query/fragment suffix; forms try their
   original frame then an explicit frame (`./` for destinations, root naming for
   captures). An un-round-trippable proposal is left visible with an advisory;
   the write gate refuses when its resulting unresolved edge is configured Error.

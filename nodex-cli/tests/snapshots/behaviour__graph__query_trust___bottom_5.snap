@@ -7,6 +7,10 @@ exit: 0
   "data": {
     "items": [
       {
+        "basis": [
+          "status",
+          "backlinks"
+        ],
         "components": {
           "backlinks": 1.0,
           "status": 0.0
@@ -19,6 +23,11 @@ exit: 0
         "title": "Alpha"
       },
       {
+        "basis": [
+          "status",
+          "freshness",
+          "backlinks"
+        ],
         "components": {
           "backlinks": 0.0,
           "freshness": 0.0,
@@ -32,6 +41,11 @@ exit: 0
         "title": "Readme"
       },
       {
+        "basis": [
+          "status",
+          "freshness",
+          "backlinks"
+        ],
         "components": {
           "backlinks": 0.0,
           "freshness": 0.0,
@@ -45,6 +59,11 @@ exit: 0
         "title": "Deploy"
       },
       {
+        "basis": [
+          "status",
+          "freshness",
+          "backlinks"
+        ],
         "components": {
           "backlinks": 1.0,
           "freshness": 0.0,
@@ -58,6 +77,11 @@ exit: 0
         "title": "Gamma"
       },
       {
+        "basis": [
+          "status",
+          "freshness",
+          "backlinks"
+        ],
         "components": {
           "backlinks": 1.0,
           "freshness": 0.2777777777777778,
@@ -82,6 +106,11 @@ exit: 0
   "warnings": [
     {
       "code": "ranking_unscored",
+      "details": {
+        "count": 1,
+        "reason": "incomplete_basis",
+        "type": "ranking_unscored"
+      },
       "message": "1 node(s) excluded from the ranking: they declare no input for a positively-weighted component this run can measure, or carry none of them at all — `query trust <id>` names which"
     }
   ]

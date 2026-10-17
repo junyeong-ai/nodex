@@ -16,6 +16,7 @@ Every semantic behavior is declared once, read many times:
 **Classification Rules:**
 - `identity.kind_rules[]` — glob → kind (order-critical: first match wins)
 - `identity.id_rules[]` — (glob, kind) → id template (order-critical; fallback: "{kind}-{stem}")
+- `scaffold.paths` — explicit per-kind creation templates (`{kind}`, title `{slug}`, filename `{stem}` with configured numbering); classification globs never choose creation paths
 
 **Schema & Validation:**
 - `schema.required`, `schema.types`, `schema.enums`, `schema.cross_field[]` — global frontmatter rules

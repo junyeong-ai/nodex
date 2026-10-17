@@ -40,3 +40,7 @@ extensions = [".md"]                  # leading dot
 name = "decision"
 pattern = "\\[DECISION: (?P<decision>[^\\]]+)\\]"   # named capture == key; not [[...]], which wikilinks read
 key = "decision"
+
+[scaffold.paths]
+adr = "docs/adr/{stem}.md"
+generic = "docs/{stem}.md"
