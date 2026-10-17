@@ -178,6 +178,12 @@ impl Config {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
+        out.extend(
+            self.parser
+                .frontmatter_relations
+                .iter()
+                .map(|entry| entry.field.clone()),
+        );
         for f in self.required_for(kind) {
             out.insert(f.clone());
         }
@@ -258,7 +264,7 @@ impl Config {
 
     /// Every relation a *resolved* edge in this project can carry —
     /// [`crate::model::BUILTIN_EDGE_RELATIONS`] plus every
-    /// `[[parser.link_patterns]].relation` the operator declared.
+    /// body-pattern and frontmatter relation the operator declared.
     ///
     /// Consumed by the surfaces that read resolved edges and take a
     /// user-supplied relation filter (`query dependents --relations …`,
@@ -286,6 +292,12 @@ impl Config {
     fn relations_over(&self, builtin: &[&str]) -> std::collections::BTreeSet<String> {
         let mut out: std::collections::BTreeSet<String> =
             builtin.iter().map(|s| (*s).to_string()).collect();
+        out.extend(
+            self.parser
+                .frontmatter_relations
+                .iter()
+                .map(|entry| entry.relation().to_string()),
+        );
         for lp in &self.parser.link_patterns {
             out.insert(lp.relation.clone());
         }

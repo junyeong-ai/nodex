@@ -293,7 +293,18 @@ flowchart LR
 | 본문 위키링크 `[[id]]` (`[parser].wikilink_enabled` 일 때) | `references` | 노드 id 로의 위키링크 |
 | 커스텀 패턴 (config) | **새 relation 이름** | 예: `@path.md` → `imports` |
 
-위 다섯 내장 relation — `supersedes`, `implements`, `related`, `covers`, `references` — 은 고정입니다. 그 외에 `[[parser.link_patterns]]` 로 새 relation 이름을 정의할 수 있습니다 — regex + relation 문자열 쌍. 단, 해석 방식이 코드에 고정된 내장 relation 은 사용할 수 없습니다: `covers`(path-only) 와 `supersedes` / `implements` / `related`(id-resolved) 는 각자의 frontmatter 필드로만 생성되며, 이를 지정한 link pattern 은 load 시 거부됩니다. `references` 는 패턴에 사용 가능 — 어차피 document reference 로 해석되기 때문입니다.
+내장 관계의 lifecycle과 대상 해석 방식은 유지됩니다. 본문 문법은 `[[parser.link_patterns]]`, ID 전용 frontmatter 관계는 `[[parser.frontmatter_relations]]`로 선언합니다. 두 방식의 관계 이름은 충돌할 수 없습니다. 본문 패턴에서는 `covers`, `supersedes`, `superseded_by`, `implements`, `related`를 사용할 수 없으며 `references`는 허용됩니다.
+
+```toml
+[[parser.frontmatter_relations]]
+field = "sources"
+relation = "derived_from" # 생략하면 field와 같음
+retarget = "keep"        # 필수: keep | repoint
+```
+
+`sources: doc-a`와 `sources: [doc-a, doc-b]`는 작성 문서에서 정확한 노드 ID로 향하는 간선을 만듭니다. 경로나 확장자 후보로 전환하지 않으며 역방향은 incoming 조회로 확인합니다. 선언된 필드는 파서가 타입을 검증하고 required·forbidden·strict 모드·잠금·diff·관계 필터 조회에 참여합니다. 노드 상세의 `frontmatter_relations`에 필드별 정규화된 값이 표시됩니다. 필드 이름은 영문자·숫자·`_`·`-`로 이루어져 따옴표 없이 표현 가능한 YAML 문자열 키여야 하며 내장·구조 필드와 충돌할 수 없습니다. 관계 이름은 고유하고 비어 있지 않아야 하며 필터 구분자 `,`를 포함할 수 없습니다.
+
+`keep`은 retarget 시 해당 필드를 보존하고 `reference_kept`로 알립니다. `repoint`는 기존 변경 게이트를 거쳐 대상을 바꿉니다. 이 정책은 본문 링크를 보존하거나 오래된 참조 경고를 면제하지 않습니다. 역사적 관계는 `[detection].superseded_reference_ok_relations = ["derived_from"]`로 별도 선언하며, 존재하지 않는 ID는 계속 미해결 참조입니다. 관계는 작성자가 선언한 사실이며 진실성·전이성·lifecycle 변경을 자동 추론하지 않습니다.
 
 본문 링크는 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) AST 로 추출되므로 fenced code block 내부 링크는 무시됩니다. 커스텀 패턴 캡처도 코드 블록과 인라인 코드 스팬을 같은 방식으로 건너뛰고, 참조 리라이터(`rename` / `retarget`)도 같은 표면을 존중하므로 추출과 리라이팅은 결코 어긋나지 않습니다. 인용 관용구가 스팬 안에 사는 코퍼스 — `` `adr-001` `` 처럼 쓰는 노드 id — 는 패턴에 `code_spans = true` 를 선언합니다: **전체 내용이 패턴에 일치하는** 인라인 코드 스팬은 양쪽 모두에서 참조가 되고, 스팬 안 부분 일치(`` `just adr-tool` ``)와 코드 블록 안은 계속 코드로 남습니다.
 
@@ -493,7 +504,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `baseline_inert` | 기댄 git ref 가 물어본 자리에 아무것도 없음 — 잠금 미적용, 한 문서에 대해 비활성, 또는 `diff` / `impact` 비교의 한쪽에 경로가 없음 |
 | `ranking_unscored` | 점수가 없는 후보를 랭킹에서 빼고 그 수를 셈 |
 | `file_skipped` | 편집이 뜻대로 되지 않음 — 무언가가 막았거나, 옮긴 참조가 이제 다른 문서를 가리키거나 아무것도 가리키지 않음 |
-| `reference_kept` | 옮기면 그 참조를 가진 문서 자신을 가리키게 되므로 참조를 그대로 둠 |
+| `reference_kept` | 선언된 retarget 정책 또는 자기 참조 방지를 위해 참조를 보존함 |
 | `document_evicted` | write 가 `conditional_exclude` 부모를 terminal 로 만들어 그 sub-artifact 를 프로젝트에서 뺌 |
 | `history_unread` | step 룰이 판정에 필요한 이력을 읽지 못함 — 빌드가 트리를 거부하는 커밋, 또는 shallow clone 이 가져오지 않은 이력; 그 기록은 `unjudged` 로 셈 |
 | `threshold_undeclared` | 프로젝트가 선언하지 않은 탐지 기준으로 물은 목록이 아무것도 측정하지 않음 — `[detection].stale_days` 없는 `query stale` — 그래서 빈 답이 깨끗하다는 뜻이 아님 |
@@ -591,7 +602,7 @@ spec = "specs/{slug}/spec.md"
 | `rule_id` | Severity | 검사 내용 |
 |---|---|---|
 | `parse_failure` | error | scope 내 모든 문서가 파싱됨; drop 된 문서 (unparseable YAML, non-mapping frontmatter, 문자열이 아닌 키, 닫히지 않은 `---` fence) 는 node 없는 error — 게이트가 무시하는 warning 이 아님 |
-| `field_parse` | error | 빌트인 frontmatter 필드가 제 타입으로 파싱됨; 실패한 값 (bad date, bad bool, 비문자열 스칼라) 은 absent 로 읽히고 여전히 존재하는 노드에 표시됨 |
+| `field_parse` | error | 내장·선언된 관계 frontmatter 필드가 제 타입으로 파싱됨; 실패한 값 (bad date, bad bool, 비문자열 스칼라) 은 absent 로 읽히고 여전히 존재하는 노드에 표시됨 |
 | `required_field` | error | 필수 필드 존재 |
 | `forbidden_field` | error | kind 별 override 의 `forbidden` 에 든 필드가 없음 (그런 override 가 있을 때만 등록) |
 | `field_type` | error | `attrs` 값이 선언된 `types` 와 일치 |
@@ -604,7 +615,7 @@ spec = "specs/{slug}/spec.md"
 | `unique_numbering` | error | `unique = true` 인 `[[rules.naming]]` 블록에 매치하는 파일이 같은 선두 번호 공유 안 함 |
 | `stale_review` | warning | `reviewed` 날짜가 `stale_days` 일 이상 지난 active 노드. `reviewed` 부재는 `unjudged`로 보고하며 `query nodes --missing reviewed`로 조회. 부재를 오류로 처리하려면 required로 설정. `stale_days` 를 설정했을 때만 등록 |
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
-| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 잠금이 잡을 수 있는 부분의 인용을 `unjudged` 로 셈 |
+| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_relations`에 든 관계, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 잠금이 잡을 수 있는 부분의 인용을 `unjudged` 로 셈 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 에 `reviewed` 이후 `git_drift_threshold` 를 넘는 커밋이 쌓였는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈. 작업 트리나 index 를 검사하는 `check` 는 걸은 히스토리를 걸은 커밋을 키로 `_index/history.json` 에 보관하고, 다음 명령은 그 뒤 커밋만 걷는다. `HEAD` 가 보관된 커밋에 닿지 않거나 git 이 히스토리를 제자리에서 바꿀 수 있는 저장소(얕은 클론, graft, replace ref)에서는 전체를 다시 걷는다 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 블록의 `trigger` 가 기준 시점에 이미 무장한 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `status`: 블록이 지정한 status 중 하나였던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
@@ -747,7 +758,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.56, <0.57"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.57, <0.58"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -931,6 +942,7 @@ stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # superseded_reference_ok_kinds = ["readme"]
+# superseded_reference_ok_relations = ["derived_from"] # declare the relation first
 # superseded_reference_ok_annotation = "superseded-ok"   # 위의 [[annotations]] 블록
 # git_drift_threshold = 5
 # 측정을 수행할 relation (기본값 표시).
@@ -1024,11 +1036,11 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 + `initial` (scaffold / migrate 가 쓰고, flow 가 지배하지 않는 kind 에서 status 없는 문서가 받는 status; 기본: 첫 allowed 값) + `flow` ([Status flow](#status-flow) 참조) |
 | `[scaffold.paths]` | kind별 명시적 생성 경로 템플릿. `--path`로 직접 지정 가능 |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
-| `[parser]` | 커스텀 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
+| `[parser]` | ID 전용 `frontmatter_relations`와 본문 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
 | `[rules]` | `immutable_baseline` (공통 잠금 기준 ref; `nodex init`은 `"HEAD"`를 씀), `immutable_baseline_mode` (`ref` / `merge_base`), `immutable_history` (`steps` / `snapshot`) + `acyclic_relations` (기본 `["implements"]`) + `naming` 패턴 + `frontmatter_immutable` (필드 잠금) + `body_immutable` (body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사); 두 잠금 모두 `trigger` = `terminal` / `status` / `creation` 으로 발동 시점 선택 |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface, `[detection].superseded_reference_ok_annotation` 이 가리키는 블록은 `superseded_reference` 도 읽음 |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` (`forbidden` 도 받음) + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
-| `[detection]` | `stale_days` / `orphan_grace_days` (기본 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / 선택적 `git_drift_threshold` 와 `git_drift_relations` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
+| `[detection]` | `stale_days` / `orphan_grace_days` (기본 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_relations` / `superseded_reference_ok_annotation` / 선택적 `git_drift_threshold` 와 `git_drift_relations` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |
 | `[trust]` | 합성 점수 가중치 (per-kind override 지원) |
@@ -1133,7 +1145,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.56, <0.57" build
+nodex --check-version ">=0.57, <0.58" build
 ```
 
 ---

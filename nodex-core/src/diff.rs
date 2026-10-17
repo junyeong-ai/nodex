@@ -475,6 +475,7 @@ const FIELDS_EXCLUDED_FROM_FIELD_CHANGES: &[&str] = &[
     "path",
     "status",
     "attrs",
+    "frontmatter_relations",
     "body_hash",
     "body_lines_hash",
     "body_structure",
@@ -497,6 +498,9 @@ fn frontmatter_fields(node: &Node) -> serde_json::Map<String, serde_json::Value>
     };
     for field in FIELDS_EXCLUDED_FROM_FIELD_CHANGES {
         map.remove(*field);
+    }
+    for (field, values) in &node.frontmatter_relations {
+        map.insert(field.clone(), serde_json::json!(values));
     }
     map
 }
@@ -585,6 +589,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),
@@ -905,6 +910,7 @@ mod tests {
             covers: vec!["f".into()],
             orphan_ok: true,
             attrs: BTreeMap::from([("priority".to_string(), serde_json::json!("high"))]),
+            frontmatter_relations: BTreeMap::from([("sources".into(), vec!["a".into()])]),
             body_hash: "h".into(),
             body_lines_hash: vec!["l".into()],
             body_structure: crate::model::BodyStructure {
@@ -966,8 +972,10 @@ mod tests {
         // frontmatter set — not leaking an internal field.
         let projection = frontmatter_fields(&full);
         let projected: BTreeSet<&str> = projection.keys().map(String::as_str).collect();
+        let mut expected_projection = expected_frontmatter;
+        expected_projection.insert("sources");
         assert_eq!(
-            projected, expected_frontmatter,
+            projected, expected_projection,
             "frontmatter_fields must project exactly the authored frontmatter set"
         );
     }

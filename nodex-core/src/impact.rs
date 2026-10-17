@@ -173,12 +173,9 @@ fn dangling_referrers(
         let ResolvedTarget::Unresolved { raw, .. } = &edge.target else {
             return false;
         };
-        // An id reference (a frontmatter relation) to the removed node —
-        // gated on resolution mode. `covers` is path-only and never binds by
-        // id, so an id-equal `covers` token is a coincidence, not a dangle;
-        // `is_document_ref_relation` excludes exactly that one relation,
-        // mirroring the path branch below so both branches agree on which
-        // relations resolve by id.
+        if edge.syntax().is_id_relation(&edge.relation) {
+            return raw == removed_id;
+        }
         if crate::model::edge::is_document_ref_relation(&edge.relation) && raw == removed_id {
             return true;
         }
@@ -247,6 +244,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

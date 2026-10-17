@@ -21,7 +21,7 @@ nodex build --full           # bypass cache, fresh parse
 
 Walk diagnostics describe reached entries; subtrees skipped by the [scope policy](config.md#scope) are not inventoried.
 
-A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping under a non-string key, an opened-but-unclosed `---` fence) never halts the build — the rest still indexes — but the drop is structural data the next `check` reds via `parse_failure`. A single wrong-typed built-in field (bad date, bad bool, non-string scalar) does **not** drop the document: the node stays, the field reads as absent, and `check` flags it via `field_parse`.
+A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping under a non-string key, an opened-but-unclosed `---` fence) never halts the build — the rest still indexes — but the drop is structural data the next `check` reds via `parse_failure`. A single wrong-typed parser-owned field (bad date, bad bool, non-string scalar) does **not** drop the document: the node stays, the field reads as absent, and `check` flags it via `field_parse`.
 
 ## status
 
@@ -231,7 +231,7 @@ the move and rewrites are not one filesystem transaction and no rollback is prom
 ```bash
 nodex retarget <old-id> <new-id> [--supersede]
 ```
-Rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body references (Markdown paths, `[[wikilinks]]`, custom `link_patterns`). The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
+Repoints references to `<old-id>` onto `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) project-declared frontmatter relations with `retarget = "repoint"`, and body references (Markdown paths, `[[wikilinks]]`, custom `link_patterns`). Declared fields with `retarget = "keep"` retain their targets and emit `reference_kept`; this policy does not govern body links. The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
 
 Matching is by **resolved document identity** — an id that merely appears in prose is never touched — and the successor document is skipped so nothing in it comes to name itself. Both ids must exist. A reference-unsafe successor id is refused: trim-unstable, or carrying a metacharacter of a syntax nodex writes (`[`, `]`, `|`, `` ` ``, line breaks).
 

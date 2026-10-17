@@ -195,15 +195,8 @@ pub(crate) fn resolve_target(
     bindings: &Bindings,
     extensions: &[String],
 ) -> ResolvedTarget {
-    // Frontmatter id relations resolve strictly by node id — no path
-    // lookup, no extension append. The dispatch consumes the closed
-    // `ID_RESOLVED_RELATIONS` vocabulary: `Config::validate` rejects a
-    // link pattern naming any of these relations (exactly as it keeps
-    // `covers` off patterns), so each is producible only by its
-    // frontmatter field and this branch can never capture a
-    // user-declared body pattern — closed by construction, never a
-    // guess about a user-chosen name.
-    if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation) {
+    // Frontmatter relations name IDs, except `covers`, which names code paths.
+    if syntax.is_id_relation(relation) {
         if bindings.id_set.contains_key(target) {
             return ResolvedTarget::resolved(target);
         }
@@ -471,7 +464,7 @@ pub(crate) fn sought_names(
     source_path: Option<&Path>,
     extensions: &[String],
 ) -> Sought {
-    if crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation) {
+    if syntax.is_id_relation(relation) {
         return Sought::Id(target.to_string());
     }
     Sought::Paths(normalized_resolution_candidates(
@@ -603,6 +596,7 @@ mod tests {
                 covers: vec![],
                 orphan_ok: false,
                 attrs: BTreeMap::new(),
+                frontmatter_relations: Default::default(),
                 body_hash: String::new(),
                 body_lines_hash: Vec::new(),
                 body_structure: Default::default(),

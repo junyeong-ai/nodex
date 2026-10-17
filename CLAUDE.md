@@ -1,8 +1,8 @@
 # Nodex
 
 Markdown frontmatter SSOT with a queryable document graph. Extracts
-frontmatter, body links, and config-declared body markers from every
-in-scope markdown file into an immutable graph, validates against a
+frontmatter (including config-declared ID relations), body links, and declared
+body markers into an immutable graph, validates against a
 config-driven schema, and routes every mutation through one safe
 path. Pure CLI, JSON-first envelope.
 
