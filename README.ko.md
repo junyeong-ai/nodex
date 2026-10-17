@@ -341,7 +341,9 @@ Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석한다. W
 
 `[[statuses.flow]]`마다 서로 겹치지 않는 kind의 생명주기를 선언한다. 전체 kind flow와 다른 flow는 함께 선언할 수 없다. terminal vocabulary는 공유한다. Flow는 선언된 전이를 검증하며 사람의 승인을 증명하지 않는다.
 
-0.54 적용 시 `[statuses.flow]`를 `[[statuses.flow]]`로 바꾸고 기본 내용 검증 조회를 사용한다. 스냅샷 조회는 `--allow-stale`로 명시한다. `nodex build --full`로 재색인하고 소비자의 minor version pin과 `export envelope-schema` 기반 타입을 맞춘다.
+0.54 이전 버전에서 업그레이드할 때는 `[statuses.flow]`를 `[[statuses.flow]]`로 바꾸고 기본 내용 검증 조회를 사용한다. 스냅샷 조회는 `--allow-stale`로 명시한다. `nodex build --full`로 재색인하고 소비자의 minor version pin과 `export envelope-schema` 기반 타입을 맞춘다.
+
+0.55의 스캔 진단은 건너뛴 트리 대신 실제 도달한 항목을 보고합니다. 업그레이드 후 스냅샷을 재빌드하세요. 문서 선택 범위는 유지됩니다.
 
 ## 동작 원리
 
@@ -730,7 +732,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.54, <0.55"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.55, <0.56"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -784,13 +786,15 @@ nodex export diagnostics                       # error-code + warning-code + exi
 
 모든 동작은 `nodex.toml` 이 결정합니다. `Config::load` 가 시작 시 `validate()` 를 실행해 비일관 config(예: `allowed` 에 없는 `terminal` status, `status` enum 이 배제하는 `initial`)를 거부하므로 잘못된 설정은 즉시 실패합니다. 작용 대상 문서에 따라 달라지는 자기 일관성 — `lifecycle` 액션이 프로젝트가 거부하는 status 를 절대 쓰지 않는 것 — 은 해당 명령의 write seam 에서 강제되므로, 쓰지 않는 액션을 위해 status 를 선언하도록 강요받지 않습니다.
 
+스캔은 어느 include 의 고정 접두사로도 도달할 수 없는 디렉터리와 `/**` 로 끝나는 exclude 가 하위 전체를 제외하는 디렉터리를 건너뛸 수 있습니다. 예를 들어 `exclude = ["_*/**"]` 는 매칭되는 루트 하위 트리를 건너뛰지만, `exclude = ["docs/private"]` 는 `docs/private` 아래 문서를 제외하지 않습니다. 스캔 진단은 walk 가 도달한 항목을 설명하며, 건너뛴 트리 전체를 조사한 목록은 아닙니다.
+
 ```toml
 [scope]
 include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }, "README.md"]
 exclude = ["docs/drafts/**"]
 # walk 중 임의 깊이에서 prune 할 디렉터리 basename (기본값 아래). 스택에
 # 맞게 조정 — Go 레포엔 `.venv` 가 없고, 이런 이름의 디렉터리 아래에 문서를
-# 둔다면 여기서 빼서 다시 스캔 대상에 포함. 빈 목록은 아무것도 prune 안 함.
+# 둔다면 여기서 빼서 다시 스캔 대상에 포함. 빈 목록은 basename pruning 을 끔.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # terminal 부모의 sub-artifact drop (child_glob 매칭만; drop 된 경로는
 # build 결과에 보고되고, 부모를 terminal 로 만든 write 가
@@ -1000,7 +1004,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 
 | Section | 제어 대상 |
 |---|---|
-| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). dot 접두 경로는 기본 제외 — include 패턴이 dot 세그먼트를 리터럴로 명시하면(예: `.claude/**/*.md`) 포함. 심볼릭 링크로 도달한 디렉토리는 `follow_symlinks = true` 가 아니면 내려가지 않음 — 기본값은 `git` / `ripgrep` / `fd` / `find` 와 동일하며 경로 키 룰이 문서당 정확히 하나의 경로를 갖게 유지. 내려가지 않은 링크는 빌드 결과의 `unfollowed_paths`, 따라갔을 때 생기는 여분의 이름은 `aliased_paths` 에 명시. `include` 항목은 `{ glob, may_be_empty = true }` 표로 쓸 수 있고(`identity` 룰과 `conditional_exclude` 룰도 동일), 아무것도 고르지 않는 것이 예상된 상태라고 밝혀 그 선언 자신의 `scope_coverage` 경고만 끔 |
+| `[scope]` | 스캔 대상 파일 (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). dot 접두 경로는 기본 제외 — include 패턴이 각 숨김 세그먼트의 선행 dot 을 요구하면(예: `.claude/**/*.md`) 포함. 심볼릭 링크로 도달한 디렉토리는 `follow_symlinks = true` 가 아니면 내려가지 않음 — 기본값은 `git` / `ripgrep` / `fd` / `find` 와 동일하며 경로 키 룰이 문서당 정확히 하나의 경로를 갖게 유지. walk 가 도달했으나 내려가지 않은 링크는 빌드 결과의 `unfollowed_paths`, 따라갔을 때 생기는 여분의 이름은 `aliased_paths` 에 명시. `include` 항목은 `{ glob, may_be_empty = true }` 표로 쓸 수 있고(`identity` 룰과 `conditional_exclude` 룰도 동일), 아무것도 고르지 않는 것이 예상된 상태라고 밝혀 그 선언 자신의 `scope_coverage` 경고만 끔 |
 | `[kinds]` | 허용된 `kind` 값 (`"generic"` 포함 필수) |
 | `[statuses]` | 허용된 `status` 값 + terminal 목록 + `initial` (scaffold / migrate 가 쓰고, flow 가 지배하지 않는 kind 에서 status 없는 문서가 받는 status; 기본: 첫 allowed 값) + `flow` ([Status flow](#status-flow) 참조) |
 | `[scaffold.paths]` | kind별 명시적 생성 경로 템플릿. `--path`로 직접 지정 가능 |
@@ -1114,7 +1118,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.54, <0.55" build
+nodex --check-version ">=0.55, <0.56" build
 ```
 
 ---

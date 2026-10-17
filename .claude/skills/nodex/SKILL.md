@@ -6,7 +6,7 @@ description: >-
   graph queries, guarded authoring and replacement, and machine-readable exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.54.2
+  version: 0.55.0
 ---
 
 # nodex — markdown document graph CLI
@@ -69,7 +69,8 @@ rebuild encounters it too. `nodex status` hashes content and returns `state` ∈
 and schema mismatch needs `nodex build --full`.
 
 Every corpus reader discloses scope gaps. Inspect `scope_coverage` before treating an
-empty answer as complete.
+empty answer as complete. Scan diagnostics cover entries reached under the
+[scope policy](reference/config.md#scope), not an inventory of skipped subtrees.
 
 ## The write-time gate
 
