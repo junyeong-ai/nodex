@@ -162,7 +162,7 @@ impl Rule for StatusTransitionRule {
         m
     }
 
-    fn judges_steps(&self) -> bool {
+    fn judges_steps(&self, _config: &crate::config::Config) -> bool {
         true
     }
 
@@ -278,7 +278,7 @@ impl Rule for StatusEntryRule {
         m
     }
 
-    fn judges_steps(&self) -> bool {
+    fn judges_steps(&self, _config: &crate::config::Config) -> bool {
         true
     }
 

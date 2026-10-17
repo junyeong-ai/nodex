@@ -91,9 +91,11 @@ paths:
    state alone, and every other rule's only as the delta the write
    introduces. A rule that judges
    how records move across history reads `ctx.steps` and declares
-   `judges_steps` — an endpoint diff folds a range into one move. A rule may
-   also declare `diff_aware` when it requires an applicable baseline; locks
-   use both to judge the baseline delta and every step in an explicit range.
+   `judges_steps(config)` — an endpoint diff folds a range into one move.
+   Report this requirement from the configured policy so snapshot-only locks
+   do not trigger unused history reads. A rule may also declare `diff_aware`
+   when it requires an applicable baseline; step locks use both, while
+   snapshot locks read only the baseline delta.
    What it counts per step, and why a step it could not answer stays
    `unjudged`: `.claude/rules/config-driven.md` (No silent vacuous passes).
    Every rule also answers which of its findings a diff is responsible

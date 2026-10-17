@@ -46,12 +46,14 @@ pub enum Since<'a> {
     None,
     /// A diff arms the diff-aware rules; the report is whole.
     Baseline(&'a GraphDiff),
-    /// A diff arms the diff-aware rules and the report is narrowed to
-    /// what the diff answers for, rule by rule ([`Rule::touched_by`]).
-    /// `since` is the ref the diff was taken against, so a rule whose
-    /// reading is git's rather than the graph's can ask about the
-    /// commits `since..HEAD` carries.
-    Narrowed { diff: &'a GraphDiff, since: &'a str },
+    /// `diff` feeds prior-state rules; `changes` independently narrows the
+    /// report through `Rule::touched_by`. `since` names the report's source
+    /// so Git-backed rules can ask about the selected commit range.
+    Narrowed {
+        diff: Option<&'a GraphDiff>,
+        changes: &'a GraphDiff,
+        since: &'a str,
+    },
 }
 
 impl<'a> Since<'a> {
@@ -59,7 +61,8 @@ impl<'a> Since<'a> {
     pub fn diff(self) -> Option<&'a GraphDiff> {
         match self {
             Since::None => None,
-            Since::Baseline(diff) | Since::Narrowed { diff, .. } => Some(diff),
+            Since::Baseline(diff) => Some(diff),
+            Since::Narrowed { diff, .. } => diff,
         }
     }
 }
@@ -191,9 +194,8 @@ pub struct RuleContext<'a> {
     /// History one step at a time, for the rules that judge how records
     /// move ([`Rule::judges_steps`]): the uncommitted change against the
     /// commits it will be committed onto, preceded by each commit a `--since`
-    /// range adds. `None` where there is no commit to step from — a project
-    /// outside a git work tree, or a proposal judged against the working tree
-    /// rather than against a commit.
+    /// range adds. Proposals use the step their overlay would commit. `None`
+    /// outside a Git work tree or when no applicable rule needs history.
     pub steps: Option<&'a [crate::ancestry::Step]>,
     /// The date every date-relative rule measures against, resolved once
     /// per pass by the caller. A rule reads this rather than the system
@@ -306,6 +308,9 @@ fn lock_steps(
     merge: LockMerge,
     same_payload: impl Fn(&crate::model::Node, &crate::model::Node) -> bool,
 ) -> RuleRun {
+    if !rule.judges_steps(ctx.config) {
+        return run;
+    }
     let Some(steps) = ctx.steps else { return run };
     if ctx.since.is_none() {
         return run;
@@ -621,7 +626,7 @@ pub trait Rule: Send + Sync {
     /// than `rules.immutable_baseline`'s: every step starts at a commit, so a
     /// command reads the commits it needs whenever such a rule is registered,
     /// and a baseline configured for the locks neither arms nor bounds it.
-    fn judges_steps(&self) -> bool {
+    fn judges_steps(&self, _config: &Config) -> bool {
         false
     }
     /// Whether one of this rule's own findings is one the diff answers
@@ -901,7 +906,7 @@ pub(crate) fn run_rules(
         today,
     };
     let narrowing = match since {
-        Since::Narrowed { diff, since } => Some(diff.touched(since)),
+        Since::Narrowed { changes, since, .. } => Some(changes.touched(since)),
         Since::None | Since::Baseline(_) => None,
     };
 

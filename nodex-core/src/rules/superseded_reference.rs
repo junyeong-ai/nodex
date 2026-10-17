@@ -284,7 +284,7 @@ fn locks(config: &Config, kind: &str, status: &str, part: &DocumentPart) -> bool
             .rules
             .frontmatter_immutable
             .iter()
-            .any(|block| block.fields.contains(field) && holds(block.arming())),
+            .any(|block| block.locks_field(field) && holds(block.arming())),
     }
 }
 
@@ -630,6 +630,7 @@ mod tests {
 
         config.rules.frontmatter_immutable = vec![FrontmatterImmutableRuleConfig {
             name: "adopted-links".into(),
+            except: Vec::new(),
             fields: vec!["related".into()],
             trigger: ImmutableTrigger::Status,
             kinds: vec![],
