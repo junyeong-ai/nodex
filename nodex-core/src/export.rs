@@ -160,6 +160,10 @@ fn render_branch(config: &Config, branch_kinds: &[String]) -> Value {
         properties.insert(field.to_string(), builtin_field_schema(field));
     }
 
+    for relation in &config.parser.frontmatter_relations {
+        properties.insert(relation.field.clone(), string_list_schema());
+    }
+
     // `kind` enum is the *branch's* kind list — never the global
     // `kinds.allowed` — so oneOf branches are mutually exclusive on
     // the kind discriminator.
@@ -283,18 +287,18 @@ fn builtin_field_schema(field: &str) -> Value {
         "created" | "updated" | "reviewed" => {
             json!({"type": "string", "format": "date"})
         }
-        "supersedes" | "implements" | "related" | "tags" | "covers" => {
-            json!({
-                "oneOf": [
-                    {"type": "string"},
-                    {"type": "array", "items": {"type": "string"}},
-                ]
-            })
-        }
+        "supersedes" | "implements" | "related" | "tags" | "covers" => string_list_schema(),
         "orphan_ok" => json!({"type": "boolean"}),
         // `kind` / `status` are overlaid with their enum below.
         _ => json!({"type": "string"}),
     }
+}
+
+fn string_list_schema() -> Value {
+    json!({"oneOf": [
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}},
+    ]})
 }
 
 fn field_type_schema(ft: FieldType) -> Value {

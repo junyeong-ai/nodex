@@ -111,6 +111,7 @@ impl<'a> IdentityParse<'a> {
 pub struct ParseConfig<'a> {
     #[serde(flatten)]
     completion: Completion<'a>,
+    #[serde(serialize_with = "hash_parser")]
     parser: &'a ParserConfig,
     #[serde(serialize_with = "hash_annotations")]
     annotations: &'a [AnnotationConfig],
@@ -118,6 +119,29 @@ pub struct ParseConfig<'a> {
     body_line: &'a [BodyLineRuleConfig],
     #[serde(skip)]
     pub(crate) prepared: Arc<OnceLock<PreparedPatterns>>,
+}
+
+fn hash_parser<S: serde::Serializer>(
+    parser: &&ParserConfig,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    let ParserConfig {
+        extensions,
+        wikilink_enabled,
+        link_patterns,
+        frontmatter_relations,
+    } = parser;
+    let relations: Vec<_> = frontmatter_relations
+        .iter()
+        .map(
+            |crate::config::FrontmatterRelation {
+                 field,
+                 relation,
+                 retarget: _,
+             }| (field, relation),
+        )
+        .collect();
+    (extensions, wikilink_enabled, link_patterns, relations).serialize(serializer)
 }
 
 fn hash_annotations<S: serde::Serializer>(
@@ -286,7 +310,11 @@ pub(crate) fn parse_with_patterns(
     //    (pre-canonicalisation) — the same digest the build cache keys
     //    on, so snapshot consumers can compare a node against the
     //    working tree without re-deriving a second hashing convention.
-    let (mut node, body) = frontmatter::parse_frontmatter(path, content)?;
+    let (mut node, body) = frontmatter::parse_frontmatter_with_relations(
+        path,
+        content,
+        &config.parser.frontmatter_relations,
+    )?;
     node.content_hash = crate::hash::sha256_hex(content);
 
     // 2. Fill the identity fields the document left to config.
@@ -336,6 +364,16 @@ pub(crate) fn parse_with_patterns(
             relation: "related".to_string(),
             location: "frontmatter:related".to_string(),
         });
+    }
+    for relation in &config.parser.frontmatter_relations {
+        for target in node.relation_values(&relation.field).unwrap_or_default() {
+            raw_edges.push(RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
+                target_path: target.clone(),
+                relation: relation.relation().to_string(),
+                location: format!("frontmatter:{}", relation.field),
+            });
+        }
     }
     // Code-coverage edges: out-of-graph paths the doc covers. The
     // resolver leaves them Unresolved by design (code paths aren't
@@ -407,5 +445,34 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod relation_cache_tests {
+    use super::*;
+    use crate::config::{FrontmatterRelation, RetargetPolicy};
+
+    #[test]
+    fn relation_parsing_inputs_invalidate_cache_but_retarget_policy_does_not() {
+        let mut config = Config::default();
+        let original = ParseConfig::new(&config).cache_key();
+        config
+            .parser
+            .frontmatter_relations
+            .push(FrontmatterRelation {
+                field: "sources".into(),
+                relation: None,
+                retarget: RetargetPolicy::Keep,
+            });
+        let declared = ParseConfig::new(&config).cache_key();
+        assert_ne!(original, declared);
+        config.parser.frontmatter_relations[0].retarget = RetargetPolicy::Repoint;
+        assert_eq!(declared, ParseConfig::new(&config).cache_key());
+        config.parser.frontmatter_relations[0].relation = Some("derived_from".into());
+        assert_ne!(declared, ParseConfig::new(&config).cache_key());
+        let renamed = ParseConfig::new(&config).cache_key();
+        config.parser.frontmatter_relations[0].field = "provenance".into();
+        assert_ne!(renamed, ParseConfig::new(&config).cache_key());
     }
 }

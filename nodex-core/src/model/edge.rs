@@ -88,7 +88,7 @@ impl UnresolvedCause {
         }
     }
 
-    /// Whether an edge carrying `relation` can fail with this cause.
+    /// Whether an ID-only or path-based lookup can fail with this cause.
     ///
     /// Resolution mode decides it, and the two partitions line up exactly: an
     /// id relation is looked up in the id index and fails only as
@@ -97,8 +97,8 @@ impl UnresolvedCause {
     /// the vocabulary. So a `[[detection.unresolved_policy]]` row pairing the
     /// two the other way selects a set no project can produce, which
     /// `Config::validate` refuses at load.
-    pub fn reachable_for(&self, relation: &str) -> bool {
-        ID_RESOLVED_RELATIONS.contains(&relation) == matches!(self, Self::IdNotFound)
+    pub fn reachable_for(&self, id_relation: bool) -> bool {
+        id_relation == matches!(self, Self::IdNotFound)
     }
 }
 
@@ -124,31 +124,8 @@ impl std::fmt::Display for UnresolvedCause {
     }
 }
 
-/// Every relation an edge in the graph can carry without a user-declared
-/// `[[parser.link_patterns]]` block — the closed, typed core vocabulary,
-/// partitioned exactly by resolution mode into [`PATH_ONLY_RELATION`],
-/// [`ID_RESOLVED_RELATIONS`] and [`BODY_REFERENCE_RELATION`].
-///
-/// Each is a code-backed graph operation, not merely a label, which is
-/// why the set is fixed rather than config-declared:
-/// - `supersedes` drives the build-time supersession DAG check
-/// - `superseded_by` records the same succession from the predecessor
-/// - `implements` is the default `rules.acyclic_relations` member
-/// - `covers` points at out-of-graph code paths (drift detection)
-/// - `related` is the soft, unconstrained cross-link
-/// - `references` is the default body-link relation
-///
-/// What varies between projects is link *syntax*, not these semantics —
-/// and that is precisely what `[[parser.link_patterns]]` opens up: body
-/// link patterns declare *document references*, mapping any regex to any
-/// relation name whose resolution mode is not fixed in code. Every
-/// relation here but [`BODY_REFERENCE_RELATION`] has code-fixed
-/// resolution and is producible only by its frontmatter field;
-/// `Config::validate` rejects a link pattern naming one, because
-/// resolution semantics attach to the field that produces a relation,
-/// never to a name a user can pick. `references` stays legal on
-/// patterns: it resolves in document-reference mode either way, so a
-/// pattern naming it shifts no semantics.
+/// Reserved built-in relation names, including unresolved-only succession.
+/// Project declarations cannot replace their resolution or lifecycle behavior.
 pub(crate) const EDGE_RELATIONS: &[&str] = &[
     "references",
     "supersedes",
@@ -200,20 +177,8 @@ pub(crate) const SUPERSEDED_BY_RELATION: &str = "superseded_by";
 /// spelled twice.
 pub(crate) const PATH_ONLY_RELATION: &str = "covers";
 
-/// The relations whose target is a node id — no path lookup, no
-/// extension append, no id fallback. Like [`PATH_ONLY_RELATION`], their
-/// resolution mode is fixed in code, so each is producible only by its
-/// frontmatter field: `Config::validate` rejects a link pattern naming
-/// any of them, which is what makes the resolver's id dispatch a closed,
-/// code-owned vocabulary rather than a guess about a user-chosen name.
-///
-/// [`SUPERSEDED_BY_RELATION`] is one of them and never reaches
-/// [`crate::builder::resolver::resolve_target`]: the builder materialises
-/// the scalar directly into a canonical `supersedes` edge (known target)
-/// or an unresolved `superseded_by` edge (unknown target). What the
-/// membership decides for it is what it decides for the rest — that its
-/// target is an id, so the ladder never runs over it and a
-/// `[[detection.unresolved_policy]]` glob matches the id verbatim.
+/// Built-in ID relations. Config extends this vocabulary with declared
+/// frontmatter relations; authored frontmatter syntax selects ID resolution.
 pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &[
     "supersedes",
     SUPERSEDED_BY_RELATION,
@@ -229,13 +194,8 @@ pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &[
 /// them do, so asking the ladder under this name shifts no semantics.
 pub(crate) const BODY_REFERENCE_RELATION: &str = "references";
 
-/// Whether `relation` is a *document reference* — resolved through the
-/// full candidate ladder (literal/relative path, extension append,
-/// bare id) — as opposed to the path-only [`PATH_ONLY_RELATION`].
-/// Because `Config::validate` rejects a link pattern naming `covers`,
-/// the path-only branch is reachable only through the frontmatter
-/// `covers:` field: a typed dispatch on a closed, code-owned
-/// vocabulary, never a guess about a user-chosen name.
+/// Whether the target can be a document rather than an out-of-graph code path.
+/// Frontmatter uses exact IDs; body syntax uses document lookup.
 pub(crate) fn is_document_ref_relation(relation: &str) -> bool {
     relation != PATH_ONLY_RELATION
 }
@@ -257,6 +217,14 @@ pub enum ReferenceSyntax {
     Wikilink,
     Pattern,
     Frontmatter,
+}
+
+impl ReferenceSyntax {
+    pub(crate) fn is_id_relation(self, relation: &str) -> bool {
+        self == Self::Frontmatter
+            && relation != PATH_ONLY_RELATION
+            && relation != BODY_REFERENCE_RELATION
+    }
 }
 
 /// Authored reference evidence, retained even when its target resolves.

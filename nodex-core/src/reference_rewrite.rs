@@ -4046,6 +4046,7 @@ mod tests {
         fn parser_config() -> ParserConfig {
             ParserConfig {
                 extensions: vec![".md".to_string()],
+                frontmatter_relations: vec![],
                 wikilink_enabled: true,
                 link_patterns: vec![
                     LinkPattern {
@@ -4078,6 +4079,7 @@ mod tests {
         fn shared_span_config() -> ParserConfig {
             ParserConfig {
                 extensions: vec![".md".to_string()],
+                frontmatter_relations: vec![],
                 wikilink_enabled: true,
                 link_patterns: vec![
                     LinkPattern {
@@ -4113,6 +4115,7 @@ mod tests {
         fn arrival_config() -> ParserConfig {
             ParserConfig {
                 extensions: vec![".md".to_string()],
+                frontmatter_relations: vec![],
                 wikilink_enabled: true,
                 link_patterns: vec![
                     LinkPattern {

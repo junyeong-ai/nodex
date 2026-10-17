@@ -1037,6 +1037,8 @@ pub struct ParserConfig {
 
     #[serde(default)]
     pub link_patterns: Vec<LinkPattern>,
+    #[serde(default)]
+    pub frontmatter_relations: Vec<FrontmatterRelation>,
 }
 
 impl Default for ParserConfig {
@@ -1045,7 +1047,54 @@ impl Default for ParserConfig {
             extensions: default_extensions(),
             wikilink_enabled: false,
             link_patterns: vec![],
+            frontmatter_relations: vec![],
         }
+    }
+}
+
+/// An ID-valued frontmatter field and the directed relation it authors.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FrontmatterRelation {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    pub retarget: RetargetPolicy,
+}
+
+impl FrontmatterRelation {
+    pub fn relation(&self) -> &str {
+        self.relation.as_deref().unwrap_or(&self.field)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetargetPolicy {
+    Keep,
+    Repoint,
+}
+
+impl ParserConfig {
+    pub fn frontmatter_relation(&self, relation: &str) -> Option<&FrontmatterRelation> {
+        self.frontmatter_relations
+            .iter()
+            .find(|entry| entry.relation() == relation)
+    }
+
+    pub fn is_relation_field(&self, field: &str) -> bool {
+        self.frontmatter_relations
+            .iter()
+            .any(|entry| entry.field == field)
+    }
+
+    pub fn is_collection_field(&self, field: &str) -> bool {
+        super::is_collection_builtin(field) || self.is_relation_field(field)
+    }
+
+    pub(crate) fn is_id_relation(&self, relation: &str) -> bool {
+        crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation)
+            || self.frontmatter_relation(relation).is_some()
     }
 }
 
@@ -1156,6 +1205,9 @@ pub struct DetectionConfig {
     /// [`crate::rules::superseded_reference`] therefore does not ask.
     #[serde(default)]
     pub superseded_reference_ok_kinds: Vec<String>,
+    /// Relations that intentionally refer to superseded records.
+    #[serde(default)]
+    pub superseded_reference_ok_relations: Vec<String>,
     /// The `[[annotations]]` block whose markers declare, one document at a
     /// time, a target its body cites as history: a marker keyed by the target's
     /// id takes the marking document's body citations of that target out of
@@ -1209,6 +1261,7 @@ impl Default for DetectionConfig {
             orphan_grace_days: default_orphan_grace_days(),
             orphan_ok_kinds: Vec::new(),
             superseded_reference_ok_kinds: Vec::new(),
+            superseded_reference_ok_relations: Vec::new(),
             superseded_reference_ok_annotation: None,
             git_drift_threshold: None,
             git_drift_relations: default_git_drift_relations(),

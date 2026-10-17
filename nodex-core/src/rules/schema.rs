@@ -485,6 +485,9 @@ impl Rule for ExplicitFieldRule {
 /// the same parsed node, so the guard and this rule can never disagree
 /// about what "missing" means.
 pub(crate) fn is_field_missing(node: &Node, field: &str) -> bool {
+    if let Some(values) = node.relation_values(field) {
+        return values.is_empty();
+    }
     match field {
         "id" => node.id.is_empty(),
         "title" => node.title.is_empty(),
@@ -515,6 +518,9 @@ pub(crate) fn is_field_missing(node: &Node, field: &str) -> bool {
 /// Returns `None` when no scalar representation is available. Presence
 /// predicates use [`is_field_missing`] independently of scalar conversion.
 fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
+    if node.frontmatter_relations.contains_key(field) {
+        return None;
+    }
     match field {
         "id" => none_if_empty(&node.id),
         "title" => none_if_empty(&node.title),
@@ -797,6 +803,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

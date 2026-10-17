@@ -299,7 +299,18 @@ Edges come from two sources: YAML frontmatter fields, and the markdown body itse
 | Body wikilink `[[id]]` (with `[parser].wikilink_enabled`) | `references` | Wikilink to a node id |
 | Custom pattern (configurable) | **any new relation name** | e.g. `@path.md` → `imports` |
 
-The five built-in relations above — `supersedes`, `implements`, `related`, `covers`, `references` — are fixed. Beyond them, `[[parser.link_patterns]]` in `nodex.toml` lets you define new relation names — pair a regex with a relation string, and every match becomes an edge with that relation. The built-ins whose resolution mode is fixed in code are off-limits: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are fed exclusively by their frontmatter fields, and a link pattern naming one is rejected at load. `references` stays legal on patterns — it resolves as a document reference either way.
+Built-in relations retain their lifecycle and resolution behavior. Add body syntaxes with `[[parser.link_patterns]]`, or ID-only frontmatter relations with `[[parser.frontmatter_relations]]`. Their relation names cannot collide. Body patterns cannot use `covers`, `supersedes`, `superseded_by`, `implements` or `related`; `references` remains legal.
+
+```toml
+[[parser.frontmatter_relations]]
+field = "sources"
+relation = "derived_from" # optional; defaults to field
+retarget = "keep"        # required: keep | repoint
+```
+
+`sources: doc-a` and `sources: [doc-a, doc-b]` author directed edges from this document to exact node IDs, without path or extension fallback. Incoming queries answer the reverse direction without a second authored field. Declared fields are typed by the parser, participate in schema presence/forbidden checks, strict mode, locks, diff and relation-filtered graph queries, and appear under `frontmatter_relations` in node detail. Field names use ASCII letters, digits, `_` and `-`, must remain plain YAML string keys, and cannot replace built-in or structural fields; relation names must be unique, non-empty and cannot contain the filter separator `,`.
+
+`keep` preserves this field during retarget and reports `reference_kept`; `repoint` moves it through the normal mutation gate. This policy does not preserve body links or exempt stale citations. For historical relations, configure `[detection].superseded_reference_ok_relations = ["derived_from"]` independently; missing IDs remain unresolved. Relations describe authored assertions, not inferred truth, transitivity or lifecycle changes.
 
 Markdown destinations resolve only from the referring document’s directory, including bare filenames; they never fall through to root paths or node ids. Wikilinks and configured patterns use the graph lookup ladder: project-root path, source-relative path, then node id, with configured extension candidates. For that graph syntax, `./` explicitly selects the source-relative frame. Empty and `.` segments normalize away; `..` is resolved within the selected frame. Root-anchored paths are refused as `cause: absolute`.
 
@@ -509,7 +520,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `baseline_inert` | A git ref leaned on had nothing where it was asked — locks not enforced, inert for one document, or one side of a `diff` / `impact` comparison missing a path |
 | `ranking_unscored` | Candidates carrying no score were left out of a ranking, and counted |
 | `file_skipped` | An edit did not land as meant — something stood in the way, or a moved reference now names another document or nothing |
-| `reference_kept` | A mutation left a reference standing because moving it would point it at the document holding it |
+| `reference_kept` | A mutation preserved a reference by its declared retarget policy or to avoid a self-reference |
 | `document_evicted` | A write made a `conditional_exclude` parent terminal and so dropped its sub-artifacts from the project |
 | `history_unread` | The step rules could not read history they needed — a commit whose tree the build refuses, or history a shallow clone cut off; its records are counted as `unjudged` |
 | `threshold_undeclared` | A listing asked by a detection threshold the project does not declare measured nothing — `query stale` without `[detection].stale_days` — so its empty answer is not a clean one |
@@ -608,7 +619,7 @@ Ranking exclusions include structured `warnings[].details` with `count` and `rea
 | `rule_id` | Severity | What it checks |
 |---|---|---|
 | `parse_failure` | error | Every in-scope document parses; a dropped document (unparseable YAML, non-mapping frontmatter, a non-string key, unclosed `---` fence) is a node-less error, never a warning a gate ignores |
-| `field_parse` | error | Built-in frontmatter fields parse as their type; a failed value (bad date, bad bool, non-string scalar) reads as absent and is flagged on the still-present node |
+| `field_parse` | error | Parser-owned frontmatter fields parse as their type; a failed value (bad date, bad bool, non-string scalar) reads as absent and is flagged on the still-present node |
 | `required_field` | error | Every required field (per `[schema].required` + per-kind override) is present |
 | `forbidden_field` | error | No field a per-kind override lists in `forbidden` is present (registered only when one does) |
 | `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
@@ -621,7 +632,7 @@ Ranking exclusions include structured `warnings[].details` with `count` and `rea
 | `unique_numbering` | error | No two files matching a `[[rules.naming]]` block with `unique = true` share the same leading number |
 | `stale_review` | warning | Active (non-terminal) nodes whose `reviewed` date is `[detection].stale_days` or more days old; missing `reviewed` counts as `unjudged`; list these with `query nodes --missing reviewed`, or require the field to make absence an error. Registered only when `stale_days` is set |
 | `orphan` | warning | Live nodes no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
-| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, a target the citing document names in a marker of the `[[annotations]]` block `[detection].superseded_reference_ok_annotation` names (keyed by the target's id, so it covers every body citation of that target from that document; its frontmatter relations to the target stay asked), and a part a `frontmatter_immutable` / `body_immutable` block had already armed at the reference point — with no baseline, a citation a lock could hold counts as `unjudged` |
+| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, relations in `[detection].superseded_reference_ok_relations`, a target the citing document names in a marker of the `[[annotations]]` block `[detection].superseded_reference_ok_annotation` names (keyed by the target's id, so it covers every body citation of that target from that document; its frontmatter relations to the target stay asked), and a part a `frontmatter_immutable` / `body_immutable` block had already armed at the reference point — with no baseline, a citation a lock could hold counts as `unjudged` |
 | `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have accumulated more than `git_drift_threshold` commits since `reviewed` (opt-in). The measure is commits that *introduced* a change to the target on a day after `reviewed`: whole history, not the simplified view `git log -- <path>` shows by default, and a merge counts only where it differs from every parent. A `check` of the working tree or the index keeps the history it walked in `_index/history.json`, keyed by the commit it was taken at, so the next command walks only the commits since; the whole history is walked again where `HEAD` does not reach the kept commit, or where git can reshape history in place (a shallow clone, a graft, a replace ref) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc the block's `trigger` had already armed at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `status`: it held one of the statuses the block names; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body, and `append_section` confines that growth to one closing section (diff-aware) |
@@ -767,7 +778,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.56, <0.57"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.57, <0.58"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -954,6 +965,7 @@ stale_days = 180
 orphan_grace_days = 14
 # orphan_ok_kinds = ["readme"]
 # superseded_reference_ok_kinds = ["readme"]
+# superseded_reference_ok_relations = ["derived_from"] # declare the relation first
 # superseded_reference_ok_annotation = "superseded-ok"   # the [[annotations]] block above
 # git_drift_threshold = 5
 # Which relations carry the measurement (default shown).
@@ -1052,11 +1064,11 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and a document declaring none receives, for kinds no flow governs; default: first allowed) + `flow` (see [Status flow](#status-flow)) |
 | `[scaffold.paths]` | Explicit per-kind creation path templates, or supply `--path` |
 | `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
-| `[parser]` | Custom `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
+| `[parser]` | Custom ID-only `frontmatter_relations` and body `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
 | `[rules]` | `immutable_baseline` (shared lock source; `nodex init` writes `"HEAD"`), `immutable_baseline_mode` (`ref` / `merge_base`), `immutable_history` (`steps` / `snapshot`) + `acyclic_relations` (default `["implements"]`) + `naming` patterns + `frontmatter_immutable` (field lock) + `body_immutable` (body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check); both locks pick when they engage with `trigger` = `terminal` / `status` / `creation` |
 | `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations`, and read by `superseded_reference` for the block `[detection].superseded_reference_ok_annotation` names |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` (which also take `forbidden`) + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
-| `[detection]` | `stale_days` / `orphan_grace_days` (default 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / optional `git_drift_threshold` with `git_drift_relations` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
+| `[detection]` | `stale_days` / `orphan_grace_days` (default 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_relations` / `superseded_reference_ok_annotation` / optional `git_drift_threshold` with `git_drift_relations` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
 | `[output]` | Where build artifacts land |
 | `[report]` | `GRAPH.md` formatting limits |
 | `[trust]` | Composite-score weights (per-kind overrides supported) |
@@ -1171,7 +1183,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.56, <0.57" build
+nodex --check-version ">=0.57, <0.58" build
 ```
 
 ---
