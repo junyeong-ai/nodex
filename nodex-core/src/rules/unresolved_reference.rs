@@ -262,18 +262,14 @@ mod tests {
     }
 
     #[test]
-    fn registered_rules_omits_rule_without_error_rows() {
-        // The default policy (one info row) registers nothing — the
-        // default-config registry carries no unresolved_reference rule.
+    fn default_policy_registers_only_the_unmatched_unresolved_rule() {
         let config = Config::default();
         let ids: Vec<String> = crate::rules::registered_rules(&config)
             .iter()
             .map(|r| r.id().to_string())
             .collect();
-        assert!(
-            !ids.iter().any(|id| id.starts_with("unresolved_reference/")),
-            "default registry must not carry an unresolved_reference rule: {ids:?}"
-        );
+        assert!(ids.iter().any(|id| id == "unresolved_reference"));
+        assert!(!ids.iter().any(|id| id.starts_with("unresolved_reference/")));
     }
 
     #[test]

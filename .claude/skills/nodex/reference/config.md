@@ -21,6 +21,10 @@ With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is *
 
 An annotation pattern reads every line outside a code block, inline code included, so a corpus may write its markers as code (`` `[PROMOTES: x]` ``). To keep an example of its own syntax from declaring a marker, anchor the pattern where examples do not stand: the `superseded-ok` block in the `nodex init` template reads a marker only on a line starting with `<!--`, so the syntax shown in inline code declares nothing.
 
+## Identity
+
+Default inferred identity is `{kind}-{path_slug}`; explicit ids and configured templates take precedence. To retain the previous inferred identity when upgrading, anchor ids with the previous binary's `migrate --apply` before upgrading, or explicitly retain `template = "{kind}-{stem}"`. Rebuilding alone does not preserve inferred ids across a fallback-template change.
+
 ## Scope
 
 `scope.include` / `scope.exclude` are glob lists. An `include` entry is written bare or as a table:
@@ -62,7 +66,7 @@ Standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt in vi
 
 A block may set `code_spans = true`: an inline code span whose **entire content** the pattern matches is then a citation on both the extraction and the rewriting side, so a corpus writing ids as `` `adr-001` `` is reachable as edges and `retarget` repoints them. A span is matched as its own text, so `^` / `$` mean the span and the backticks are never part of what the pattern sees; what the match leaves over is what keeps a span code (`` `just adr-tool` `` cites nothing). Code *blocks* stay opaque unconditionally. The field defaults off.
 
-Path resolution: a link opening `./` is read from the directory its document is in, never from the project root — the marker names the frame. Segments that name nothing are dropped before any rung is tried, so `docs//x.md` and `docs/./x.md` are both `docs/x.md`, while `.//x.md` still says its frame. `..` is kept and resolved by the frame that read it. A leading `/` is refused with `cause: absolute`.
+Markdown destinations are source-relative, including bare filenames; they do not fall through to root paths or node ids. Wikilinks and configured patterns use the root-path / source-relative / id lookup ladder with configured extension candidates. For graph syntax, `./` selects the source-relative frame. Empty and `.` segments normalize away, `..` resolves in the selected frame, and a leading `/` is refused with `cause: absolute`.
 
 ## Schema rules
 
@@ -85,7 +89,7 @@ Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers
 
 ## Built-in rule ids
 
-`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `forbidden_field` (registered only when an override declares `forbidden`) · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (registered only when `detection.stale_days` is set) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `superseded_reference` (always registered; its population is the citations live documents make, less `supersedes` itself, those of `detection.superseded_reference_ok_kinds`, body citations of a target the citing document names in a `detection.superseded_reference_ok_annotation` marker, and any read from a part an immutability lock holds in the run; a run with no baseline cannot tell, and counts the citations a lock could hold as `unjudged` until `--since` or `rules.immutable_baseline` supplies one) · `git_drift` (registered only when `git_drift_threshold` is set) · `status_transition` / `status_entry` (registered only when `[[statuses.flow]]` is declared) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges — a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`).
+`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `forbidden_field` (registered only when an override declares `forbidden`) · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (registered only when `detection.stale_days` is set) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `superseded_reference` (always registered; its population is the citations live documents make, less `supersedes` itself, those of `detection.superseded_reference_ok_kinds`, body citations of a target the citing document names in a `detection.superseded_reference_ok_annotation` marker, and any read from a part an immutability lock holds in the run; a run with no baseline cannot tell, and counts the citations a lock could hold as `unjudged` until `--since` or `rules.immutable_baseline` supplies one) · `git_drift` (registered only when `git_drift_threshold` is set) · `status_transition` / `status_entry` (registered only when `[[statuses.flow]]` is declared) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `unresolved_reference` (always registered; unmatched references, warning unless promoted) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges — a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`).
 
 Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>`.
 
@@ -174,6 +178,8 @@ Declare `[[statuses.flow]]` over the same kinds and load proves two things about
 
 ## Status flow
 
+Each `[[statuses.flow]]` owns disjoint kinds; an empty kind list governs every kind and therefore must stand alone.
+
 `[[statuses.flow]]` declares a lifecycle — which statuses follow which, over the kinds that have that lifecycle. Omit it and nothing is judged; declare it and two rules register:
 
 ```toml
@@ -214,6 +220,10 @@ The baseline is paired with the working tree **by node id**, so a lock guards a 
 - a **bare-markdown** document cannot be anchored — `rename` will not invent a frontmatter block for a path operation — so its id does change and `id_stability: bare_no_frontmatter` says so.
 
 So: move a locked document with `nodex rename`, and give it an id that is not derived from its path.
+
+## Rule severity
+
+`[rules] severity = { orphan = "error", unresolved_reference = "error" }` promotes registered warning rules consistently across checks, exports and mutation gates. Structural errors cannot be weakened, and unresolved-policy rows own their severity. `init` makes unmatched unresolved references errors.
 
 ## Unresolved-reference policy
 
@@ -278,11 +288,3 @@ configured sequence numbering. `{stem}` must occur once as the complete filename
 stem; use `{slug}` in directories. Templates cannot traverse parents and must use
 a configured document extension. Scope, naming, identity and content gates still
 apply to the generated path. `export config` includes the resolved templates.
-
-## Severity and independent lifecycles
-
-`[rules] severity = { orphan = "error", unresolved_reference = "error" }` promotes registered warning rules consistently across checks, exports and mutation gates. Structural errors cannot be weakened, and unresolved-policy rows own their severity. `init` makes unmatched unresolved references errors.
-
-Each `[[statuses.flow]]` owns disjoint kinds; an empty kind list governs every kind and therefore must stand alone. Default inferred identity is `{kind}-{path_slug}`; explicit templates remain authoritative.
-
-When upgrading a project that relied on the previous inferred identity, anchor ids with the previous binary’s `migrate --apply` before upgrading, or explicitly retain `template = "{kind}-{stem}"`. Rebuilding alone does not preserve inferred ids across a fallback-template change.

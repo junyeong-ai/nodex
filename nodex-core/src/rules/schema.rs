@@ -500,10 +500,7 @@ pub(crate) fn is_field_missing(node: &Node, field: &str) -> bool {
         "related" => node.related.is_empty(),
         "tags" => node.tags.is_empty(),
         "covers" => node.covers.is_empty(),
-        // `orphan_ok` is a `bool` — `false` is a meaningful value, not
-        // an absence, so the field is structurally always present.
-        // Returning `false` lets `cross_field.require = "orphan_ok"`
-        // pass once the doc declares the flag either way.
+        // Structural path and the defaulted boolean are always present.
         "orphan_ok" | "path" => false,
         other => match node.attrs.get(other) {
             None | Some(Value::Null) => true,
@@ -528,10 +525,8 @@ fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
         // `--where path=<value>` predicate filters on the same value the
         // listing emits. `path` is a reserved structural field
         // (`config::is_reserved_structural_field`): config can never
-        // declare it in types / enums / required / cross_field, so neither
-        // `field_enum` nor a `cross_field` predicate ever reaches this arm
-        // — only `--where` does, and it builds equality only (hence no
-        // `is_field_missing` arm).
+        // declare it in types / enums / required / cross_field. Query
+        // equality reads it here; presence uses `is_field_missing`.
         "path" => Some(crate::path_guard::forward_string(&node.path)),
         "owner" => node.owner.clone(),
         "superseded_by" => node.superseded_by.clone(),

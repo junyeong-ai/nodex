@@ -1526,7 +1526,7 @@ exit: 0
             "type": "object"
           },
           "ResolvedTarget": {
-            "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
+            "description": "Resolved document identity or unresolved lookup evidence. Deduplication\nretains unresolved grammar and raw target, independently of diagnostic cause.",
             "oneOf": [
               {
                 "description": "Successfully resolved to a node id.",
@@ -2664,7 +2664,7 @@ exit: 0
             "type": "object"
           },
           "ResolvedTarget": {
-            "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
+            "description": "Resolved document identity or unresolved lookup evidence. Deduplication\nretains unresolved grammar and raw target, independently of diagnostic cause.",
             "oneOf": [
               {
                 "description": "Successfully resolved to a node id.",
@@ -3403,7 +3403,7 @@ exit: 0
             "type": "object"
           },
           "ResolvedTarget": {
-            "description": "Type-safe representation of an edge target. `Hash + Ord` participate\nin `Edge` deduplication, so two unresolved edges with the same `raw`\nbut different causes still collapse — the *target* is the raw\nstring the user wrote, not our diagnostic.",
+            "description": "Resolved document identity or unresolved lookup evidence. Deduplication\nretains unresolved grammar and raw target, independently of diagnostic cause.",
             "oneOf": [
               {
                 "description": "Successfully resolved to a node id.",
@@ -3820,7 +3820,7 @@ exit: 0
                 "type": "string"
               },
               "policy_name": {
-                "description": "Name of the policy row that classified this edge; absent when\nthe built-in fallthrough (`warning`) applied. Invariant:\n`severity == Info` ⇒ `policy_name` is `Some` — the fallthrough\nis always `warning`.",
+                "description": "Name of the matching policy row; absent for the unmatched rule.\nInformational severity always names a policy row.",
                 "type": [
                   "string",
                   "null"
@@ -3838,7 +3838,7 @@ exit: 0
               },
               "severity": {
                 "$ref": "#/$defs/UnresolvedSeverity",
-                "description": "Severity the `[[detection.unresolved_policy]]` table assigns —\nper-edge attribution, so a downgrade is visible, never silent.\nConsumers branch on this instead of re-deriving the policy\n(actionable ⇔ not `info`)."
+                "description": "Effective severity assigned by the matching policy row or the\nunmatched `unresolved_reference` rule, including configured promotion."
               },
               "sought": {
                 "items": {
@@ -3871,21 +3871,21 @@ exit: 0
             "type": "object"
           },
           "UnresolvedSeverity": {
-            "description": "Severity a `[[detection.unresolved_policy]]` row assigns to the\nunresolved edges it classifies. Distinct from\n[`crate::rules::Severity`]: only `Error` has a check-plane mapping;\n`Warning` and `Info` are `query issues` report-plane levels.",
+            "description": "Severity assigned to an unresolved reference. Warning and error rows\nregister check rules; informational rows remain outside the finding total.",
             "oneOf": [
               {
                 "const": "error",
-                "description": "Gate plane: the row registers one check rule\n`unresolved_reference/<name>` (Error severity), so matching\nedges fail `nodex check` at exit 1 and are counted by\n`query issues` as `violation_unresolved_reference/<name>`.",
+                "description": "Error check finding; fails `check` and contributes once through its rule.",
                 "type": "string"
               },
               {
                 "const": "warning",
-                "description": "Triage plane: counted in `query issues` `summary.total` under\n`unresolved_edge`, never a check violation. Also the built-in\nfallthrough for edges no row matches.",
+                "description": "Warning check finding; contributes once through its rule without\nfailing `check`. The unmatched rule defaults to this level.",
                 "type": "string"
               },
               {
                 "const": "info",
-                "description": "Informational plane: the edge is reported but kept out of\n`summary.total`, counted under `by_category[<row name>]`.",
+                "description": "Informational reference; reported under its policy name outside total.",
                 "type": "string"
               }
             ]
@@ -4688,7 +4688,7 @@ exit: 0
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Aggregate of all actionable problems in the graph.\n\nThe typed listings and the rule violations are two views of one set\nof findings rather than two sets. `orphans` and `stale` carry the\ndetail their detectors produce, and each finding also appears in\n`violations` as the gate record its rule emits (`orphan`,\n`stale_review`); every unresolved edge appears in\n`unresolved_edges` whatever its policy severity, and an\nerror-severity one *also* appears in `violations`\n(`unresolved_reference/<name>`).\n\nA finding with a gate record is counted once, through the violation.\nSo `summary.total` counts problems rather than the number of times\nthe report mentions them, and `by_category` keys each counted\nfinding by the rule that found it. What has no rule record counts on\nits own: a warning-severity unresolved edge under `unresolved_edge`\n— the fallthrough plane, which no rule gates — and an info-severity\none under its policy row's name, out of `total`.",
+        "description": "Aggregate of actionable findings and informational references.\n\nTyped listings and violations describe the same findings. Each warning or\nerror finding contributes once through its violation under `violation_<rule_id>`.\nEvery unresolved edge also appears in `unresolved_edges`; informational rows\ncontribute only to their named category outside `summary.total`.",
         "properties": {
           "orphans": {
             "items": {
@@ -6502,7 +6502,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.54.0"
+    "version": "0.54.1"
   },
   "ok": true
 }

@@ -20,6 +20,10 @@ A failed destination commit reports a partial move and stops reference commits.
   actual write failures keep their result and normal resource cleanup.
   Snapshot queries use `commands/query/mod.rs::QueryContext::emit_read_with` to
   attach probe metadata before the read emitter. Do not bypass it in a query leaf.
+- Queries verify snapshot content by default; `--allow-stale` is the explicit
+  membership-only mode. Node detail uses `NodeMetadata`, with bounded body reads
+  through `--body-lines`. `retarget --supersede` composes lifecycle and resolved
+  reference edits before the shared mutation gate.
 - Project reads use `nodex_core::load_project` (config validation + preflight).
   Writes also require binary compatibility (`load_project_for_mutation`, or an
   explicit check where dry runs stay readable). Validate prerequisites and locate
@@ -73,5 +77,3 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
 
 `commands/content_source.rs` is the single SOURCE grammar for check --content and
 scaffold --body: `-` reads stdin, other paths resolve against invoking directory.
-
-Queries use content-verified snapshots by default; `--allow-stale` is the explicit membership-only mode. Reader-facing node payloads use `NodeMetadata`, with bounded body retrieval through `--body-lines`. `retarget --supersede` composes lifecycle and resolved-reference edits before the shared mutation gate.

@@ -313,11 +313,11 @@ orphan_grace_days = 14
 # Unresolved-reference policy — ordered, first match wins. Each row
 # maps a typed cause (id_not_found | missing | target_unparsed |
 # excluded_from_scope | escapes_source | absolute) to a severity:
-# "error" registers the check rule `unresolved_reference/<name>`
-# (matching edges fail `nodex check`), "warning" counts under
-# `unresolved_edge` in `query issues` (also the fallthrough for
-# unmatched edges), "info" reports the edge out of `total` under the
-# row's name.
+# "error" and "warning" register `unresolved_reference/<name>` check
+# findings, counted once through their violation category in `query issues`.
+# Errors fail `check`; warnings do not. "info" reports outside `total`
+# under the policy row's name. Unmatched references use the registered
+# `unresolved_reference` rule; this starter promotes it to error.
 #
 # Two optional axes narrow a row. `relations` picks which relation the
 # edge carries (omitted = every one) — the axis that tells a structural
