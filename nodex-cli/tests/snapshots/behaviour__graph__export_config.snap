@@ -37,6 +37,7 @@ exit: 0
       "extensions": [
         ".md"
       ],
+      "frontmatter_relations": [],
       "link_patterns": [],
       "wikilink_enabled": false
     },
@@ -60,7 +61,7 @@ exit: 0
         ".venv"
       ]
     },
-    "version": "0.56.0"
+    "version": "0.57.0"
   },
   "ok": true
 }

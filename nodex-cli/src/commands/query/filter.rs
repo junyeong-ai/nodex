@@ -70,7 +70,7 @@ pub(crate) fn run_nodes(
             ))
             .into());
         }
-        if nodex_core::config::is_collection_builtin(key) {
+        if config.parser.is_collection_field(key) {
             return Err(nodex_core::error::Error::Config(format!(
                 "--where {clause:?}: {key:?} is a collection-valued field; equality would \
                  compare against a comma-joined string and silently miss multi-value \

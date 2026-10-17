@@ -4884,3 +4884,124 @@ fn all_frontmatter_fields_validate_exceptions_and_status_flow() {
     let config: Config = toml::from_str(&format!("{policy}except = [\"status\"]\n")).unwrap();
     config.validate().unwrap();
 }
+
+#[test]
+fn frontmatter_relations_validate_names_and_schema_contracts() {
+    let valid = || {
+        let mut config = Config::default();
+        config
+            .parser
+            .frontmatter_relations
+            .push(FrontmatterRelation {
+                field: "sources".into(),
+                relation: Some("derived_from".into()),
+                retarget: RetargetPolicy::Keep,
+            });
+        config
+    };
+    valid().validate().unwrap();
+    for field in ["id", "path", "", " sources", "bad:key", "true", "a.b", "*"] {
+        let mut config = valid();
+        config.parser.frontmatter_relations[0].field = field.into();
+        assert!(config.validate().is_err(), "field {field:?}");
+    }
+    for relation in [
+        "references",
+        "covers",
+        "supersedes",
+        "superseded_by",
+        "implements",
+        "related",
+        "",
+        " x",
+        "a,b",
+    ] {
+        let mut config = valid();
+        config.parser.frontmatter_relations[0].relation = Some(relation.into());
+        assert!(config.validate().is_err(), "relation {relation:?}");
+    }
+    let mut config = valid();
+    config
+        .parser
+        .frontmatter_relations
+        .push(config.parser.frontmatter_relations[0].clone());
+    assert!(config.validate().is_err());
+    config.parser.frontmatter_relations[1].field = "other".into();
+    assert!(config.validate().is_err());
+    config.parser.frontmatter_relations[1].relation = Some("other_relation".into());
+    config.validate().unwrap();
+    config.parser.link_patterns.push(LinkPattern {
+        pattern: "@ref\\(([^)]+)\\)".into(),
+        relation: "derived_from".into(),
+        code_spans: false,
+    });
+    assert!(config.validate().is_err());
+    let mut config = valid();
+    config
+        .schema
+        .types
+        .insert("sources".into(), FieldType::String);
+    assert!(config.validate().is_err());
+    let mut config = valid();
+    config
+        .schema
+        .enums
+        .insert("sources".into(), vec!["x".into()]);
+    assert!(config.validate().is_err());
+    for predicate in [
+        "sources exists",
+        "sources not_exists",
+        "sources=x",
+        "sources in {x,y}",
+    ] {
+        let mut config = valid();
+        config.schema.cross_field.push(CrossFieldSpec {
+            when: predicate.into(),
+            require: "created".into(),
+        });
+        assert_eq!(
+            config.validate().is_ok(),
+            !predicate.contains('=') && !predicate.contains(" in "),
+            "{predicate}"
+        );
+    }
+    let mut config = valid();
+    config.detection.superseded_reference_ok_relations = vec!["derived_from".into()];
+    config.validate().unwrap();
+    config
+        .detection
+        .superseded_reference_ok_relations
+        .push("missing".into());
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn custom_id_relations_participate_in_unresolved_policy_reachability() {
+    let config = r#"
+[[parser.frontmatter_relations]]
+field = "sources"
+relation = "derived_from"
+retarget = "keep"
+[[detection.unresolved_policy]]
+name = "sources"
+cause = "id_not_found"
+relations = ["derived_from"]
+severity = "error"
+"#;
+    let parsed: Config = toml::from_str(config).unwrap();
+    parsed.validate().unwrap();
+    let path_cause: Config = toml::from_str(&config.replace("id_not_found", "missing")).unwrap();
+    assert!(path_cause.validate().is_err());
+    let shadow = format!(
+        "{config}\n[[detection.unresolved_policy]]\nname = 'all'\ncause = 'id_not_found'\nseverity = 'error'\n"
+    );
+    let mut parsed: Config = toml::from_str(&shadow).unwrap();
+    parsed.validate().unwrap();
+    parsed.detection.unresolved_policy[0].relations = parsed
+        .unresolved_edge_relations()
+        .into_iter()
+        .filter(|relation| parsed.parser.is_id_relation(relation))
+        .collect();
+    assert!(parsed.validate().is_err());
+    assert!(toml::from_str::<Config>(&config.replace("retarget = \"keep\"", "")).is_err());
+}

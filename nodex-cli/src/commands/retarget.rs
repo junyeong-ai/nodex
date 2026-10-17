@@ -136,6 +136,7 @@ pub fn run(
         // an empty `references_updated` would read the same whether they
         // existed or the project referenced the predecessor nowhere.
         let mut self_edges = nodex_core::retarget::SelfEdges::default();
+        let mut kept_fields = Vec::new();
         let retarget = |content: &str| {
             if !node.matches_content(content) {
                 return Err(CoreError::WriteConflict(node.path.clone()));
@@ -150,6 +151,7 @@ pub fn run(
             )?;
             refused = retargeted.refused;
             self_edges = retargeted.self_edges;
+            kept_fields = retargeted.kept_fields;
             Ok(retargeted.content)
         };
         // The reader-follows / writer-skips symlink discipline and the read
@@ -165,6 +167,12 @@ pub fn run(
             nodex_core::mutate::PlanOutcome::Planned(plan) => plans.push(plan),
             nodex_core::mutate::PlanOutcome::Skipped(warning) => skipped.push(warning),
             nodex_core::mutate::PlanOutcome::Unchanged => {}
+        }
+        for field in kept_fields {
+            kept.push(format!(
+                "{shown} frontmatter `{field}` keeps naming `{}` by its declared retarget policy",
+                args.old_id
+            ));
         }
         if !self_edges.is_empty() {
             let new = &args.new_id;

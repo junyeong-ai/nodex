@@ -174,7 +174,11 @@ safety: `src/git.rs` rustdoc.
   parent probe and lifecycle share this chain. Inferred built-ins cannot be
   meaningfully required by presence; load rejects them in required/cross-field
   require and offers `schema.require_explicit` for authored declarations.
-- Built-in field type errors become `FieldParseIssue`, read as absent and never
+- Declared ID relations live in `Node::frontmatter_relations` keyed by source
+  field, outside `attrs`. Schema presence, locks, projections and diff must read
+  that field; graph filters read its declared relation. Retarget policy and
+  superseded-target exemptions are independent of resolution.
+- Parser-owned field type errors become `FieldParseIssue`, read as absent and never
   enter attrs. Invalid YAML, non-mapping blocks, non-string keys and unclosed
   fences drop the node into `Graph::parse_failures`. Always-registered
   `field_parse` and `parse_failure` make both states Error findings. Readers
@@ -288,8 +292,8 @@ safety: `src/git.rs` rustdoc.
   decoded target and location; unresolved listings expose sought lookup names.
   `resolver::frame_and_path` refuses root anchoring before collapsing empty/`.`
   segments; `..` remains an operation in its frame. `covers` is path-only;
-  supersedes/superseded_by/implements/related are id-only, and custom patterns
-  cannot manufacture those code-fixed relations. `resolver::sought_names` / typed
+  built-in and declared frontmatter relations are id-only. Config prevents body
+  patterns from sharing those relation names. `resolver::sought_names` / typed
   `Sought` distinguish lookup names from raw authored targets and disk-probe paths.
 - `parser::destination::LocalDestination` separates path from query/fragment before
   percent-decoding the path once; external schemes and network-path references

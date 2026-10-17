@@ -204,6 +204,8 @@ pub(crate) fn collect_frontmatter(
             if let Some(v) = node_json.get(field) {
                 out.insert(field.clone(), v.clone());
             }
+        } else if let Some(values) = node.frontmatter_relations.get(field) {
+            out.insert(field.clone(), serde_json::json!(values));
         } else if let Some(v) = node.attrs.get(field) {
             // Project-declared: lives under the `attrs` catch-all.
             out.insert(field.clone(), v.clone());
@@ -239,6 +241,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

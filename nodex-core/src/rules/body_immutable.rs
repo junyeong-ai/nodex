@@ -352,6 +352,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

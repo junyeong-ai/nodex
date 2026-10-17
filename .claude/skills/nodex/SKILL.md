@@ -6,7 +6,7 @@ description: >-
   graph queries, guarded authoring and replacement, and machine-readable exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.56.0
+  version: 0.57.0
 ---
 
 # nodex — markdown document graph CLI
@@ -119,8 +119,8 @@ Scaffold candidates are comparisons, not duplication or supersession verdicts.
 
 Read these write advisories before continuing (details: `reference/commands.md`):
 
-- `reference_kept`: retarget leaves the successor's references to the predecessor;
-  its `supersedes` succession record is exempt.
+- `reference_kept`: retarget preserves fields with `retarget = "keep"` and the
+  successor's predecessor references; its `supersedes` succession record is exempt.
 - `document_evicted`: a terminal conditional-exclusion parent drops sub-artifacts
   in its directory subtree, including parse failures. The files remain untouched;
   the warning discloses scope loss that can otherwise turn check green.
@@ -128,6 +128,12 @@ Read these write advisories before continuing (details: `reference/commands.md`)
   now naming another document. The latter can leave a valid graph, so check cannot
   substitute for this warning.
 - `baseline_inert`: configured locks could not engage; inspect the condition.
+
+Project-declared ID relations use `[[parser.frontmatter_relations]]` (`field`,
+optional `relation`, required `retarget = "keep" | "repoint"`). Discover them
+through `export config` / `export schema`; query by relation, author and lock by
+field. Historical-target exemptions use `detection.superseded_reference_ok_relations`
+independently of retarget policy. Details: `reference/config.md`.
 
 Retarget rewrites frontmatter relations and parsed body references by resolved
 identity, including Markdown paths. `--supersede` plans the lifecycle change in the
@@ -188,7 +194,7 @@ still answer for all judgments) · `baseline_inert` (a baseline/project/document
 was absent where the ref was asked; inspect what went ungated) ·
 `ranking_unscored` (no usable score; trust detail names undeclared inputs) ·
 `file_skipped` (held/failed edit or reference now naming another document; see Write seams) ·
-`reference_kept` (retarget left a successor's reference standing) ·
+`reference_kept` (retarget preserved a policy-held or successor reference) ·
 `document_evicted` (a write removed other documents from scope, not disk) ·
 `history_unread` (step history could not be read; counted unjudged) ·
 `threshold_undeclared` (the listing's detection threshold is absent, so its empty

@@ -1820,6 +1820,29 @@ exit: 0
             ],
             "type": "object"
           },
+          "FrontmatterRelation": {
+            "additionalProperties": false,
+            "description": "An ID-valued frontmatter field and the directed relation it authors.",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "relation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "retarget": {
+                "$ref": "#/$defs/RetargetPolicy"
+              }
+            },
+            "required": [
+              "field",
+              "retarget"
+            ],
+            "type": "object"
+          },
           "IdRule": {
             "additionalProperties": false,
             "description": "Map document (kind, path) to an ID using templates.\n\nRules are evaluated in order — first matching rule wins.\nOrder matters: reordering rules changes ID inference.\nIf no rule matches, default ID \"{kind}-{stem}\" is generated.\n\nTemplate substitution:\n- {kind}: the document kind\n- {stem}: filename without extension (slugified)\n- {parent}: parent directory name (slugified)\n- {path_slug}: full relative path minus extension (slugified)",
@@ -1978,6 +2001,13 @@ exit: 0
                 },
                 "type": "array"
               },
+              "frontmatter_relations": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/FrontmatterRelation"
+                },
+                "type": "array"
+              },
               "link_patterns": {
                 "default": [],
                 "items": {
@@ -1992,6 +2022,13 @@ exit: 0
               }
             },
             "type": "object"
+          },
+          "RetargetPolicy": {
+            "enum": [
+              "keep",
+              "repoint"
+            ],
+            "type": "string"
           },
           "ScaffoldConfig": {
             "additionalProperties": false,
@@ -4836,7 +4873,7 @@ exit: 0
             "type": "object"
           },
           "FieldParseIssue": {
-            "description": "One built-in frontmatter field whose authored value failed its type\ncoercion (bad date, bad bool, non-string scalar, malformed list).\nRecorded on the node at parse time — the field reads as absent\neverywhere downstream (absence semantics, nothing fabricated) — so\nthe `field_parse` check rule stays a pure function of\n`(graph, config)`. `found` is the YAML value's type name, plus the\nrendered scalar (truncated) for scalar values.",
+            "description": "One parser-owned frontmatter field whose authored value failed its type\ncoercion (bad date, bad bool, non-string scalar, malformed list).\nRecorded on the node at parse time — the field reads as absent\neverywhere downstream (absence semantics, nothing fabricated) — so\nthe `field_parse` check rule stays a pure function of\n`(graph, config)`. `found` is the YAML value's type name, plus the\nrendered scalar (truncated) for scalar values.",
             "properties": {
               "expected": {
                 "type": "string"
@@ -4905,6 +4942,15 @@ exit: 0
                   "string",
                   "null"
                 ]
+              },
+              "frontmatter_relations": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
               },
               "id": {
                 "type": "string"
@@ -6502,7 +6548,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.56.0"
+    "version": "0.57.0"
   },
   "ok": true
 }

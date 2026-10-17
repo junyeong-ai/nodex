@@ -1,6 +1,6 @@
 //! Parse-honesty rules: parsing problems are Error-severity check
 //! violations, never envelope warnings a gate ignores. `field_parse`
-//! flags built-in fields whose authored value failed coercion on a
+//! flags parser-owned fields whose authored value failed coercion on a
 //! still-present node; `parse_failure` flags in-scope documents that
 //! dropped from the graph entirely. Both are unconditional built-ins —
 //! parsing is intrinsic, not config-gated — so `check` and
@@ -28,7 +28,7 @@ impl Rule for FieldParseRule {
     }
 
     fn description(&self) -> &str {
-        "Built-in frontmatter fields must parse as their type; a failed value reads as absent"
+        "Parser-owned frontmatter fields must parse as their type; a failed value reads as absent"
     }
 
     fn subject_unit(&self) -> SubjectUnit {
@@ -149,6 +149,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

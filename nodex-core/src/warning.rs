@@ -132,8 +132,8 @@ pub enum WarningCode {
     /// reference the project tolerates losing, a build before anything else
     /// mentions it.
     FileSkipped,
-    /// A mutation left a reference standing that it moves everywhere else,
-    /// because moving it there would turn it on the document holding it.
+    /// A mutation preserved a reference by its declared retarget policy or
+    /// because moving it would create a self-reference.
     ///
     /// Its own code rather than a [`Self::FileSkipped`] whose message happens
     /// to ask for nothing: a consumer branches on the vocabulary, so "I could

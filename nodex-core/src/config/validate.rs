@@ -251,6 +251,7 @@ impl<'a> PolicySelector<'a> {
         &self,
         earlier: &'a [Self],
         vocabulary: &std::collections::BTreeSet<String>,
+        parser: &ParserConfig,
     ) -> Option<Vec<&'a str>> {
         let mut claimants = Vec::new();
         let mut claimed = std::collections::BTreeSet::new();
@@ -269,7 +270,7 @@ impl<'a> PolicySelector<'a> {
             true => vocabulary
                 .iter()
                 .map(String::as_str)
-                .filter(|relation| self.cause.reachable_for(relation))
+                .filter(|relation| self.cause.reachable_for(parser.is_id_relation(relation)))
                 .collect(),
         };
         selects.is_subset(&claimed).then_some(claimants)
@@ -352,6 +353,7 @@ impl Config {
         // `allowed` non-empty, every `terminal` entry allowed, `initial`
         // allowed when declared.
         self.validate_status_flow()?;
+        self.validate_frontmatter_relations()?;
         self.validate_detection()?;
         self.validate_output()?;
         self.validate_report()?;
@@ -692,14 +694,34 @@ impl Config {
             // for `ensure_field_known`, which tests declaration, not value.)
             let predicate_enums = self.effective_enums_for(kind);
             let ctx = format!("cross_field for kind {kind:?}");
+            let ensure_field_known = |field: &str, slot: &str| -> Result<()> {
+                if is_reserved_structural_field(field) {
+                    return Err(Error::Config(format!(
+                        "{ctx}: {slot} references {field:?}, a reserved structural field (the node's \
+                         filesystem path) — it is not frontmatter, so a cross_field predicate cannot \
+                         read it. Validate the path with [[rules.naming]] instead"
+                    )));
+                }
+                if is_builtin_node_field(field)
+                    || self.parser.is_relation_field(field)
+                    || required.iter().any(|r| r == field)
+                    || types.contains_key(field)
+                    || enums.contains_key(field)
+                    || forbidden.iter().any(|f| f == field)
+                {
+                    return Ok(());
+                }
+                Err(Error::Config(format!(
+                    "{ctx}: {slot} references unknown field {field:?}; declare it \
+                     in required / types / enums, declare a frontmatter relation, or use a built-in name"
+                )))
+            };
             for cf in self.cross_field_for(kind) {
                 let predicate = parse_when(&cf.when)
                     .map_err(|e| Error::Config(format!("{ctx}: when {:?}: {e}", cf.when)))?;
                 let when_field = predicate.field();
-                ensure_field_known(
-                    when_field, &required, &types, &enums, forbidden, &ctx, "when",
-                )?;
-                if is_collection_builtin(when_field)
+                ensure_field_known(when_field, "when")?;
+                if self.parser.is_collection_field(when_field)
                     && matches!(
                         predicate,
                         WhenPredicate::Equals { .. } | WhenPredicate::In { .. }
@@ -718,15 +740,7 @@ impl Config {
                 // `parse_when` already enforces structurally (it rejects
                 // `==` / leading `=` typos).
                 ensure_predicate_values_match_field(&predicate, &types, &predicate_enums, &ctx)?;
-                ensure_field_known(
-                    &cf.require,
-                    &required,
-                    &types,
-                    &enums,
-                    forbidden,
-                    &ctx,
-                    "require",
-                )?;
+                ensure_field_known(&cf.require, "require")?;
                 // A `require` naming a parser-resolved field
                 // (`INFERRED_FRONTMATTER_FIELDS` — the same vocabulary
                 // the `required` guard in `validate_block` derives
@@ -1015,6 +1029,82 @@ impl Config {
         Ok(())
     }
 
+    fn validate_frontmatter_relations(&self) -> Result<()> {
+        let mut fields = std::collections::BTreeSet::new();
+        let mut relations = std::collections::BTreeSet::new();
+        for (index, entry) in self.parser.frontmatter_relations.iter().enumerate() {
+            let ctx = format!("parser.frontmatter_relations[{index}]");
+            for (slot, name) in [
+                ("field", entry.field.as_str()),
+                ("relation", entry.relation()),
+            ] {
+                if name.is_empty() || name.trim() != name || name.chars().any(char::is_control) {
+                    return Err(Error::Config(format!(
+                        "{ctx}.{slot} {name:?} must be non-empty, trim-stable and free of control characters"
+                    )));
+                }
+            }
+            let header = format!("{}:", entry.field);
+            let yaml = format!("{header} []\n");
+            let valid_key = yaml_serde::from_str::<yaml_serde::Value>(&yaml)
+                .ok()
+                .and_then(|value| {
+                    value.as_mapping().map(|mapping| {
+                        mapping.len() == 1
+                            && mapping.contains_key(yaml_serde::Value::String(entry.field.clone()))
+                    })
+                })
+                .unwrap_or(false);
+            if crate::yaml_text::parse_scalar_key(&header) != Some(entry.field.as_str())
+                || !valid_key
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}.field {:?} must round-trip as a plain YAML string key",
+                    entry.field
+                )));
+            }
+            if entry.relation().contains(',') {
+                return Err(Error::Config(format!(
+                    "{ctx}.relation {:?} contains the relation-filter separator `,`",
+                    entry.relation()
+                )));
+            }
+            if BUILTIN_FRONTMATTER_FIELDS.contains(&entry.field.as_str())
+                || is_reserved_structural_field(&entry.field)
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}.field {:?} is a reserved field",
+                    entry.field
+                )));
+            }
+            if !fields.insert(entry.field.as_str()) {
+                return Err(Error::Config(format!(
+                    "{ctx}.field {:?} is declared more than once",
+                    entry.field
+                )));
+            }
+            if crate::model::edge::EDGE_RELATIONS.contains(&entry.relation())
+                || self
+                    .parser
+                    .link_patterns
+                    .iter()
+                    .any(|pattern| pattern.relation == entry.relation())
+            {
+                return Err(Error::Config(format!(
+                    "{ctx}.relation {:?} collides with an existing relation",
+                    entry.relation()
+                )));
+            }
+            if !relations.insert(entry.relation()) {
+                return Err(Error::Config(format!(
+                    "{ctx}.relation {:?} is declared more than once",
+                    entry.relation()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// `[detection]` numeric guards: thresholds are strictly positive
     /// or `None` — zero is ambiguous between "off" and "immediate", so
     /// it is refused at load. `[[detection.unresolved_policy]]` rows:
@@ -1109,7 +1199,10 @@ impl Config {
                         name = row.name,
                     )));
                 }
-                if !row.cause.reachable_for(relation) {
+                if !row
+                    .cause
+                    .reachable_for(self.parser.is_id_relation(relation))
+                {
                     let plane = match row.cause {
                         crate::model::UnresolvedCause::IdNotFound => "names a node id",
                         _ => "names a path",
@@ -1147,7 +1240,9 @@ impl Config {
                 relations: seen_relations,
                 glob: row.glob.as_deref(),
             };
-            if let Some(claimants) = selector.claimed_by(&selectors, &unresolved_relations) {
+            if let Some(claimants) =
+                selector.claimed_by(&selectors, &unresolved_relations, &self.parser)
+            {
                 return Err(Error::Config(format!(
                     "detection.unresolved_policy[{idx}] ({name:?}) can never fire: the earlier \
                      row(s) {claimants:?} already claim every edge it selects (cause \
@@ -1779,6 +1874,15 @@ impl Config {
     /// empty list or an unknown relation would otherwise silently match
     /// nothing.
     fn validate_relations(&self) -> Result<()> {
+        let known = self.known_relations();
+        let mut seen = std::collections::BTreeSet::new();
+        for relation in &self.detection.superseded_reference_ok_relations {
+            if !known.contains(relation) || !seen.insert(relation) {
+                return Err(Error::Config(format!(
+                    "detection.superseded_reference_ok_relations contains unknown or duplicate relation {relation:?}"
+                )));
+            }
+        }
         // `git_drift_relations` is structurally meaningful independent of
         // whether drift is currently enabled — a typo'd relation must not
         // load clean under `git_drift_threshold = None` only to error when
@@ -1808,7 +1912,7 @@ impl Config {
                 let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
                 return Err(Error::Config(format!(
                     "detection.git_drift_relations[{idx}] {rel:?} is not a known relation; \
-                     declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                     declare it via parser.link_patterns or parser.frontmatter_relations or pick one of {known_sorted:?}"
                 )));
             }
         }
@@ -1838,7 +1942,7 @@ impl Config {
                 let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
                 return Err(Error::Config(format!(
                     "rules.acyclic_relations[{idx}] {rel:?} is not a known relation; \
-                     declare it via [[parser.link_patterns]] or pick one of {known_sorted:?}"
+                     declare it via parser.link_patterns or parser.frontmatter_relations or pick one of {known_sorted:?}"
                 )));
             }
         }
@@ -2231,9 +2335,9 @@ impl Config {
         // a `types` entry naming one is accepted-but-inert forever.
         // "No silent runtime skips": reject it at load with the reason.
         for field in types.keys() {
-            if is_builtin_node_field(field) {
+            if is_builtin_node_field(field) || self.parser.is_relation_field(field) {
                 return Err(Error::Config(format!(
-                    "{ctx}: types.{field} — built-in fields are typed by the parser and \
+                    "{ctx}: types.{field} — parser-owned fields are typed by the parser and \
                      never reach the field_type rule; drop the entry (types constrains \
                      project-specific frontmatter keys only)"
                 )));
@@ -2241,9 +2345,9 @@ impl Config {
         }
 
         for (field, allowed) in enums {
-            if is_collection_builtin(field) {
+            if self.parser.is_collection_field(field) {
                 return Err(Error::Config(format!(
-                    "{ctx}: enums.{field} — collection-valued built-in \
+                    "{ctx}: enums.{field} — collection-valued \
                      fields cannot have a scalar enum constraint"
                 )));
             }

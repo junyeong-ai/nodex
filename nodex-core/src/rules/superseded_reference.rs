@@ -12,7 +12,9 @@
 //!
 //! What is asked is every citation a live document makes of another document,
 //! less what is not a claim about what is current. Succession itself
-//! (`supersedes`) is the record of the replacement. A document of a kind in
+//! (`supersedes`) is the record of the replacement. Relations declared in
+//! `detection.superseded_reference_ok_relations` also preserve historical targets.
+//! A document of a kind in
 //! `detection.superseded_reference_ok_kinds` catalogues history by design — an
 //! ADR index, a decision log. A document of any other kind can say the same of
 //! what its body cites of one target, with a marker of the `[[annotations]]`
@@ -61,7 +63,7 @@ impl Rule for SupersededReferenceRule {
     fn description(&self) -> &str {
         "Live documents citing a terminal document whose `supersedes` lineage continues in a \
          live one; the lineage's own citations pass, and `supersedes` itself, \
-         `detection.superseded_reference_ok_kinds`, body citations of a target the citer's \
+         `detection.superseded_reference_ok_kinds`, exempt relations, body citations of a target the citer's \
          `detection.superseded_reference_ok_annotation` marker names and parts a lock holds \
          are not asked"
     }
@@ -71,6 +73,10 @@ impl Rule for SupersededReferenceRule {
         m.insert(
             "superseded_reference_ok_kinds".into(),
             json!(config.detection.superseded_reference_ok_kinds),
+        );
+        m.insert(
+            "superseded_reference_ok_relations".into(),
+            json!(config.detection.superseded_reference_ok_relations),
         );
         m.insert(
             "superseded_reference_ok_annotation".into(),
@@ -124,7 +130,13 @@ impl Rule for SupersededReferenceRule {
         let mut unjudged = 0;
         let mut violations = Vec::new();
         for edge in ctx.graph.edges() {
-            if edge.relation == SUCCESSION {
+            if edge.relation == SUCCESSION
+                || ctx
+                    .config
+                    .detection
+                    .superseded_reference_ok_relations
+                    .contains(&edge.relation)
+            {
                 continue;
             }
             let (Some(source), Some(target)) = (
@@ -141,7 +153,14 @@ impl Rule for SupersededReferenceRule {
             {
                 continue;
             }
-            let part = part_of(&edge.relation);
+            let part = ctx
+                .config
+                .parser
+                .frontmatter_relation(&edge.relation)
+                .map_or_else(
+                    || part_of(&edge.relation),
+                    |entry| DocumentPart::Field(entry.field.clone()),
+                );
             if part == DocumentPart::Body
                 && declared.contains(&(source.id.as_str(), target.id.as_str()))
             {
@@ -322,6 +341,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: Default::default(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

@@ -662,9 +662,11 @@ pub fn render_default_frontmatter(
     // round emits only fields not yet `seen` and never removes one.
     loop {
         let snapshot = format!("---\n{}\n---\n", lines.join("\n"));
-        let Ok((node, _)) =
-            crate::parser::frontmatter::parse_frontmatter(Path::new("scaffold"), &snapshot)
-        else {
+        let Ok((node, _)) = crate::parser::frontmatter::parse_frontmatter_with_relations(
+            Path::new("scaffold"),
+            &snapshot,
+            &config.parser.frontmatter_relations,
+        ) else {
             break;
         };
         let mut emitted = false;
@@ -775,6 +777,10 @@ fn default_for_field(field: &str, kind: &str, config: &Config, today: &str) -> S
             FieldType::Bool => "false".to_string(),
             FieldType::String => "\"\"".to_string(),
         };
+    }
+
+    if config.parser.is_relation_field(field) {
+        return "[]".to_string();
     }
 
     // Built-in field conventions

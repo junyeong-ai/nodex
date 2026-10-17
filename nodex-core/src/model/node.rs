@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use super::kind::Kind;
 use super::status::Status;
 
-/// One built-in frontmatter field whose authored value failed its type
+/// One parser-owned frontmatter field whose authored value failed its type
 /// coercion (bad date, bad bool, non-string scalar, malformed list).
 /// Recorded on the node at parse time — the field reads as absent
 /// everywhere downstream (absence semantics, nothing fabricated) — so
@@ -73,6 +73,9 @@ pub struct Node {
     // === Extension point for project-specific frontmatter fields ===
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, serde_json::Value>,
+    /// Normalized project-declared ID relations, keyed by authored field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frontmatter_relations: BTreeMap<String, Vec<String>>,
 
     // === Body fingerprints (parser-computed; never authored) ===
     //
@@ -105,7 +108,7 @@ pub struct Node {
     pub content_hash: String,
 
     // === Parse diagnostics (parser-computed; never authored) ===
-    /// Built-in frontmatter fields whose authored value failed coercion.
+    /// Parser-owned frontmatter fields whose authored value failed coercion.
     /// Each entry reads as an absent field downstream and produces one
     /// Error-severity `field_parse` violation in `check`. Sorted by
     /// field name for deterministic output.
@@ -129,6 +132,15 @@ pub struct Node {
 }
 
 impl Node {
+    pub fn relation_values(&self, field: &str) -> Option<&[String]> {
+        match field {
+            "supersedes" => Some(&self.supersedes),
+            "implements" => Some(&self.implements),
+            "related" => Some(&self.related),
+            _ => self.frontmatter_relations.get(field).map(Vec::as_slice),
+        }
+    }
+
     /// Whether these exact file bytes are the revision represented by this node.
     pub fn matches_content(&self, content: &str) -> bool {
         self.content_hash == crate::hash::sha256_hex(content)
@@ -236,6 +248,8 @@ pub struct NodeMetadata {
     // === Extension point for project-specific frontmatter fields ===
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frontmatter_relations: BTreeMap<String, Vec<String>>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parse_issues: Vec<FieldParseIssue>,
@@ -263,6 +277,7 @@ impl From<&Node> for NodeMetadata {
             covers,
             orphan_ok,
             attrs,
+            frontmatter_relations,
             parse_issues,
             inferred_fields,
             body_hash: _,
@@ -288,6 +303,7 @@ impl From<&Node> for NodeMetadata {
             covers: covers.clone(),
             orphan_ok: *orphan_ok,
             attrs: attrs.clone(),
+            frontmatter_relations: frontmatter_relations.clone(),
             parse_issues: parse_issues.clone(),
             inferred_fields: inferred_fields.clone(),
         }
@@ -318,6 +334,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

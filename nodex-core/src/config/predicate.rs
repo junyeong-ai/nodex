@@ -127,42 +127,6 @@ pub(crate) fn value_matches_field_type(value: &str, ty: FieldType) -> bool {
     }
 }
 
-/// Reject field names in `cross_field.when` / `cross_field.require`
-/// that are not built-in and not declared in the supplied
-/// `required` / `types` / `enums` / `forbidden`. Callers pass a kind's MERGED view
-/// (`validate_merged_cross_fields`), so a predicate may name a field
-/// declared in any block that contributes to that kind. Keeps typos from
-/// turning into silently-skipped checks.
-pub(crate) fn ensure_field_known(
-    field: &str,
-    required: &[String],
-    types: &BTreeMap<String, FieldType>,
-    enums: &BTreeMap<String, Vec<String>>,
-    forbidden: &[String],
-    ctx: &str,
-    slot: &str,
-) -> Result<()> {
-    if is_reserved_structural_field(field) {
-        return Err(Error::Config(format!(
-            "{ctx}: {slot} references {field:?}, a reserved structural field (the node's \
-             filesystem path) — it is not frontmatter, so a cross_field predicate cannot \
-             read it. Validate the path with [[rules.naming]] instead"
-        )));
-    }
-    if is_builtin_node_field(field)
-        || required.iter().any(|r| r == field)
-        || types.contains_key(field)
-        || enums.contains_key(field)
-        || forbidden.iter().any(|f| f == field)
-    {
-        return Ok(());
-    }
-    Err(Error::Config(format!(
-        "{ctx}: {slot} references unknown field {field:?}; declare it \
-         in required / types / enums or use a built-in name"
-    )))
-}
-
 /// Reject a `cross_field.when` equals/in predicate whose value(s) the
 /// field can never hold — so a typo (`status=draftt`, `kind=adrr`,
 /// `created=2026-1-1`) is a load error, not a predicate that silently

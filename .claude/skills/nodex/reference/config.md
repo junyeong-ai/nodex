@@ -60,11 +60,28 @@ Several rules compose as a union, and the order they are declared in does not ch
 
 `document_evicted` reports a **delta** — what this write removes from the project — so in that flat directory the *first* archive names every ADR's notes at once, and every later archive says nothing, because there is nothing left to remove. That is the same warning going quiet, not a missing one: the standing answer to "what is on disk but outside the project" is the build's `conditionally_excluded`.
 
+## Frontmatter relations
+
+```toml
+[[parser.frontmatter_relations]]
+field = "sources"
+relation = "derived_from" # optional; defaults to field
+retarget = "keep"        # required: keep | repoint
+```
+
+A string or list of strings authors directed edges to exact node IDs. There is no path lookup or extension fallback. Malformed values produce `field_parse`; declared fields leave `attrs` and appear as normalized lists under the node's `frontmatter_relations`, keyed by field. `query nodes --fields sources` and annotation frontmatter projections expose the authored field name.
+
+Fields use ASCII letters, digits, `_` and `-` and must round-trip as plain YAML string keys; numeric/boolean keys and built-in or structural names are refused. Relation names must be unique, trim-stable, non-empty and contain no control characters or comma. Built-in relation names and names produced by body patterns are reserved. Multiple declarations cannot share a field or relation.
+
+Declared fields participate in `required`, `forbidden`, strict mode, collection presence predicates and frontmatter locks. Their types are parser-owned: do not redeclare them in `schema.types` or scalar enums, or compare them with scalar `equals` / `in` predicates. Use `exists` / `not_exists` in schema predicates and `query nodes --missing <field>` for missing values. CLI `--where` scalar equality also rejects relation collections; use relation-filtered graph queries to find linked documents. Cycle, drift, unresolved-policy and query relation filters accept their relation names. Source field and graph relation may differ.
+
+`keep` leaves the field's target unchanged during retarget and emits `reference_kept`; `repoint` uses the normal guarded rewrite. Retarget policy applies only to that field, independently of body links, locks and `superseded_reference`. Declare `detection.superseded_reference_ok_relations` for relations that intentionally name superseded records; unresolved targets remain checked. No relation changes lifecycle or implies transitivity.
+
 ## Body links
 
 Standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt in via `parser.wikilink_enabled = true`.
 
-`parser.link_patterns` declares arbitrary syntaxes. Each block needs a `pattern` with **exactly one** capture group and a `relation`. Any relation name is legal except the built-ins with code-fixed resolution, which are rejected at load: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are declared through their frontmatter fields only. `references` stays legal.
+`parser.link_patterns` declares arbitrary syntaxes. Each block needs a `pattern` with **exactly one** capture group and a `relation`. Any relation name is legal except the built-ins with code-fixed resolution, which are rejected at load: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are declared through their frontmatter fields only. `references` stays legal. A pattern cannot share a relation name with a declared frontmatter relation.
 
 A block may set `code_spans = true`: an inline code span whose **entire content** the pattern matches is then a citation on both the extraction and the rewriting side, so a corpus writing ids as `` `adr-001` `` is reachable as edges and `retarget` repoints them. A span is matched as its own text, so `^` / `$` mean the span and the backticks are never part of what the pattern sees; what the match leaves over is what keeps a span code (`` `just adr-tool` `` cites nothing). Code *blocks* stay opaque unconditionally. The field defaults off.
 
@@ -72,7 +89,7 @@ Markdown destinations are source-relative, including bare filenames; they do not
 
 ## Schema rules
 
-`[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared in `types` / `enums` / `required` / `cross_field` or a per-kind `forbidden` — this is what catches `relatd:`. Default is `lenient`.
+`[schema].mode = "strict"` rejects any frontmatter key that is neither built-in nor declared by `parser.frontmatter_relations` or in `types` / `enums` / `required` / `cross_field` or a per-kind `forbidden` — this is what catches `relatd:`. Default is `lenient`.
 
 `[[schema.cross_field]]` predicates take four forms:
 
@@ -91,7 +108,7 @@ Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers
 
 ## Built-in rule ids
 
-`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `forbidden_field` (registered only when an override declares `forbidden`) · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (registered only when `detection.stale_days` is set) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `superseded_reference` (always registered; its population is the citations live documents make, less `supersedes` itself, those of `detection.superseded_reference_ok_kinds`, body citations of a target the citing document names in a `detection.superseded_reference_ok_annotation` marker, and any read from a part an immutability lock holds in the run; a run with no baseline cannot tell, and counts the citations a lock could hold as `unjudged` until `--since` or `rules.immutable_baseline` supplies one) · `git_drift` (registered only when `git_drift_threshold` is set) · `status_transition` / `status_entry` (registered only when `[[statuses.flow]]` is declared) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `unresolved_reference` (always registered; unmatched references, warning unless promoted) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges — a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`).
+`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed parser-owned field on a present node) · `required_field` · `forbidden_field` (registered only when an override declares `forbidden`) · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (registered only when `detection.stale_days` is set) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `superseded_reference` (always registered; its population is the citations live documents make, less `supersedes` itself, relations in `detection.superseded_reference_ok_relations`, those of `detection.superseded_reference_ok_kinds`, body citations of a target the citing document names in a `detection.superseded_reference_ok_annotation` marker, and any read from a part an immutability lock holds in the run; a run with no baseline cannot tell, and counts the citations a lock could hold as `unjudged` until `--since` or `rules.immutable_baseline` supplies one) · `git_drift` (registered only when `git_drift_threshold` is set) · `status_transition` / `status_entry` (registered only when `[[statuses.flow]]` is declared) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `unresolved_reference` (always registered; unmatched references, warning unless promoted) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges — a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`).
 
 Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>`.
 

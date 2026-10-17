@@ -5,14 +5,14 @@
 
 use std::path::Path;
 
-use crate::config::ParserConfig;
+use crate::config::{ParserConfig, RetargetPolicy};
 use crate::error::Result;
 use crate::model::Node;
 use crate::parser::editor::FrontmatterEditor;
 use crate::parser::frontmatter::split_frontmatter;
 use crate::reference_rewrite::rewrite_references;
 
-/// The *list*-valued id-relation frontmatter fields retarget iterates.
+/// Built-in list-valued ID fields; project fields carry their own policy.
 /// A narrower set than [`crate::model::edge::ID_RESOLVED_RELATIONS`] by
 /// design: `superseded_by` is a scalar, handled separately below.
 const LIST_RELATION_FIELDS: [&str; 3] = ["supersedes", "implements", "related"];
@@ -44,6 +44,7 @@ const SUCCESSION_FIELD: &str = "supersedes";
 /// changed, every body reference it had a replacement for and left
 /// standing, and — for the successor — the references it declined to move.
 ///
+/// Policy-retained fields are reported separately from successor self-edges.
 /// Frontmatter relation fields carry no spelling of their own — an id
 /// field holds the id — so there is nothing there a rewrite can fail to
 /// respell, and everything [`Self::refused`] reports comes from the body.
@@ -52,17 +53,19 @@ pub struct Retargeted {
     pub content: Option<String>,
     pub refused: Vec<String>,
     pub self_edges: SelfEdges,
+    pub kept_fields: Vec<String>,
 }
 
 impl Retargeted {
     /// The outcome for a document a repoint may rewrite — every document but
     /// the successor, and so the one with no reference a replacement could
     /// turn on itself.
-    fn rewritten(content: Option<String>, refused: Vec<String>) -> Self {
+    fn rewritten(content: Option<String>, refused: Vec<String>, kept_fields: Vec<String>) -> Self {
         Self {
             content,
             refused,
             self_edges: SelfEdges::default(),
+            kept_fields,
         }
     }
 }
@@ -72,7 +75,7 @@ impl Retargeted {
 /// named by field and parsed body sites are counted once per occurrence.
 #[derive(Debug, Default)]
 pub struct SelfEdges {
-    pub fields: Vec<&'static str>,
+    pub fields: Vec<String>,
     pub body_references: usize,
 }
 
@@ -99,11 +102,17 @@ impl SelfEdges {
         parser: &ParserConfig,
     ) -> Result<Self> {
         Ok(Self {
-            fields: LIST_RELATION_FIELDS
-                .into_iter()
+            fields: relation_fields(parser)
+                .map(|(field, _)| field)
                 .filter(|field| *field != SUCCESSION_FIELD)
-                .filter(|field| relation_values(node, field).iter().any(|v| v == old_id))
+                .filter(|field| {
+                    node.relation_values(field)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|v| v == old_id)
+                })
                 .chain((node.superseded_by.as_deref() == Some(old_id)).then_some("superseded_by"))
+                .map(str::to_string)
                 .collect(),
             body_references: crate::reference_rewrite::count_references(
                 content, old_id, source_dir, bound, parser,
@@ -118,8 +127,8 @@ impl SelfEdges {
 
 /// Rewrite every reference to `old_id` in `content` so it names `new_id`.
 ///
-/// Covers the id-valued frontmatter relation fields (`supersedes`,
-/// `implements`, `related`, `superseded_by`) and body references
+/// Covers built-in ID fields, declared fields with `retarget = "repoint"`,
+/// and body references
 /// (Markdown paths, wikilinks and configured patterns). The document whose own id is `new_id` is
 /// never rewritten — a repoint does not rewrite the document it points at —
 /// and it is the one document that reports what it kept, in
@@ -148,10 +157,20 @@ pub fn retarget_document(
         });
     }
 
-    let relation_edits: Vec<(&str, Vec<String>)> = LIST_RELATION_FIELDS
-        .into_iter()
-        .filter_map(|field| {
-            let values = relation_values(node, field);
+    let kept_fields = relation_fields(parser)
+        .filter(|(_, policy)| *policy == RetargetPolicy::Keep)
+        .filter(|(field, _)| {
+            node.relation_values(field)
+                .unwrap_or_default()
+                .iter()
+                .any(|value| value == old_id)
+        })
+        .map(|(field, _)| field.to_string())
+        .collect();
+    let relation_edits: Vec<(&str, Vec<String>)> = relation_fields(parser)
+        .filter(|(_, policy)| *policy == RetargetPolicy::Repoint)
+        .filter_map(|(field, _)| {
+            let values = node.relation_values(field).unwrap_or_default();
             values
                 .iter()
                 .any(|v| v == old_id)
@@ -168,14 +187,14 @@ pub fn retarget_document(
 
     let refused = body_rewrite.refused;
     if relation_edits.is_empty() && !retarget_superseded_by && body_rewrite.content.is_none() {
-        return Ok(Retargeted::rewritten(None, refused));
+        return Ok(Retargeted::rewritten(None, refused, kept_fields));
     }
 
     // Body rewriting leaves frontmatter untouched, so apply it first and
     // edit the frontmatter of whatever content we then hold.
     let working = body_rewrite.content.unwrap_or_else(|| content.to_string());
     if relation_edits.is_empty() && !retarget_superseded_by {
-        return Ok(Retargeted::rewritten(Some(working), refused));
+        return Ok(Retargeted::rewritten(Some(working), refused, kept_fields));
     }
 
     let (yaml, body) =
@@ -197,17 +216,20 @@ pub fn retarget_document(
     Ok(Retargeted::rewritten(
         Some(format!("---\n{}---\n{body}", editor.render())),
         refused,
+        kept_fields,
     ))
 }
 
-/// The values a [`LIST_RELATION_FIELDS`] field holds on `node`.
-fn relation_values<'a>(node: &'a Node, field: &str) -> &'a [String] {
-    match field {
-        "supersedes" => &node.supersedes,
-        "implements" => &node.implements,
-        "related" => &node.related,
-        _ => unreachable!("field set is LIST_RELATION_FIELDS"),
-    }
+fn relation_fields(parser: &ParserConfig) -> impl Iterator<Item = (&str, RetargetPolicy)> {
+    LIST_RELATION_FIELDS
+        .into_iter()
+        .map(|field| (field, RetargetPolicy::Repoint))
+        .chain(
+            parser
+                .frontmatter_relations
+                .iter()
+                .map(|entry| (entry.field.as_str(), entry.retarget)),
+        )
 }
 
 /// `values` with every `old_id` replaced by `new_id`, dropping any
@@ -265,6 +287,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

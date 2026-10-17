@@ -30,7 +30,8 @@ struct RawFrontmatter {
     orphan_ok: Option<bool>,
     /// Project-specific fields, in authored order.
     extra: BTreeMap<String, serde_json::Value>,
-    /// Built-in fields whose value failed coercion, sorted by field.
+    relations: BTreeMap<String, Vec<String>>,
+    /// Parser-owned fields whose value failed coercion, sorted by field.
     issues: Vec<FieldParseIssue>,
 }
 
@@ -116,7 +117,7 @@ pub fn split_frontmatter(
 /// would otherwise yield phantom hash diffs and brittle pattern
 /// matches.
 ///
-/// Built-in fields parse leniently, field by field: a value that
+/// Parser-owned fields parse leniently, field by field: a value that
 /// fails its type lands in `Node::parse_issues` and the field reads
 /// as absent everywhere downstream (a wrong-typed `status` infers the
 /// status its kind starts at, a wrong-typed date is `None` — the existing
@@ -125,6 +126,14 @@ pub fn split_frontmatter(
 /// Only unparseable YAML, a non-mapping block, or an unclosed fence
 /// fail the whole document.
 pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
+    parse_frontmatter_with_relations(path, content, &[])
+}
+
+pub fn parse_frontmatter_with_relations(
+    path: &Path,
+    content: &str,
+    relations: &[crate::config::FrontmatterRelation],
+) -> Result<(Node, String)> {
     let canonical = canonicalize(content);
     let (yaml_opt, body) = split_frontmatter(&canonical).map_err(|source| Error::Parse {
         path: path.to_path_buf(),
@@ -132,7 +141,7 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
     })?;
 
     let raw = match yaml_opt {
-        Some(yaml) => parse_fields_leniently(path, yaml)?,
+        Some(yaml) => parse_fields_leniently(path, yaml, relations)?,
         None => RawFrontmatter::default(),
     };
 
@@ -198,6 +207,7 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
         covers: raw.covers.unwrap_or_default(),
         orphan_ok: raw.orphan_ok.unwrap_or(false),
         attrs: raw.extra,
+        frontmatter_relations: raw.relations,
         body_hash,
         body_lines_hash,
         body_structure,
@@ -215,7 +225,11 @@ pub fn parse_frontmatter(path: &Path, content: &str) -> Result<(Node, String)> {
 /// a [`FieldParseIssue`] for every value that fails its type. Leftover
 /// mapping entries convert to `attrs`; a non-string key fails the
 /// whole document — `attrs` is a string-keyed map by contract.
-fn parse_fields_leniently(path: &Path, yaml: &str) -> Result<RawFrontmatter> {
+fn parse_fields_leniently(
+    path: &Path,
+    yaml: &str,
+    relations: &[crate::config::FrontmatterRelation],
+) -> Result<RawFrontmatter> {
     let parse_err = |source: ParseError| Error::Parse {
         path: path.to_path_buf(),
         source,
@@ -252,6 +266,16 @@ fn parse_fields_leniently(path: &Path, yaml: &str) -> Result<RawFrontmatter> {
     raw.tags = coerce_string_list("tags", mapping.remove("tags"), &mut issues);
     raw.covers = coerce_string_list("covers", mapping.remove("covers"), &mut issues);
     raw.orphan_ok = coerce_bool("orphan_ok", mapping.remove("orphan_ok"), &mut issues);
+
+    for relation in relations {
+        if let Some(values) = coerce_string_list(
+            &relation.field,
+            mapping.remove(relation.field.as_str()),
+            &mut issues,
+        ) {
+            raw.relations.insert(relation.field.clone(), values);
+        }
+    }
 
     for (key, value) in mapping {
         let Some(key) = key.as_str() else {
@@ -912,5 +936,41 @@ mod tests {
         let s = "---\nid: x\n---\nbody";
         let cow = canonicalize(s);
         assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+    }
+}
+
+#[cfg(test)]
+mod relation_tests {
+    use super::*;
+    use crate::config::{FrontmatterRelation, RetargetPolicy};
+
+    #[test]
+    fn declared_relations_share_list_coercion_and_leave_unrelated_attrs() {
+        let relations = [FrontmatterRelation {
+            field: "sources".into(),
+            relation: Some("derived_from".into()),
+            retarget: RetargetPolicy::Keep,
+        }];
+        for (input, values, issues) in [
+            ("target", vec!["target"], 0),
+            ("[a, b]", vec!["a", "b"], 0),
+            ("[]", vec![], 0),
+            ("null", vec![], 0),
+            ("3", vec![], 1),
+            ("[a, 3]", vec![], 1),
+        ] {
+            let content = format!("---\nsources: {input}\ncustom: value\n---\n");
+            let (node, _) =
+                parse_frontmatter_with_relations(Path::new("doc.md"), &content, &relations)
+                    .unwrap();
+            assert_eq!(
+                node.relation_values("sources").unwrap_or_default(),
+                values,
+                "{input}"
+            );
+            assert_eq!(node.parse_issues.len(), issues, "{input}");
+            assert!(!node.attrs.contains_key("sources"));
+            assert_eq!(node.attrs["custom"], "value");
+        }
     }
 }

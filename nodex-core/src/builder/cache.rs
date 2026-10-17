@@ -27,7 +27,7 @@ pub struct CacheEntry {
 /// error), so a cache written by a binary with a different entry shape
 /// can never deserialize leniently into defaulted fields and serve
 /// stale nodes.
-const CACHE_SCHEMA_VERSION: u32 = 5;
+const CACHE_SCHEMA_VERSION: u32 = 6;
 
 /// Incremental build cache. Maps relative path → CacheEntry.
 ///
@@ -262,6 +262,7 @@ mod tests {
             covers: vec![],
             orphan_ok: false,
             attrs: BTreeMap::new(),
+            frontmatter_relations: Default::default(),
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),

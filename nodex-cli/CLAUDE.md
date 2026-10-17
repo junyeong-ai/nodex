@@ -23,7 +23,8 @@ A failed destination commit reports a partial move and stops reference commits.
 - Queries verify snapshot content by default; `--allow-stale` is the explicit
   membership-only mode. Node detail uses `NodeMetadata`, with bounded body reads
   through `--body-lines`. `retarget --supersede` composes lifecycle and resolved
-  reference edits before the shared mutation gate.
+  reference edits before the shared mutation gate. Policy-retained relation
+  fields emit `reference_kept`; locks and failed writes retain their own advisories.
 - Project reads use `nodex_core::load_project` (config validation + preflight).
   Writes also require binary compatibility (`load_project_for_mutation`, or an
   explicit check where dry runs stay readable). Validate prerequisites and locate
