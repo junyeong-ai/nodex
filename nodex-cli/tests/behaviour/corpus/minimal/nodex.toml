@@ -35,3 +35,6 @@ title = "Minimal Corpus"
 god_node_display_limit = 10
 orphan_display_limit = 20
 stale_display_limit = 20
+
+[scaffold.paths]
+adr = "docs/decisions/{stem}.md"

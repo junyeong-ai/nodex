@@ -52,7 +52,7 @@ pub(crate) fn leading_digits_re() -> Regex {
 /// rule's `pattern` (not a numbered file in the operator's own vocabulary) or
 /// its leading digits exceed `u64`. The single definition of "what is the
 /// number", shared by [`SequentialNumberingRule`] / [`UniqueNumberingRule`]
-/// and `scaffold::next_sequence`, so a scaffolded file can never land a number
+/// and `scaffold::sequence_maximum`, so a scaffolded file can never land a number
 /// its own `check` would then flag — the write/check self-consistency
 /// `.claude/rules/config-driven.md` mandates. The `pattern` matches the file
 /// name (it carries the extension); the digit run is read from the stem.

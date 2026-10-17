@@ -25,7 +25,7 @@ pub struct ScaffoldArgs {
     /// Override the auto-inferred node id
     #[arg(long)]
     pub id: Option<String>,
-    /// Override the auto-inferred path (relative to root)
+    /// Project-relative path; otherwise use scaffold.paths for this kind
     #[arg(long)]
     pub path: Option<PathBuf>,
     /// Markdown body for the new document — `-` reads stdin, otherwise

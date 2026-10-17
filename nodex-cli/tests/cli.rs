@@ -108,6 +108,110 @@ fn init_project(root: &std::path::Path) {
     nodex(root).arg("init").assert().success();
 }
 
+#[test]
+fn markdown_uri_paths_resolve_and_rename_with_query_and_fragment_preserved() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(
+        root,
+        "docs/space name.md",
+        "---\nid: target\n---\n# Target\n",
+    );
+    write_doc(
+        root,
+        "docs/source.md",
+        "---\nid: source\n---\n[encoded](space%20name.md?plain=1#part)\n[external](S3://bucket/missing.md)\n[remote](//host/missing.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let issues = run_json(nodex(root).args(["query", "issues"]));
+    assert!(issues["unresolved_edges"].as_array().unwrap().is_empty());
+    let target = run_json(nodex(root).args(["query", "backlinks", "target"]));
+    assert_eq!(target["total"], 1);
+    nodex(root)
+        .args(["rename", "docs/space name.md", "docs/new#name.md"])
+        .assert()
+        .success();
+    let source = fs::read_to_string(root.join("docs/source.md")).unwrap();
+    assert!(source.contains("new%23name.md?plain=1#part"), "{source}");
+    assert!(source.contains("S3://bucket/missing.md"));
+    nodex(root).arg("build").assert().success();
+    let issues = run_json(nodex(root).args(["query", "issues"]));
+    assert!(issues["unresolved_edges"].as_array().unwrap().is_empty());
+    let target = run_json(nodex(root).args(["query", "backlinks", "target"]));
+    assert_eq!(target["total"], 1);
+}
+
+#[test]
+fn scaffold_uses_explicit_creation_templates_and_refuses_glob_inversion() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let config = "[scope]\ninclude = [\"specs/**/*.md\"]\n[kinds]\nallowed = [\"generic\", \"spec\"]\n[[identity.kind_rules]]\nglob = \"specs/*/spec.md\"\nkind = \"spec\"\n[[identity.id_rules]]\nkind = \"spec\"\ntemplate = \"spec-{parent}\"\n";
+    fs::write(root.join("nodex.toml"), config).unwrap();
+    let result = nodex(root)
+        .args(["scaffold", "--kind", "spec", "--title", "Payment policy"])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "CONFIG_ERROR");
+    assert!(!root.join("specs/payment-policy.md").exists());
+    fs::write(
+        root.join("nodex.toml"),
+        format!("{config}\n[scaffold.paths]\nspec = \"specs/{{slug}}/spec.md\"\n"),
+    )
+    .unwrap();
+    let result =
+        run_json(nodex(root).args(["scaffold", "--kind", "spec", "--title", "Payment policy"]));
+    assert_eq!(result["path"], "specs/payment-policy/spec.md");
+    assert_eq!(result["id"], "spec-payment-policy");
+    nodex(root).arg("check").assert().success();
+}
+
+#[test]
+fn similar_status_filters_candidates_without_changing_the_target() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    for (id, status) in [("live", "active"), ("past", "archived")] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!("---\nid: {id}\ntitle: Shared policy\nstatus: {status}\n---\n# Policy\n"),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    let all = run_json(nodex(root).args(["query", "similar", "--title", "Shared policy"]));
+    assert_eq!(all["total"], 2);
+    for (id, status) in [("live", "active"), ("past", "archived")] {
+        let selected = run_json(nodex(root).args([
+            "query",
+            "similar",
+            "--title",
+            "Shared policy",
+            "--status",
+            status,
+        ]));
+        assert_eq!(selected["total"], 1);
+        assert_eq!(selected["items"][0]["id"], id);
+        assert_eq!(selected["items"][0]["score"], 1.0);
+    }
+    let rejected = nodex(root)
+        .args([
+            "query",
+            "similar",
+            "--title",
+            "Shared policy",
+            "--status",
+            "unknown",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(rejected["error"]["code"], "CONFIG_ERROR");
+}
+
 // ─── init ───────────────────────────────────────────────────────────
 
 #[test]
@@ -3590,6 +3694,7 @@ fn scaffold_refuses_a_filename_its_own_naming_rule_would_reject() {
         "[scope]\ninclude = [\"docs/**/*.md\"]\n\
          [[identity.kind_rules]]\nglob = \"docs/**\"\nkind = \"generic\"\n\
          [[rules.naming]]\nglob = \"docs/**\"\npattern = \"^\\\\d{4}-[a-z0-9-]+\\\\.md$\"\n\
+         [scaffold.paths]\ngeneric = \"docs/{stem}.md\"\n\
          [detection]\norphan_ok_kinds = [\"generic\"]\n",
     )
     .unwrap();
@@ -6540,7 +6645,12 @@ fn a_rename_that_leaves_a_referrer_binding_something_else_says_so() {
     let root = tmp.path();
     fs::write(
         root.join("nodex.toml"),
-        "[scope]\ninclude = [\"**/*.md\"]\n",
+        r#"[scope]
+include = ["**/*.md"]
+[[parser.link_patterns]]
+pattern = '@ref\(([a-z]+)\)'
+relation = "references"
+"#,
     )
     .unwrap();
     write_doc(
@@ -6556,9 +6666,9 @@ fn a_rename_that_leaves_a_referrer_binding_something_else_says_so() {
     write_doc(
         root,
         "docs/ref.md",
-        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n[x](a.md)\n",
+        "---\nid: ref\ntitle: R\nkind: generic\nstatus: active\n---\n@ref(a)\n",
     );
-    // No destination spelling can carry `#`, so the reference is left.
+    // The configured capture admits only letters, so it cannot carry the new name.
     let env = run_envelope(nodex(root).args(["rename", "a.md", "a#1.md"]));
     assert_eq!(env.get("ok").and_then(Value::as_bool), Some(true));
     let warnings = env.get("warnings").and_then(Value::as_array).expect("warn");
@@ -15460,6 +15570,14 @@ fn trust_returns_score_with_components() {
     assert!(active.pointer("/components/status").is_some());
     assert!(active.pointer("/components/freshness").is_some());
     assert!(active.pointer("/components/backlinks").is_some());
+    assert_eq!(
+        active["basis"],
+        serde_json::json!(["status", "freshness", "backlinks"])
+    );
+    assert_eq!(
+        archived["basis"],
+        serde_json::json!(["status", "backlinks"])
+    );
 }
 
 /// A project where exactly one node is unrankable. `doc-no-signal`
@@ -15552,12 +15670,13 @@ fn query_trust_ranking_excludes_unscored_node_and_warns() {
         .get("warnings")
         .and_then(Value::as_array)
         .expect("exclusion must surface as an envelope warning");
-    assert!(
-        warnings
-            .iter()
-            .filter_map(warning_msg)
-            .any(|w| w.contains("1 node(s) excluded from the ranking")),
-        "warning names the excluded count: {warnings:?}"
+    let warning = warnings
+        .iter()
+        .find(|warning| warning["code"] == "ranking_unscored")
+        .unwrap();
+    assert_eq!(
+        warning["details"],
+        serde_json::json!({"type": "ranking_unscored", "count": 1, "reason": "incomplete_basis"})
     );
 }
 

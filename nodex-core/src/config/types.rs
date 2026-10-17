@@ -50,6 +50,8 @@ pub struct Config {
     #[serde(default)]
     pub identity: IdentityConfig,
     #[serde(default)]
+    pub scaffold: ScaffoldConfig,
+    #[serde(default)]
     pub schema: SchemaConfig,
     #[serde(default)]
     pub rules: RulesConfig,
@@ -89,6 +91,16 @@ pub struct MetaConfig {
     /// while the binary's API surface is still settling.
     #[serde(default)]
     pub nodex_version: Option<String>,
+}
+
+/// Creation paths are explicit templates, independent of classification globs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScaffoldConfig {
+    /// Kind → project-relative path. `{slug}` is the title slug, `{kind}`
+    /// the kind, and `{stem}` a filename stem with configured numbering.
+    #[serde(default)]
+    pub paths: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

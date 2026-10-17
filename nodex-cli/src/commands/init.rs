@@ -71,6 +71,13 @@ terminal = ["superseded", "archived", "deprecated", "abandoned"]
 kind = "*"
 template = "{kind}-{stem}"
 
+[scaffold.paths]
+generic = "{stem}.md"
+# adr = "docs/decisions/{stem}.md"
+# Paths are independent of classification globs. Use {slug} in a directory
+# and {stem} for a filename with optional configured sequence numbering.
+# guide = "docs/guides/{slug}/guide.md"
+
 [schema]
 # Fields every document must author. id / title / kind / status / orphan_ok
 # are resolved by the parser for every document (identity rules, H1 fallback,
@@ -293,7 +300,7 @@ orphan_grace_days = 14
 
 # Git-aware drift signal (opt-in). When set, `query trust` and `check`
 # look at how many commits touched a node's referenced files since its
-# `reviewed` date and surface high counts as low trust / warnings.
+# `reviewed` date and surface high counts as maintenance signals / warnings.
 # Requires `git` on PATH and a git work tree holding the project;
 # without them every command that loads this config refuses. Every
 # `git_drift_relations` entry must be a known relation, threshold set
@@ -362,7 +369,7 @@ stale_display_limit = 20
 # stay at the CLI layer rather than baked into config defaults.
 
 # [trust]
-# # Composite reliability score weights. Each component is in [0, 1].
+# # Document-maintenance score weights; these do not measure approval or correctness. Each component is in [0, 1].
 # # A component the run could not measure comes in two kinds, and they
 # # are scored differently. *Inapplicable* — nothing the document could
 # # write would produce it — `freshness` when `detection.stale_days` is

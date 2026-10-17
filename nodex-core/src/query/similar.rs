@@ -102,6 +102,8 @@ pub enum SimilarityTarget<'a> {
 #[derive(Debug, Clone)]
 pub struct SimilarityOptions {
     pub limit: usize,
+    /// Optional candidate status; the target remains unchanged.
+    pub status: Option<String>,
 }
 
 impl SimilarityOptions {
@@ -111,6 +113,7 @@ impl SimilarityOptions {
     pub fn from_config(config: &Config) -> Self {
         Self {
             limit: config.similarity.default_limit,
+            status: None,
         }
     }
 }
@@ -164,6 +167,11 @@ pub fn compute_similarity(
         .nodes()
         .values()
         .filter(|n| target_view.exclude_id.is_none_or(|id| n.id != id))
+        .filter(|n| {
+            opts.status
+                .as_deref()
+                .is_none_or(|status| n.status.as_str() == status)
+        })
     {
         let title = jaccard(&target_title_tokens, &tokenize_title(&n.title, &stop_words));
         let tags = jaccard(
@@ -534,7 +542,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -598,9 +609,17 @@ mod tests {
             tags: &["auth".to_string()],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 })
-            .unwrap()
-            .entries;
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
+        )
+        .unwrap()
+        .entries;
         assert!(!entries.is_empty(), "should warn about existing duplicate");
         assert_eq!(entries[0].node.id, "existing");
     }
@@ -616,7 +635,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -687,7 +709,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -718,14 +743,22 @@ mod tests {
         ]);
         let cfg = Config::default();
         let tags_of = |target, id: &str| {
-            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 })
-                .unwrap()
-                .entries
-                .iter()
-                .find(|e| e.node.id == id)
-                .expect("candidate ranks")
-                .components
-                .tags
+            compute_similarity(
+                &g,
+                &cfg,
+                &target,
+                &SimilarityOptions {
+                    limit: 10,
+                    status: None,
+                },
+            )
+            .unwrap()
+            .entries
+            .iter()
+            .find(|e| e.node.id == id)
+            .expect("candidate ranks")
+            .components
+            .tags
         };
         assert_eq!(
             tags_of(SimilarityTarget::Node("a"), "tagged"),
@@ -758,9 +791,17 @@ mod tests {
             tags: &[],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 })
-            .unwrap()
-            .entries;
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
+        )
+        .unwrap()
+        .entries;
         let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
         assert_eq!(
             e.components.kind, None,
@@ -787,9 +828,17 @@ mod tests {
             tags: &[],
             parent_dir: None, // <- missing
         };
-        let entries = compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 })
-            .unwrap()
-            .entries;
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
+        )
+        .unwrap()
+        .entries;
         let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
         assert_eq!(
             e.components.directory, None,
@@ -815,9 +864,17 @@ mod tests {
             tags: &[],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 })
-            .unwrap()
-            .entries;
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
+        )
+        .unwrap()
+        .entries;
         let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
         assert_eq!(
             e.components.linked, None,
@@ -843,7 +900,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -873,7 +933,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -930,7 +993,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -986,7 +1052,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -1034,8 +1103,16 @@ mod tests {
             tags: &[],        // → tags None
             parent_dir: None, // → directory None; spec → linked None
         };
-        let outcome =
-            compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 10 }).unwrap();
+        let outcome = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
+        )
+        .unwrap();
         assert!(
             outcome.entries.is_empty(),
             "a well-described candidate is unrankable by a query that asks nothing; got {:?}",
@@ -1070,7 +1147,10 @@ mod tests {
                 tags: &[],
                 parent_dir: Some(Path::new("docs")),
             },
-            &SimilarityOptions { limit: 1 },
+            &SimilarityOptions {
+                limit: 1,
+                status: None,
+            },
         )
         .unwrap();
         assert_eq!(ranked.entries.len(), 1, "the limit caps the ranking");
@@ -1088,7 +1168,10 @@ mod tests {
                 tags: &[],
                 parent_dir: None,
             },
-            &SimilarityOptions { limit: 1 },
+            &SimilarityOptions {
+                limit: 1,
+                status: None,
+            },
         )
         .unwrap();
         assert!(
@@ -1130,7 +1213,10 @@ mod tests {
                 tags: &[],
                 parent_dir: Some(Path::new("docs")),
             },
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap();
         let tagged = outcome.entries.iter().find(|e| e.node.id == "tagged");
@@ -1172,9 +1258,17 @@ mod tests {
             tags: &[],
             parent_dir: Some(Path::new("docs")),
         };
-        let entries = compute_similarity(&g, &cfg, &target, &SimilarityOptions { limit: 2 })
-            .unwrap()
-            .entries;
+        let entries = compute_similarity(
+            &g,
+            &cfg,
+            &target,
+            &SimilarityOptions {
+                limit: 2,
+                status: None,
+            },
+        )
+        .unwrap()
+        .entries;
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -1201,7 +1295,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions { limit: 0 },
+            &SimilarityOptions {
+                limit: 0,
+                status: None,
+            },
         )
         .unwrap()
         .entries;
@@ -1232,7 +1329,10 @@ mod tests {
             &g,
             &cfg,
             &SimilarityTarget::Node("solo"),
-            &SimilarityOptions { limit: 10 },
+            &SimilarityOptions {
+                limit: 10,
+                status: None,
+            },
         )
         .unwrap()
         .entries;

@@ -3,6 +3,45 @@ use crate::error::Error;
 use std::collections::BTreeMap;
 
 #[test]
+fn scaffold_templates_validate_the_paths_the_writer_can_render() {
+    for template in [
+        "docs/{stem}.md",
+        "specs/{slug}/spec.md",
+        "docs/{kind}/{slug}.md",
+        r"docs\{stem}.md",
+    ] {
+        let mut config = Config::default();
+        config
+            .scaffold
+            .paths
+            .insert("generic".into(), template.into());
+        config.validate().unwrap();
+    }
+    for template in [
+        "../{stem}.md",
+        "/docs/{stem}.md",
+        "docs/{unknown}.md",
+        "docs/{ slug }.md",
+        "docs/{stem}/{stem}.md",
+        "docs/prefix-{stem}.md",
+        "docs/{slug}.txt",
+    ] {
+        let mut config = Config::default();
+        config
+            .scaffold
+            .paths
+            .insert("generic".into(), template.into());
+        assert!(config.validate().is_err(), "{template}");
+    }
+    let mut config = Config::default();
+    config
+        .scaffold
+        .paths
+        .insert("unknown".into(), "docs/{slug}.md".into());
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn parse_when_accepts_simple_equality() {
     let p = parse_when("status=superseded").unwrap();
     assert_eq!(

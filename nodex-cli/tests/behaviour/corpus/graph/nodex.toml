@@ -50,3 +50,6 @@ stale_display_limit = 10
 
 [trust]
 weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
+
+[scaffold.paths]
+adr = "docs/decisions/{stem}.md"
