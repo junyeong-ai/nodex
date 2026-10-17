@@ -6,7 +6,7 @@ exit: 0
 {
   "data": {
     "identity": {
-      "fallback_id_template": "{kind}-{stem}",
+      "fallback_id_template": "{kind}-{path_slug}",
       "fallback_kind": "generic",
       "id_rules": [
         {
@@ -55,7 +55,7 @@ exit: 0
         ".venv"
       ]
     },
-    "version": "0.53.0"
+    "version": "0.54.0"
   },
   "ok": true
 }

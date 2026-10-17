@@ -47,8 +47,22 @@ pub(crate) fn run_node(
     id: Option<&str>,
     path: Option<&str>,
     with_body: bool,
+    body_lines: Option<&str>,
     pretty: bool,
 ) -> Result<()> {
+    let range = body_lines
+        .map(|range| {
+            let parsed = range.split_once(':').and_then(|(start, end)| {
+                Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+            });
+            match parsed {
+                Some((start, end)) if start > 0 && end >= start => Ok((start, end)),
+                _ => Err(nodex_core::Error::Config(
+                    "--body-lines must be START:END with 1 <= START <= END".into(),
+                )),
+            }
+        })
+        .transpose()?;
     let config = nodex_core::load_project(context.root)?;
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
@@ -76,7 +90,26 @@ pub(crate) fn run_node(
         .expect("require_node / node_by_path guarantees presence");
 
     if with_body {
-        detail.body = Some(snapshot.body(context.root, &resolved_id)?);
+        let body = snapshot.body(context.root, &resolved_id)?;
+        detail.body = Some(match range {
+            None => body,
+            Some((start, end)) => {
+                let lines: Vec<&str> = body.split_inclusive('\n').collect();
+                if end > lines.len() {
+                    return Err(nodex_core::Error::Config(format!(
+                        "--body-lines ends at {end}, but the document has {} body lines",
+                        lines.len()
+                    ))
+                    .into());
+                }
+                detail.body_range = Some(nodex_core::query::traverse::BodyRange {
+                    start,
+                    end,
+                    total: lines.len(),
+                });
+                lines[start - 1..end].concat()
+            }
+        });
     }
 
     context.emit_read_with(detail, warnings, &config, pretty);

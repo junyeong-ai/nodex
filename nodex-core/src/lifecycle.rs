@@ -76,6 +76,7 @@ pub fn check_supersede_safe(graph: &Graph, old_id: &str, new_id: &str) -> Result
     graph.require_node(new_id)?;
     let mut edges: Vec<Edge> = graph.edges().to_vec();
     edges.push(Edge {
+        reference: None,
         source: new_id.to_string(),
         target: ResolvedTarget::resolved(old_id),
         relation: "supersedes".to_string(),
@@ -105,6 +106,93 @@ pub fn transition(
     probe: &crate::mutate::BaselineProbe,
     today: NaiveDate,
 ) -> Result<(String, Vec<Warning>)> {
+    let action_name = action.name();
+    let plan = prepare_transition(root, rel_path, action, config, before, probe, today)?;
+    let new_content = &plan.content;
+
+    // Symmetric immutability guard, asked of the rules rather than of a
+    // hand-picked field list: the terminal guard above already blocks
+    // `set`/`supersede` on a terminal doc, but `review` is exempt from it and
+    // writes `reviewed` — which a rule may freeze once a doc is terminal.
+    // Asking the rules over the proposed document means lifecycle never writes
+    // a field its own `check` then flags, and never has to declare in advance
+    // which fields its action touches. With an inert probe the rules are inert
+    // and so is this guard.
+    let proposal = [(
+        rel_path.to_path_buf(),
+        crate::builder::scanner::Proposed::Content(new_content.clone()),
+    )];
+    if let Some(refusal) = probe
+        .refusals(root, config, &proposal, today)?
+        .refusing(rel_path)
+    {
+        // The rule reads as a trailing clause rather than mid-sentence: it
+        // is usually a rule id, but it can also name a lock that could not
+        // be evaluated at all, and only a trailing position reads correctly
+        // for both without implying a rule by that name exists.
+        let lock = refusal.lock();
+        // A lock's refusal is absolute — it judges the state this write would
+        // leave, not what the write changed — and the remedy follows from
+        // which of the two put the document in that state. Every other
+        // diff-aware rule judged the document this write would produce, so
+        // what it said is the remedy, and offering the lock's would send the
+        // operator to revert a field that is fine.
+        return Err(Error::Config(
+            match (refusal.absolute(), refusal.drifted()) {
+                (true, true) => format!(
+                    "lifecycle {action_name} cannot complete: this document does not satisfy a \
+                 lock its baseline arms, so writing to it at all is refused — {lock}. The \
+                 lock is absolute, not a judgement on this action: a field that already \
+                 differs from the baseline is enough, whether or not {action_name} would \
+                 touch it. `nodex check` names the field; revert it, or supersede the record"
+                ),
+                (true, false) => format!(
+                    "lifecycle {action_name} cannot complete: it would leave this document in a \
+                 state its baseline locks — {lock} — {finding}. The document as it stands is \
+                 fine and `nodex check` reports nothing to revert: {action_name} is what \
+                 would move the frozen field. Supersede the record instead",
+                    finding = refusal.findings().join("; ")
+                ),
+                (false, _) => format!(
+                    "lifecycle {action_name} cannot complete: the document this write would \
+                 produce does not satisfy {lock} — {finding}",
+                    finding = refusal.findings().join("; ")
+                ),
+            },
+        ));
+    }
+
+    // The whole registry, over the project this transition produces. The
+    // guards above each answer for one family the action was built around;
+    // a status change reaches further than that — a `conditional_exclude`
+    // parent going terminal drops its sub-artifacts, and every reference
+    // into them is a check violation this write introduced.
+    let introduced = crate::mutate::introduced(
+        root,
+        config,
+        before,
+        &proposal,
+        crate::mutate::ProposalDiff::Inert,
+        today,
+    )?;
+    if let Some(refusal) = introduced.refusal(format!("lifecycle {action_name}")) {
+        return Err(refusal);
+    }
+
+    crate::mutate::write_plan(root, &plan)?;
+    Ok((plan.content, introduced.advisories()))
+}
+
+/// Prepare a lifecycle change without writing or judging an incomplete batch.
+pub fn prepare_transition(
+    root: &Path,
+    rel_path: &Path,
+    action: Action,
+    config: &Config,
+    before: &Graph,
+    probe: &crate::mutate::BaselineProbe,
+    today: NaiveDate,
+) -> Result<crate::mutate::Planned> {
     let abs_path = root.join(rel_path);
 
     if path_guard::is_symlink(&abs_path) {
@@ -113,7 +201,6 @@ pub fn transition(
 
     // The action's name, captured before the action is consumed by the match
     // below.
-    let action_name = action.name();
 
     let content = std::fs::read_to_string(&abs_path).map_err(|source| Error::Io {
         path: abs_path.clone(),
@@ -261,81 +348,11 @@ pub fn transition(
     }
 
     let new_content = format!("---\n{}---\n{body}", editor.render());
-
-    // Symmetric immutability guard, asked of the rules rather than of a
-    // hand-picked field list: the terminal guard above already blocks
-    // `set`/`supersede` on a terminal doc, but `review` is exempt from it and
-    // writes `reviewed` — which a rule may freeze once a doc is terminal.
-    // Asking the rules over the proposed document means lifecycle never writes
-    // a field its own `check` then flags, and never has to declare in advance
-    // which fields its action touches. With an inert probe the rules are inert
-    // and so is this guard.
-    let proposal = [(
+    Ok(crate::mutate::Planned::replacing(
         rel_path.to_path_buf(),
-        crate::builder::scanner::Proposed::Content(new_content.clone()),
-    )];
-    if let Some(refusal) = probe
-        .refusals(root, config, &proposal, today)?
-        .refusing(rel_path)
-    {
-        // The rule reads as a trailing clause rather than mid-sentence: it
-        // is usually a rule id, but it can also name a lock that could not
-        // be evaluated at all, and only a trailing position reads correctly
-        // for both without implying a rule by that name exists.
-        let lock = refusal.lock();
-        // A lock's refusal is absolute — it judges the state this write would
-        // leave, not what the write changed — and the remedy follows from
-        // which of the two put the document in that state. Every other
-        // diff-aware rule judged the document this write would produce, so
-        // what it said is the remedy, and offering the lock's would send the
-        // operator to revert a field that is fine.
-        return Err(Error::Config(
-            match (refusal.absolute(), refusal.drifted()) {
-                (true, true) => format!(
-                    "lifecycle {action_name} cannot complete: this document does not satisfy a \
-                 lock its baseline arms, so writing to it at all is refused — {lock}. The \
-                 lock is absolute, not a judgement on this action: a field that already \
-                 differs from the baseline is enough, whether or not {action_name} would \
-                 touch it. `nodex check` names the field; revert it, or supersede the record"
-                ),
-                (true, false) => format!(
-                    "lifecycle {action_name} cannot complete: it would leave this document in a \
-                 state its baseline locks — {lock} — {finding}. The document as it stands is \
-                 fine and `nodex check` reports nothing to revert: {action_name} is what \
-                 would move the frozen field. Supersede the record instead",
-                    finding = refusal.findings().join("; ")
-                ),
-                (false, _) => format!(
-                    "lifecycle {action_name} cannot complete: the document this write would \
-                 produce does not satisfy {lock} — {finding}",
-                    finding = refusal.findings().join("; ")
-                ),
-            },
-        ));
-    }
-
-    // The whole registry, over the project this transition produces. The
-    // guards above each answer for one family the action was built around;
-    // a status change reaches further than that — a `conditional_exclude`
-    // parent going terminal drops its sub-artifacts, and every reference
-    // into them is a check violation this write introduced.
-    let introduced = crate::mutate::introduced(
-        root,
-        config,
-        before,
-        &proposal,
-        crate::mutate::ProposalDiff::Inert,
-        today,
-    )?;
-    if let Some(refusal) = introduced.refusal(format!("lifecycle {action_name}")) {
-        return Err(refusal);
-    }
-
-    path_guard::stage_in_root(root, &abs_path, &new_content)?
-        .expect_revision(&revision)?
-        .commit()?;
-
-    Ok((new_content, introduced.advisories()))
+        new_content,
+        revision,
+    ))
 }
 
 #[cfg(test)]

@@ -70,7 +70,7 @@ impl Rule for StaleReviewRule {
                 )
             })
             .collect();
-        RuleRun::new(outcome.subjects, violations)
+        RuleRun::new(outcome.subjects, violations).unjudged(outcome.unjudged)
     }
 }
 

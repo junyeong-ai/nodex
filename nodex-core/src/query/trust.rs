@@ -482,6 +482,7 @@ mod tests {
         // `a` links to `target` via two relations; `b` via one. External
         // attention is two distinct documents, not three edges.
         let edge = |src: &str, rel: &str| Edge {
+            reference: None,
             source: src.to_string(),
             target: ResolvedTarget::resolved("target"),
             relation: rel.to_string(),
@@ -1043,12 +1044,14 @@ mod tests {
         // present — otherwise both nodes would correctly report
         // `None` and the self-loop filter would not be exercised.
         let self_edge = Edge {
+            reference: None,
             source: "x".into(),
             target: ResolvedTarget::resolved("x"),
             relation: "references".into(),
             location: "L1".into(),
         };
         let external_edge = Edge {
+            reference: None,
             source: "x".into(),
             target: ResolvedTarget::resolved("y"),
             relation: "references".into(),
@@ -1106,6 +1109,7 @@ mod tests {
             },
         }];
         let incoming = Edge {
+            reference: None,
             source: "b".into(),
             target: ResolvedTarget::resolved("a"),
             relation: "references".into(),
@@ -1351,6 +1355,7 @@ mod tests {
                 make_node("covering", "active", None),
             ],
             vec![Edge {
+                reference: None,
                 source: "covering".to_string(),
                 target: ResolvedTarget::unresolved(
                     "src/auth.rs",
@@ -1399,6 +1404,7 @@ mod tests {
         let g = graph_with(
             vec![x, make_node("target", "active", None)],
             vec![Edge {
+                reference: None,
                 source: "x".to_string(),
                 target: ResolvedTarget::resolved("target"),
                 relation: "implements".to_string(),
@@ -1458,6 +1464,7 @@ mod tests {
         let g = graph_with(
             vec![make_node("x", "active", Some(reviewed))],
             vec![Edge {
+                reference: None,
                 source: "x".to_string(),
                 target: ResolvedTarget::unresolved(
                     absolute_target.to_string_lossy(),

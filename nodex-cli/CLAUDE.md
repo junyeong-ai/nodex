@@ -73,3 +73,5 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
 
 `commands/content_source.rs` is the single SOURCE grammar for check --content and
 scaffold --body: `-` reads stdin, other paths resolve against invoking directory.
+
+Queries use content-verified snapshots by default; `--allow-stale` is the explicit membership-only mode. Reader-facing node payloads use `NodeMetadata`, with bounded body retrieval through `--body-lines`. `retarget --supersede` composes lifecycle and resolved-reference edits before the shared mutation gate.

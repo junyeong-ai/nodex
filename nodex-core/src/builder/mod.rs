@@ -1056,6 +1056,12 @@ fn derive_superseded_by_edges(
         };
         if known_ids.contains(successor.as_str()) {
             out.push(Edge {
+                reference: Some(crate::model::edge::Reference {
+                    source: id.clone(),
+                    syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
+                    target: successor.clone(),
+                    location: "frontmatter:superseded_by".into(),
+                }),
                 source: successor.clone(),
                 target: ResolvedTarget::resolved(id.as_str()),
                 relation: "supersedes".to_string(),
@@ -1063,6 +1069,12 @@ fn derive_superseded_by_edges(
             });
         } else {
             out.push(Edge {
+                reference: Some(crate::model::edge::Reference {
+                    source: id.clone(),
+                    syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
+                    target: successor.clone(),
+                    location: "frontmatter:superseded_by".into(),
+                }),
                 source: id.clone(),
                 target: ResolvedTarget::unresolved(
                     successor,
@@ -2514,12 +2526,14 @@ mod tests {
         let key = |flow: Option<(&[&str], Option<&str>, &str)>| {
             let mut config = Config::default();
             config.statuses.initial = Some("active".into());
-            config.statuses.flow =
-                flow.map(|(kinds, initial, to)| crate::config::StatusFlowConfig {
+            config.statuses.flow = flow
+                .map(|(kinds, initial, to)| crate::config::StatusFlowConfig {
                     kinds: kinds.iter().map(|kind| kind.to_string()).collect(),
                     initial: initial.map(str::to_string),
                     transitions: [("active".to_string(), vec![to.to_string()])].into(),
-                });
+                })
+                .into_iter()
+                .collect();
             crate::parser::ParseConfig::new(&config).cache_key()
         };
         let base = key(Some((&[], Some("draft"), "archived")));

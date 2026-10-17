@@ -1,21 +1,12 @@
 ---
 name: nodex
 description: >-
-  JSON-first CLI for markdown document graphs governed by a root `nodex.toml`. Use to check or
-  lint docs: frontmatter schema, body immutability and its `append_section` corrections, `check
-  --since <ref>`, the write-time gate `check --content <path>=-`, the pre-commit gate `check
-  --staged`, typed violation `details` for
-  auto-fix, `rule_coverage` ("did my rules actually check anything"). Use to query backlinks,
-  supersession chains, orphans, stale docs, dependents, annotations, nodes by kind / status /
-  tag, a path's node, maintenance scores and similar docs; to scaffold, rename, migrate, retarget or
-  supersede documents through one guarded write path; to diff graphs between git refs or ask
-  "what breaks if I merge this"; to export schema / enums / rules / envelope-schema / config /
-  commands for typed codegen and API drift. Also for `nodex status` and a stale graph.json,
-  the `[statuses.flow]` lifecycle with its `status_transition` / `status_entry` rules,
-  body-line vocabulary, `schema.require_explicit` / `forbidden` and per-rule `kinds` filters.
+  Use the nodex CLI to inspect, validate, navigate or safely change a Markdown
+  document graph governed by nodex.toml. Covers schema and history checks,
+  graph queries, guarded authoring and replacement, and machine-readable exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.53.0
+  version: 0.54.0
 ---
 
 # nodex — markdown document graph CLI
@@ -66,8 +57,8 @@ Flags, payload fields and per-leaf semantics: **`reference/commands.md`**. Autho
 
 Queries read snapshots; rebuild after edits. Envelope `snapshot` separates verification
 (`membership` checks paths/config, `content` also checks bytes) from parsing coverage;
-`unbuildable > 0` means documents have no parsed node. `query --require-current` rejects
-drift; body reads/search verify revisions. Body-search `--max-matches` / `--max-line-chars`
+`unbuildable > 0` means documents have no parsed node. Queries verify content and reject
+drift by default; `query --allow-stale` explicitly permits membership-only snapshot reads; body reads/search verify revisions. Body-search `--max-matches` / `--max-line-chars`
 bound output, not revision checks. Details: `reference/commands.md`.
 
 Lookup failures: `NOT_FOUND` follows a content-verified miss (correct the id; the message
@@ -137,8 +128,9 @@ Read these write advisories before continuing (details: `reference/commands.md`)
   substitute for this warning.
 - `baseline_inert`: configured locks could not engage; inspect the condition.
 
-Retarget rewrites id relations and id-syntax body references only. Path links still
-name the superseded file; `superseded_reference` reports live citations to repoint.
+Retarget rewrites frontmatter relations and parsed body references by resolved
+identity, including Markdown paths. `--supersede` plans the lifecycle change in the
+same guarded proposal; held historical citations are preserved and reported.
 Rename's `id_stability.type` is `already_anchored | unchanged | anchored |
 bare_no_frontmatter | anchor_failed`. Bare Markdown gets no invented frontmatter:
 a changed inferred id stops pairing identity-scoped locks with its baseline. Add id
@@ -227,15 +219,14 @@ nodex check --since origin/main          # arms the locks; reports what the diff
 nodex diff origin/main HEAD              # structural delta for the review summary
 ```
 
-**Replacing a doc** — `lifecycle supersede` sets the state, `retarget` moves everyone's forward references:
+**Replacing a doc** — plan the lifecycle change and reference edits as one guarded batch:
 
 ```bash
-nodex lifecycle supersede <old-id> --to <new-id>
-nodex retarget <old-id> <new-id>
-nodex check          # superseded_reference: the path links left to repoint
+nodex retarget <old-id> <new-id> --supersede
+nodex check
 ```
 
-**Status flow** — where `[statuses.flow]` governs a kind, `status_transition` reds a move it does not name and `status_entry` a record entering past its entry status, judged per commit; `lifecycle` and `scaffold --force` refuse both before writing. Move one with `nodex rename`, never `git mv`.
+**Status flow** — where `[[statuses.flow]]` governs a kind, `status_transition` reds a move it does not name and `status_entry` a record entering past its entry status, judged per commit; `lifecycle` and `scaffold --force` refuse both before writing. Move one with `nodex rename`, never `git mv`.
 
 **Correcting a frozen record** — where its `body_immutable` block declares `append_section` (see `export rules`), append the correction under that heading at the end of the body and gate it with `check --content`; `details.refusal` names what to undo (`reference/config.md`). A decision that changed still takes `lifecycle supersede`.
 

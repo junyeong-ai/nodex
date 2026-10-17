@@ -192,6 +192,7 @@ fn dangling_referrers(
             .and_then(|n| n.path.parent())
             .unwrap_or_else(|| std::path::Path::new(""));
         crate::builder::resolver::reference_resolves_to(
+            edge.syntax(),
             raw,
             source_dir,
             removed_path,
@@ -257,6 +258,7 @@ mod tests {
 
     fn implements_edge(source: &str, target: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.into(),
             target: ResolvedTarget::resolved(target),
             relation: "implements".into(),
@@ -266,6 +268,7 @@ mod tests {
 
     fn dangling_implements(source: &str, raw: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.into(),
             target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::IdNotFound),
             relation: "implements".into(),
@@ -275,6 +278,7 @@ mod tests {
 
     fn dangling_reference(source: &str, raw: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.into(),
             target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::Missing),
             relation: "references".into(),
@@ -284,6 +288,7 @@ mod tests {
 
     fn dangling_covers(source: &str, raw: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.into(),
             target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::Missing),
             relation: "covers".into(),
@@ -471,6 +476,7 @@ mod tests {
         let before = graph_with(
             vec![node_at("a", "docs/a.md"), node_at("b", "docs/b.md")],
             vec![Edge {
+                reference: None,
                 source: "b".into(),
                 target: ResolvedTarget::resolved("a"),
                 relation: "references".into(),

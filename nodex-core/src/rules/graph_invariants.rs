@@ -308,6 +308,7 @@ mod tests {
 
     fn implements_edge(source: &str, target: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.to_string(),
             target: ResolvedTarget::resolved(target),
             relation: "implements".to_string(),
@@ -643,6 +644,7 @@ mod tests {
         // `implements`) must get cycle detection on depends_on edges
         // only — the relation set is config-sourced, never hardcoded.
         let custom_edge = |source: &str, target: &str| Edge {
+            reference: None,
             source: source.to_string(),
             target: ResolvedTarget::resolved(target),
             relation: "depends_on".to_string(),

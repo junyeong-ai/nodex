@@ -264,6 +264,7 @@ pub(crate) fn drift_targets(
             },
             ResolvedTarget::Unresolved { raw, .. } => {
                 let sought = crate::builder::resolver::sought_names(
+                    edge.syntax(),
                     raw,
                     &edge.relation,
                     Some(node.path.as_path()),
@@ -688,6 +689,7 @@ mod tests {
         let graph = Graph::new(
             nodes,
             vec![Edge {
+                reference: None,
                 source: "doc-x".to_string(),
                 target: crate::model::ResolvedTarget::unresolved(
                     dir.path().join("src/auth.rs").to_string_lossy(),
@@ -792,12 +794,14 @@ mod tests {
             nodes,
             vec![
                 Edge {
+                    reference: None,
                     source: "reviewer".to_string(),
                     target: crate::model::ResolvedTarget::resolved("measured"),
                     relation: "implements".to_string(),
                     location: "frontmatter:implements".to_string(),
                 },
                 Edge {
+                    reference: None,
                     source: "reviewer".to_string(),
                     target: crate::model::ResolvedTarget::unresolved(
                         "src/covered.rs",
@@ -931,6 +935,7 @@ mod tests {
         let graph = Graph::new(
             nodes,
             vec![Edge {
+                reference: None,
                 source: "doc-x".to_string(),
                 target: crate::model::ResolvedTarget::unresolved("src", UnresolvedCause::Missing),
                 relation: "covers".to_string(),
@@ -1032,6 +1037,7 @@ mod tests {
                 .iter()
                 .zip(["covers", "covers", "references"])
                 .map(|(target, relation)| Edge {
+                    reference: None,
                     source: "doc-offers".to_string(),
                     target: crate::model::ResolvedTarget::unresolved(
                         *target,

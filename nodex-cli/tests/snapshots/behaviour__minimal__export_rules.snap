@@ -103,6 +103,15 @@ exit: 0
         "source": "builtin"
       },
       {
+        "description": "Unresolved references classified by this policy rule",
+        "diff_aware": false,
+        "id": "unresolved_reference",
+        "judges_steps": false,
+        "params": {},
+        "severity": "warning",
+        "source": "builtin"
+      },
+      {
         "description": "Documents must not form cycles in the configured acyclic relations",
         "diff_aware": false,
         "id": "acyclic_relation",
@@ -116,7 +125,7 @@ exit: 0
         "source": "builtin"
       }
     ],
-    "version": "0.53.0"
+    "version": "0.54.0"
   },
   "ok": true
 }

@@ -34,6 +34,12 @@ impl Bindings {
         self.path_index.get(path).map(String::as_str)
     }
 
+    pub(crate) fn path_of_id(&self, id: &str) -> Option<&str> {
+        self.path_index
+            .iter()
+            .find_map(|(path, bound)| (bound == id).then_some(path.as_str()))
+    }
+
     /// The bindings a built graph carries.
     ///
     /// See [`Worlds`] for the pair a mutation reads against.
@@ -60,6 +66,7 @@ pub fn resolve_edges(
         .into_iter()
         .map(|raw| {
             let target = resolve_target(
+                raw.syntax,
                 &raw.target_path,
                 &raw.relation,
                 source_dir,
@@ -67,6 +74,12 @@ pub fn resolve_edges(
                 extensions,
             );
             Edge {
+                reference: Some(crate::model::edge::Reference {
+                    source: source.to_string(),
+                    syntax: raw.syntax,
+                    target: raw.target_path,
+                    location: raw.location.clone(),
+                }),
                 source: source.to_string(),
                 target,
                 relation: raw.relation,
@@ -124,6 +137,7 @@ pub(crate) enum Frame {
 }
 
 pub(crate) fn path_binding(
+    syntax: crate::model::edge::ReferenceSyntax,
     target: &str,
     source_dir: &Path,
     bindings: &Bindings,
@@ -133,6 +147,7 @@ pub(crate) fn path_binding(
     let Some((here, normalized)) = frame_and_path(target) else {
         return PathBinding::Absolute;
     };
+    let here = here || syntax == crate::model::edge::ReferenceSyntax::Markdown;
     let normalized = normalized.as_str();
 
     // 1. Literal (root-relative) path, then with each configured extension
@@ -173,6 +188,7 @@ pub(crate) fn path_binding(
 }
 
 pub(crate) fn resolve_target(
+    syntax: crate::model::edge::ReferenceSyntax,
     target: &str,
     relation: &str,
     source_dir: &Path,
@@ -204,7 +220,14 @@ pub(crate) fn resolve_target(
     // so this dispatch is over a closed, code-owned vocabulary.
     let document_ref = crate::model::edge::is_document_ref_relation(relation);
 
-    match path_binding(target, source_dir, bindings, extensions, document_ref) {
+    match path_binding(
+        syntax,
+        target,
+        source_dir,
+        bindings,
+        extensions,
+        document_ref,
+    ) {
         PathBinding::Bound(bound) => return ResolvedTarget::resolved(&bound.id),
         PathBinding::Absolute => {
             return ResolvedTarget::unresolved(target, UnresolvedCause::Absolute);
@@ -217,7 +240,10 @@ pub(crate) fn resolve_target(
 
     // 3. Obsidian-style bare node-id reference (`[[adr-001]]`). Tried last so
     //    an in-scope file always wins over a same-named id.
-    if document_ref && bindings.id_set.contains_key(target) {
+    if syntax != crate::model::edge::ReferenceSyntax::Markdown
+        && document_ref
+        && bindings.id_set.contains_key(target)
+    {
         return ResolvedTarget::resolved(target);
     }
 
@@ -347,6 +373,7 @@ fn frame_and_path(raw: &str) -> Option<(bool, String)> {
 ///   invent candidates (`docs/a/...md` for a dot-trailing `a/..`) the
 ///   resolver never tries.
 pub(crate) fn normalized_resolution_candidates(
+    syntax: crate::model::edge::ReferenceSyntax,
     raw: &str,
     source_path: Option<&Path>,
     extensions: &[String],
@@ -355,6 +382,7 @@ pub(crate) fn normalized_resolution_candidates(
     let Some((here, normalized)) = frame_and_path(raw) else {
         return Vec::new();
     };
+    let here = here || syntax == crate::model::edge::ReferenceSyntax::Markdown;
     let normalized = normalized.as_str();
     let mut candidates: Vec<String> = Vec::new();
     let mut push = |candidate: String| {
@@ -437,6 +465,7 @@ impl Sought {
 /// deriving the plane from an edge's cause, which records why a lookup
 /// failed and not what it was for.
 pub(crate) fn sought_names(
+    syntax: crate::model::edge::ReferenceSyntax,
     target: &str,
     relation: &str,
     source_path: Option<&Path>,
@@ -446,6 +475,7 @@ pub(crate) fn sought_names(
         return Sought::Id(target.to_string());
     }
     Sought::Paths(normalized_resolution_candidates(
+        syntax,
         target,
         source_path,
         extensions,
@@ -521,6 +551,7 @@ pub(crate) fn exists_case_sensitive(root: &Path, rel: &Path, admit_dirs: bool) -
 /// relative to the source directory. Shared with `impact`'s dangling-
 /// reference detection so it agrees with the build on what a link points to.
 pub(crate) fn reference_resolves_to(
+    syntax: crate::model::edge::ReferenceSyntax,
     raw: &str,
     source_dir: &Path,
     target_path: &str,
@@ -530,6 +561,7 @@ pub(crate) fn reference_resolves_to(
     let Some((here, normalized)) = frame_and_path(raw) else {
         return false;
     };
+    let here = here || syntax == crate::model::edge::ReferenceSyntax::Markdown;
     let normalized = normalized.as_str();
     let matches = |base: &str| {
         reference_path_candidates(base, extensions, document_ref)
@@ -596,7 +628,14 @@ mod tests {
         );
         let extensions = [".md".to_string()];
         for spelling in ["./x.md", ".//x.md", ".///x.md", "././x.md", "./sub/../x.md"] {
-            let bound = path_binding(spelling, Path::new("docs"), &bindings, &extensions, true);
+            let bound = path_binding(
+                crate::model::edge::ReferenceSyntax::Pattern,
+                spelling,
+                Path::new("docs"),
+                &bindings,
+                &extensions,
+                true,
+            );
             assert!(
                 matches!(&bound, PathBinding::Bound(binding)
                     if binding.id == "x" && binding.frame == Frame::Relative),
@@ -604,7 +643,14 @@ mod tests {
             );
         }
         for spelling in ["docs/x.md", "docs//x.md", "docs/./x.md"] {
-            let bound = path_binding(spelling, Path::new(""), &bindings, &extensions, true);
+            let bound = path_binding(
+                crate::model::edge::ReferenceSyntax::Pattern,
+                spelling,
+                Path::new(""),
+                &bindings,
+                &extensions,
+                true,
+            );
             assert!(
                 matches!(&bound, PathBinding::Bound(binding)
                     if binding.id == "x" && binding.frame == Frame::Root),
@@ -613,7 +659,14 @@ mod tests {
         }
         // A leading empty segment is not noise: it is what says root.
         assert!(matches!(
-            path_binding("/docs/x.md", Path::new(""), &bindings, &extensions, true),
+            path_binding(
+                crate::model::edge::ReferenceSyntax::Pattern,
+                "/docs/x.md",
+                Path::new(""),
+                &bindings,
+                &extensions,
+                true
+            ),
             PathBinding::Absolute
         ));
     }
@@ -630,6 +683,7 @@ mod tests {
         let edges = resolve_edges(
             "adr-001",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "docs/guides/auth.md".to_string(),
                 relation: "references".to_string(),
                 location: "L5".to_string(),
@@ -655,6 +709,7 @@ mod tests {
         let edges = resolve_edges(
             "guide-index",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "auth.md".to_string(),
                 relation: "references".to_string(),
                 location: "L3".to_string(),
@@ -683,6 +738,7 @@ mod tests {
         let edges = resolve_edges(
             "adr-002",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "adr-001".to_string(),
                 relation: "supersedes".to_string(),
                 location: "frontmatter:supersedes".to_string(),
@@ -708,6 +764,7 @@ mod tests {
         let edges = resolve_edges(
             "test",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "nonexistent.md".to_string(),
                 relation: "references".to_string(),
                 location: "L1".to_string(),
@@ -736,6 +793,7 @@ mod tests {
         let edges = resolve_edges(
             "adr-001",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "../guides/setup.md".to_string(),
                 relation: "references".to_string(),
                 location: "L5".to_string(),
@@ -761,6 +819,7 @@ mod tests {
         let edges = resolve_edges(
             "adr-001",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "../../../../escape.md".to_string(),
                 relation: "references".to_string(),
                 location: "L1".to_string(),
@@ -791,6 +850,7 @@ mod tests {
         let edges = resolve_edges(
             "x",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "/etc/passwd.md".to_string(),
                 relation: "references".to_string(),
                 location: "L1".to_string(),
@@ -823,6 +883,7 @@ mod tests {
         let edges = resolve_edges(
             "src",
             vec![RawEdge {
+                syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: target.to_string(),
                 relation: relation.to_string(),
                 location: "L1".to_string(),
@@ -924,6 +985,7 @@ mod tests {
         // root-relatively would invent a resolution the build never
         // performs.
         let candidates = normalized_resolution_candidates(
+            crate::model::edge::ReferenceSyntax::Pattern,
             "a/../docs/x.md",
             Some(Path::new("deep/d.md")),
             &[".md".to_string()],
@@ -948,6 +1010,7 @@ mod tests {
         // extension to the raw join would invent `docs/a/...md`, a
         // path the resolver never tries.
         let candidates = normalized_resolution_candidates(
+            crate::model::edge::ReferenceSyntax::Pattern,
             "a/..",
             Some(Path::new("docs/d.md")),
             &[".md".to_string()],
@@ -978,6 +1041,7 @@ mod tests {
         // pinned because order decides which node a link binds to when
         // several candidates exist in the index.
         let candidates = normalized_resolution_candidates(
+            crate::model::edge::ReferenceSyntax::Pattern,
             "auth",
             Some(Path::new("docs/guides/index.md")),
             &[".md".to_string()],

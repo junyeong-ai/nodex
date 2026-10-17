@@ -35,6 +35,8 @@ paths:
    dropping them — and any other unit the scope selects that the rule has
    nothing to judge against, whichever way it judges: a reach alone says what
    the rule stood over, never what it could reach.
+   `Rule::severity` declares the default; `Rule::evaluate` applies configured warning
+   promotion consistently. Consumers must not bypass it with direct `check` calls.
    `severity` is the closed `Error | Warning` enum — there is no Info
    check severity (the per-edge `info` plane belongs to
    `detection.unresolved_policy`, a different type:
@@ -65,7 +67,7 @@ paths:
    registered on one config value takes it at registration
    (`GitDriftRule::new(threshold)`), so it has no branch for the value's
    absence — unless a seam reads the same declaration: the status-flow pair
-   reads `statuses.flow` through `Config::status_flow`, because
+   reads `statuses.flow` through `Config::status_flows` / `Config::status_flow_for`, because
    `status_entry` asks the entry status of `Config::initial_status_for`,
    and a copy would be a second path to one declaration. `skipped_rules`
    is reserved for rules whose

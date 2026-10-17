@@ -22,7 +22,7 @@ pub const FALLBACK_KIND: &str = "generic";
 /// matches. Substituted through the same `expand_template` path the
 /// configured rules use, and published by `export config` as
 /// `fallback_id_template` — every document always gets an id.
-pub const FALLBACK_ID_TEMPLATE: &str = "{kind}-{stem}";
+pub const FALLBACK_ID_TEMPLATE: &str = "{kind}-{path_slug}";
 
 /// Infer document kind from path using config rules. First match wins.
 pub fn infer_kind(path: &Path, identity: &IdentityConfig) -> Kind {
@@ -239,7 +239,7 @@ mod tests {
     fn infer_id_default_fallback() {
         let identity = make_identity(vec![], vec![]);
         let id = infer_id(Path::new("docs/guide.md"), &Kind::new("guide"), &identity);
-        assert_eq!(id, "guide-guide");
+        assert_eq!(id, "guide-docs-guide");
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
         let identity = make_identity(vec![], vec![]);
         let a = infer_id(Path::new("docs/한글.md"), &Kind::new("note"), &identity);
         let b = infer_id(Path::new("docs/세계.md"), &Kind::new("note"), &identity);
-        assert_eq!(a, "note-한글");
+        assert_eq!(a, "note-docs-한글");
         assert_ne!(a, b);
         assert!(!a.ends_with('-') && !b.ends_with('-'));
     }

@@ -26,7 +26,7 @@ kind = "generic"                      # per-file advisory warnings)
 
 [[identity.id_rules]]
 kind = "*"
-template = "{kind}-{stem}"
+template = "{kind}-{path_slug}"
 
 [schema]
 required = ["created", "owner"]       # authored fields only — id / title / kind / status / orphan_ok are parser-resolved and refused here

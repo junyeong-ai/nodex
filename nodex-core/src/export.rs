@@ -478,7 +478,7 @@ pub fn export_rules(config: &Config) -> RulesManifest {
         .map(|rule| RuleManifestEntry {
             id: rule.id().to_string(),
             source: rule.source(),
-            severity: rule.severity(),
+            severity: rule.configured_severity(config),
             description: rule.description().to_string(),
             diff_aware: rule.diff_aware(),
             judges_steps: rule.judges_steps(),
@@ -1466,8 +1466,14 @@ fn per_command_schemas() -> Map<String, Value> {
     out.insert("query.search-body".into(), schema_of::<BodySearchResult>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
-    out.insert("query.orphans".into(), items_envelope::<OrphanEntry>());
-    out.insert("query.stale".into(), items_envelope::<StaleEntry>());
+    out.insert(
+        "query.orphans".into(),
+        schema_of::<crate::query::DetectionListing<OrphanEntry>>(),
+    );
+    out.insert(
+        "query.stale".into(),
+        schema_of::<crate::query::DetectionListing<StaleEntry>>(),
+    );
     out.insert("query.node".into(), schema_of::<NodeEntry>());
     out.insert(
         "query.covered-by".into(),
@@ -1578,7 +1584,7 @@ mod tests {
                 allowed: vec!["active".into(), "superseded".into()],
                 terminal: vec!["superseded".into()],
                 initial: None,
-                flow: None,
+                flow: Vec::new(),
             },
             schema: SchemaConfig {
                 required: vec!["created".into()],
@@ -2921,7 +2927,7 @@ mod tests {
             "no declared initial → the first allowed status"
         );
         assert_eq!(m.identity.fallback_kind, "generic");
-        assert_eq!(m.identity.fallback_id_template, "{kind}-{stem}");
+        assert_eq!(m.identity.fallback_id_template, "{kind}-{path_slug}");
         assert_eq!(m.version, env!("CARGO_PKG_VERSION"));
     }
 

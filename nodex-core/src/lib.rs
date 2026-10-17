@@ -59,7 +59,8 @@ pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
     Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, BodySection, BodyStructure, Edge,
     FieldParseIssue, Graph, GraphMeta, Kind, Node, ParseFailure, RawAnnotation, RawBodyLineMatch,
-    RawEdge, ReferenceDefinition, ResolvedTarget, SectionHeading, Status, UnresolvedCause,
+    RawEdge, Reference, ReferenceDefinition, ReferenceSyntax, ResolvedTarget, SectionHeading,
+    Status, UnresolvedCause,
 };
 pub use mutate::{
     BaselineBinding, BaselineProbe, GraphedBaseline, HeldBack, Introduced, Kept, Narrowing,

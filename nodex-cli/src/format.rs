@@ -110,6 +110,20 @@ pub struct ItemsEnvelope<T: Serialize> {
 }
 
 impl<T: Serialize> ItemsEnvelope<T> {
+    pub fn with_coverage(
+        self,
+        subjects: usize,
+        unjudged: usize,
+    ) -> nodex_core::query::DetectionListing<T> {
+        nodex_core::query::DetectionListing {
+            items: self.items,
+            total: self.total,
+            returned: self.returned,
+            subjects,
+            unjudged,
+        }
+    }
+
     pub fn new(items: Vec<T>) -> Self {
         let total = items.len();
         Self {

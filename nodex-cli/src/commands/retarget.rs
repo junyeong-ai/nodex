@@ -15,10 +15,13 @@ pub struct RetargetArgs {
     pub old_id: String,
     /// The successor id those references should point to.
     pub new_id: String,
+    /// Supersede the predecessor and repoint its citations in one guarded batch.
+    #[arg(long)]
+    pub supersede: bool,
 }
 
 /// The successor's own references to the predecessor, named as the sites
-/// that hold them: a frontmatter field by its name, body id references by
+/// that hold them: a frontmatter field by its name, body references by
 /// their count — an id reference spells the id verbatim, so quoting one
 /// would repeat the id the message already carries twice.
 fn self_edge_sites(held: &nodex_core::retarget::SelfEdges) -> String {
@@ -77,10 +80,27 @@ pub fn run(
     // `immutable_baseline` would diff against. Outside a git work tree
     // (or with no baseline) those rules are inert for `check`, so the
     // probe is inert too. A repoint writes both parts a lock can name —
-    // id-valued frontmatter relations and body id references — which is
+    // frontmatter relations and body references — which is
     // why it is the seam where holding back a part rather than a file
     // decides the outcome.
     let probe = super::git_checkout::write_baseline(root, &config)?;
+    let succession = if args.supersede {
+        nodex_core::lifecycle::check_supersede_safe(&graph, &args.old_id, &args.new_id)?;
+        let predecessor = graph.require_node(&args.old_id)?;
+        Some(nodex_core::lifecycle::prepare_transition(
+            root,
+            &predecessor.path,
+            nodex_core::Action::Supersede {
+                successor: args.new_id.clone(),
+            },
+            &config,
+            &graph,
+            &probe,
+            today,
+        )?)
+    } else {
+        None
+    };
 
     // Plan every repoint first, gate the batch once, then write. The lock
     // asks what the project looks like after the whole repoint lands, which
@@ -92,10 +112,9 @@ pub fn run(
     // attempted and something stood in the way, the other that no write was
     // ever going to happen there.
     let mut kept: Vec<String> = Vec::new();
-    // What the references are read against, so id retargeting honours
+    // What the references are read against, so reference retargeting honours
     // the resolver's path-first precedence out of the resolver itself: a
-    // `[[old]]` that binds a file by path is not an id reference and must
-    // be left alone.
+    // `[[old]]` that binds a different document by path is left alone.
     let bound = nodex_core::builder::resolver::Bindings::of_graph(&graph);
     for node in graph.nodes().values() {
         let shown = nodex_core::path_guard::forward_string(&node.path);
@@ -112,6 +131,15 @@ pub fn run(
         // existed or the project referenced the predecessor nowhere.
         let mut self_edges = nodex_core::retarget::SelfEdges::default();
         let retarget = |content: &str| {
+            if !node.matches_content(content) {
+                return Err(CoreError::WriteConflict(node.path.clone()));
+            }
+            if let Some(plan) = succession
+                .as_ref()
+                .filter(|plan| plan.rel_path == node.path)
+            {
+                return Ok(Some(plan.content.clone()));
+            }
             let retargeted = nodex_core::retarget::retarget_document(
                 content,
                 node,
@@ -166,12 +194,17 @@ pub fn run(
     }
 
     // A repoint nodex's own `check` would flag is not performed; frozen
-    // history keeps its original reference and surfaces on the next build as
-    // an unresolved edge. A lock names a part of a document, so what it costs
+    // history keeps its original reference. A lock names a part of a document, so what it costs
     // is that part: a frozen body keeps its citation while the same
     // document's relation fields are repointed.
     let narrowing = nodex_core::narrow(&probe, root, &config, &[], plans, today)?;
     for held in narrowing.held {
+        if succession
+            .as_ref()
+            .is_some_and(|plan| plan.rel_path == held.rel_path)
+        {
+            return Err(CoreError::Config("the predecessor's lifecycle change was held; no part of the replacement was written".into()).into());
+        }
         let shown = nodex_core::path_guard::forward_string(&held.rel_path);
         skipped.push(match held.kept {
             nodex_core::Kept::Whole(lock) => format!(

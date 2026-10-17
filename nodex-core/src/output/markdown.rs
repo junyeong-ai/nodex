@@ -319,6 +319,7 @@ mod tests {
 
     fn supersedes_edge(newer: &str, older: &str) -> Edge {
         Edge {
+            reference: None,
             source: newer.into(),
             target: ResolvedTarget::resolved(older),
             relation: "supersedes".into(),

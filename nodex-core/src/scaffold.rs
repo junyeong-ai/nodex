@@ -181,6 +181,16 @@ pub fn scaffold(
     let id = spec
         .id
         .clone()
+        .or_else(|| {
+            force
+                .then(|| {
+                    before
+                        .graph
+                        .node_by_path(&rel_path)
+                        .map(|node| node.id.clone())
+                })
+                .flatten()
+        })
         .unwrap_or_else(|| infer_id(&rel_path, &spec.kind, &config.identity));
     detect_id_collision(&id, &rel_path, &before.graph)?;
 

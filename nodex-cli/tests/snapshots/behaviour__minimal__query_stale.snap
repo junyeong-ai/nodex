@@ -6,12 +6,14 @@ exit: 0
 {
   "data": {
     "items": [],
-    "total": 0
+    "subjects": 2,
+    "total": 0,
+    "unjudged": 1
   },
   "ok": true,
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

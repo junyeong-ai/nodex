@@ -504,7 +504,7 @@ pub(crate) fn is_field_missing(node: &Node, field: &str) -> bool {
         // an absence, so the field is structurally always present.
         // Returning `false` lets `cross_field.require = "orphan_ok"`
         // pass once the doc declares the flag either way.
-        "orphan_ok" => false,
+        "orphan_ok" | "path" => false,
         other => match node.attrs.get(other) {
             None | Some(Value::Null) => true,
             Some(Value::String(s)) => s.is_empty(),
@@ -515,9 +515,8 @@ pub(crate) fn is_field_missing(node: &Node, field: &str) -> bool {
 }
 
 /// Read a field's value as a `String` for predicate evaluation.
-/// Returns `None` when the field is absent or empty. Collection
-/// fields return a comma-joined string when non-empty so that
-/// `exists` / `not_exists` predicates work correctly.
+/// Returns `None` when no scalar representation is available. Presence
+/// predicates use [`is_field_missing`] independently of scalar conversion.
 fn read_field_as_string(node: &Node, field: &str) -> Option<String> {
     match field {
         "id" => none_if_empty(&node.id),
@@ -656,8 +655,8 @@ pub fn predicate_matches_node(predicate: &WhenPredicate, node: &Node) -> bool {
             .as_deref()
             .map(|actual| values.iter().any(|v| v == actual))
             .unwrap_or(false),
-        WhenPredicate::Exists { field } => read_field_as_string(node, field).is_some(),
-        WhenPredicate::NotExists { field } => read_field_as_string(node, field).is_none(),
+        WhenPredicate::Exists { field } => !is_field_missing(node, field),
+        WhenPredicate::NotExists { field } => is_field_missing(node, field),
     }
 }
 
@@ -685,7 +684,7 @@ mod tests {
                 ],
                 terminal: vec!["superseded".to_string()],
                 initial: None,
-                flow: None,
+                flow: Vec::new(),
             },
             schema: SchemaConfig {
                 required: vec!["created".to_string()],

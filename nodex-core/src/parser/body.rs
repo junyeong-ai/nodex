@@ -125,7 +125,7 @@ pub(crate) fn extract_links_prepared(
 
         for (idx, line) in body.lines().enumerate() {
             let line_start = line_offsets[idx];
-            let mut push_capture = |m: regex::Match<'_>, relation: &str| {
+            let mut push_capture = |m: regex::Match<'_>, relation: &str, syntax| {
                 // The slice bound is the trimmed one, so it is the trimmed
                 // one the surface verdict is asked about: a capture is a
                 // reference where its own bytes are, not where the
@@ -141,6 +141,7 @@ pub(crate) fn extract_links_prepared(
                 scanned.push((
                     start,
                     RawEdge {
+                        syntax,
                         target_path: body[start..end].to_string(),
                         relation: relation.to_string(),
                         location: format!("L{}", idx + 1),
@@ -151,14 +152,18 @@ pub(crate) fn extract_links_prepared(
             if let Some(re) = wikilink_re {
                 for caps in re.captures_iter(line) {
                     if let Some(m) = caps.get(1) {
-                        push_capture(m, "references");
+                        push_capture(
+                            m,
+                            "references",
+                            crate::model::edge::ReferenceSyntax::Wikilink,
+                        );
                     }
                 }
             }
             for (regex, relation, _) in compiled_patterns {
                 for caps in regex.captures_iter(line) {
                     if let Some(m) = caps.get(1) {
-                        push_capture(m, relation);
+                        push_capture(m, relation, crate::model::edge::ReferenceSyntax::Pattern);
                     }
                 }
             }
@@ -176,6 +181,7 @@ pub(crate) fn extract_links_prepared(
                 scanned.push((
                     start,
                     RawEdge {
+                        syntax: crate::model::edge::ReferenceSyntax::Pattern,
                         target_path: target.to_string(),
                         relation: relation.to_string(),
                         location: format!("L{}", line_for_offset(&line_offsets, start)),
@@ -473,6 +479,7 @@ fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Op
         return None;
     }
     Some(RawEdge {
+        syntax: crate::model::edge::ReferenceSyntax::Markdown,
         target_path: path,
         relation: "references".to_string(),
         location: format!("L{line_num}"),

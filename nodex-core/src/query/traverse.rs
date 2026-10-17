@@ -4,6 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::NodeRef;
 
+/// Inclusive coordinates into the canonical body, with its full line count.
+#[derive(Debug, serde::Serialize, JsonSchema)]
+pub struct BodyRange {
+    pub start: usize,
+    pub end: usize,
+    pub total: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,12 +59,14 @@ mod tests {
         }
         let edges = vec![
             Edge {
+                reference: None,
                 source: "z".into(),
                 target: ResolvedTarget::resolved("x"),
                 relation: "references".into(),
                 location: "L1".into(),
             },
             Edge {
+                reference: None,
                 source: "x".into(),
                 target: ResolvedTarget::resolved("y"),
                 relation: "references".into(),
@@ -95,12 +105,14 @@ mod tests {
         }
         let edges = vec![
             Edge {
+                reference: None,
                 source: "v2".into(),
                 target: ResolvedTarget::resolved("v1"),
                 relation: "supersedes".into(),
                 location: "frontmatter:supersedes".into(),
             },
             Edge {
+                reference: None,
                 source: "v3".into(),
                 target: ResolvedTarget::resolved("v2"),
                 relation: "supersedes".into(),
@@ -151,6 +163,7 @@ mod tests {
             let edges = pairs
                 .iter()
                 .map(|(newer, older)| Edge {
+                    reference: None,
                     source: (*newer).into(),
                     target: ResolvedTarget::resolved(*older),
                     relation: "supersedes".into(),
@@ -367,6 +380,7 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
         .map(|e| IncomingEdgeRef {
             source: e.source.clone(),
             relation: e.relation.clone(),
+            reference: e.reference.clone(),
         })
         .collect();
 
@@ -379,14 +393,16 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
                 crate::model::ResolvedTarget::Unresolved { raw, .. } => raw.clone(),
             },
             relation: e.relation.clone(),
+            reference: e.reference.clone(),
         })
         .collect();
 
     Some(NodeEntry {
-        node: node.clone(),
+        node: crate::model::node::NodeMetadata::from(node),
         incoming,
         outgoing,
         body: None,
+        body_range: None,
     })
 }
 
@@ -396,7 +412,7 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
 /// is that every queryable single-node row ends in `*Entry`.
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct NodeEntry {
-    pub node: crate::model::Node,
+    pub node: crate::model::node::NodeMetadata,
     pub incoming: Vec<IncomingEdgeRef>,
     pub outgoing: Vec<OutgoingEdgeRef>,
     /// Body text, attached only on request (`query node --with-body`).
@@ -407,6 +423,8 @@ pub struct NodeEntry {
     /// otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_range: Option<BodyRange>,
 }
 
 /// One edge pointing **into** the queried node. `source` is the other
@@ -415,6 +433,8 @@ pub struct NodeEntry {
 /// to also mean "source for incoming".
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct IncomingEdgeRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<crate::model::edge::Reference>,
     pub source: String,
     pub relation: String,
 }
@@ -425,6 +445,8 @@ pub struct IncomingEdgeRef {
 /// source files).
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct OutgoingEdgeRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<crate::model::edge::Reference>,
     pub target: String,
     pub relation: String,
 }
@@ -462,6 +484,7 @@ pub fn find_covered_by(
             // this answered for existed nowhere.
             ResolvedTarget::Unresolved { raw, .. } => {
                 crate::builder::resolver::normalized_resolution_candidates(
+                    crate::model::edge::ReferenceSyntax::Pattern,
                     raw,
                     Some(source.path.as_path()),
                     extensions,

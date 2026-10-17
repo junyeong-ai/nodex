@@ -7,35 +7,27 @@ exit: 0
   "data": {
     "incoming": [
       {
+        "reference": {
+          "location": "L4",
+          "source": "adr-beta",
+          "syntax": "markdown",
+          "target": "alpha.md"
+        },
         "relation": "references",
         "source": "adr-beta"
       },
       {
+        "reference": {
+          "location": "frontmatter:supersedes",
+          "source": "adr-beta",
+          "syntax": "frontmatter",
+          "target": "adr-alpha"
+        },
         "relation": "supersedes",
         "source": "adr-beta"
       }
     ],
     "node": {
-      "body_hash": "ed059037d041909f942005669cc07c67426e265e744351310f7f3a3dfc5ccdf8",
-      "body_lines_hash": [
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "2c5bfe837877f81eff587c2afba18d27b2ab28afaa7f164072500fdd3f3f8536",
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "999ecccc47a0eed4a9e9af79b587019d6d147641712e96aa66f18e73dadeb847"
-      ],
-      "body_structure": {
-        "sections": [
-          {
-            "content_end": 4,
-            "heading": {
-              "level": 1,
-              "text": "Alpha"
-            },
-            "start": 1
-          }
-        ]
-      },
-      "content_hash": "051c1f4916beb68d580332809be2c164654a5e34b1a5b5f83fcd1ac866d0db4d",
       "created": "2026-01-03",
       "id": "adr-alpha",
       "kind": "adr",
@@ -55,6 +47,6 @@ exit: 0
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

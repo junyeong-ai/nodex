@@ -69,6 +69,9 @@ pub enum QueryCommand {
         /// saving the agent a separate read round-trip.
         #[arg(long)]
         with_body: bool,
+        /// Inclusive canonical body-line range START:END (requires --with-body).
+        #[arg(long, requires = "with_body", value_name = "START:END")]
+        body_lines: Option<String>,
     },
     /// Reverse lookup: docs claiming authority over a source-code path
     CoveredBy { path: String },
@@ -193,6 +196,9 @@ pub struct NodesArgs {
     /// `when` predicate.
     #[arg(long = "where", value_name = "FIELD=VALUE")]
     pub where_: Vec<String>,
+    /// Require each field to be absent (CSV); e.g. --missing reviewed --status active.
+    #[arg(long, value_delimiter = ',')]
+    pub missing: Vec<String>,
 }
 
 /// Args for `query trust` — the single-node lookup positional plus the
@@ -370,7 +376,15 @@ pub fn run(
             id,
             path,
             with_body,
-        } => traverse::run_node(root, id.as_deref(), path.as_deref(), with_body, pretty),
+            body_lines,
+        } => traverse::run_node(
+            root,
+            id.as_deref(),
+            path.as_deref(),
+            with_body,
+            body_lines.as_deref(),
+            pretty,
+        ),
         QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
         QueryCommand::Issues => detect::run_issues(root, pretty, today),
         QueryCommand::Trust(args) => score::run_trust(root, args, pretty, today),

@@ -209,7 +209,7 @@ fn validate_rejects_enum_value_outside_global_allowed() {
             ],
             terminal: vec![],
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         },
         schema: SchemaConfig {
             overrides: vec![SchemaOverride {
@@ -320,7 +320,7 @@ fn validate_accepts_cross_field_status_value_in_vocabulary() {
             allowed: vec!["active".into(), "superseded".into()],
             terminal: vec!["superseded".into()],
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         },
         ..global_cross_field("status=superseded", "superseded_by")
     };
@@ -346,7 +346,7 @@ fn validate_rejects_cross_field_status_value_excluded_by_per_kind_enum() {
             allowed: vec!["active".into(), "superseded".into()],
             terminal: vec!["superseded".into()],
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         },
         schema: SchemaConfig {
             overrides: vec![SchemaOverride {
@@ -512,7 +512,7 @@ fn validate_accepts_narrow_status_set_without_lifecycle_targets() {
             allowed: vec!["draft".into(), "active".into(), "archived".into()],
             terminal: vec!["archived".into()],
             initial: Some("draft".into()),
-            flow: None,
+            flow: Vec::new(),
         },
         ..Config::default()
     };
@@ -1097,7 +1097,7 @@ fn allowed_statuses_for_uses_override_enum_else_global_allowed() {
             allowed: vec!["active".into(), "archived".into(), "superseded".into()],
             terminal: vec!["archived".into(), "superseded".into()],
             initial: Some("active".into()),
-            flow: None,
+            flow: Vec::new(),
         },
         schema: SchemaConfig {
             overrides: vec![SchemaOverride {
@@ -1158,7 +1158,7 @@ fn validate_requires_explicit_initial_when_default_excluded_by_status_enum() {
                 "abandoned".into(),
             ],
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         },
         schema: SchemaConfig {
             enums: [(
@@ -1248,7 +1248,7 @@ fn validate_rejects_explicit_initial_excluded_by_status_enum() {
                 "abandoned".into(),
             ],
             initial: Some("draft".into()),
-            flow: None,
+            flow: Vec::new(),
         },
         schema: SchemaConfig {
             enums: [(
@@ -1296,7 +1296,7 @@ fn validate_accepts_implicit_initial_permitted_by_status_enum() {
                 "abandoned".into(),
             ],
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         },
         schema: SchemaConfig {
             enums: [(
@@ -1742,7 +1742,7 @@ fn validate_rejects_terminal_status_not_in_allowed() {
             ],
             terminal: vec!["frozen".into()], // not in allowed
             initial: None,
-            flow: None,
+            flow: Vec::new(),
         },
         ..Config::default()
     };
@@ -4109,7 +4109,7 @@ allowed = ["proposed", "active", "superseded", "archived", "abandoned"]
 terminal = ["superseded", "archived", "abandoned"]
 initial = "proposed"
 
-[statuses.flow]
+[[statuses.flow]]
 kinds = ["adr"]
 transitions = { proposed = ["active", "abandoned"], active = ["superseded", "archived"] }
 "#
@@ -4131,14 +4131,14 @@ fn status_flow_is_absent_by_default() {
     // never a default standing in for one.
     let config = Config::default();
     config.validate().expect("the default config must load");
-    assert!(config.statuses.flow.is_none());
-    assert!(config.status_flow().is_none());
+    assert!(config.statuses.flow.is_empty());
+    assert!(config.status_flows().is_empty());
 }
 
 #[test]
 fn status_flow_names_no_way_out_of_a_terminal_status() {
     let config: Config = toml::from_str(&adr_flow()).expect("parses");
-    let flow = config.status_flow().expect("declared");
+    let flow = config.status_flow_for("adr").expect("declared");
     assert_eq!(flow.transitions["proposed"], ["active", "abandoned"]);
     assert_eq!(flow.kinds, ["adr"]);
     // A terminal status is simply not a key: `Config::validate` refuses to
@@ -4152,46 +4152,46 @@ fn status_flow_refuses_every_disagreement_with_the_rest_of_the_config() {
     for (flow, needle) in [
         // Empty: the cardinal rule every other filter in this config
         // follows — omit the key to mean "none".
-        ("[statuses.flow]\ntransitions = {}\n", "must not be empty"),
+        ("[[statuses.flow]]\ntransitions = {}\n", "must not be empty"),
         // A transition out of a status the vocabulary does not have.
         (
-            "[statuses.flow.transitions]\ndraft = [\"active\"]\n",
+            "[[statuses.flow]]\n[statuses.flow.transitions]\ndraft = [\"active\"]\n",
             "not in statuses.allowed",
         ),
         // A transition INTO a status the vocabulary does not have.
         (
-            "[statuses.flow.transitions]\nproposed = [\"accepted\"]\n\
+            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"accepted\"]\n\
              active = [\"superseded\", \"archived\"]\n",
             "not in statuses.allowed",
         ),
         // A way out of a terminal status contradicts the write seam,
         // which refuses to move a document out of one.
         (
-            "[statuses.flow.transitions]\nproposed = [\"active\"]\n\
+            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\"]\n\
              active = [\"superseded\", \"archived\"]\n\
              superseded = [\"active\"]\n",
             "statuses.terminal",
         ),
         // An empty target list is `terminal` said in a second place.
         (
-            "[statuses.flow.transitions]\nproposed = [\"active\"]\nactive = []\n",
+            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\"]\nactive = []\n",
             "is empty",
         ),
         // A status that does not change is not a transition.
         (
-            "[statuses.flow.transitions]\nproposed = [\"proposed\", \"active\"]\n\
+            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"proposed\", \"active\"]\n\
              active = [\"superseded\", \"archived\"]\n",
             "itself",
         ),
         (
-            "[statuses.flow.transitions]\nproposed = [\"active\", \"active\"]\n\
+            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\", \"active\"]\n\
              active = [\"superseded\", \"archived\"]\n",
             "more than once",
         ),
         // A non-terminal status with no way out is a sink the config
         // declares nowhere — the drift these guards exist to refuse.
         (
-            "[statuses.flow.transitions]\nproposed = [\"active\"]\n",
+            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\"]\n",
             "never leave",
         ),
     ] {
@@ -4219,13 +4219,16 @@ fn status_flow_refuses_a_status_no_document_could_arrive_at() {
     let toml = "[statuses]\n\
         allowed = [\"proposed\", \"active\", \"superseded\", \"archived\"]\n\
         terminal = [\"superseded\", \"archived\"]\ninitial = \"proposed\"\n\
-        [statuses.flow.transitions]\nproposed = [\"active\"]\nactive = [\"superseded\"]\n";
+        [[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\"]\nactive = [\"superseded\"]\n";
     let err = toml::from_str::<Config>(toml)
         .expect("parses")
         .validate()
         .expect_err("an unreachable status must be refused");
     assert!(err.to_string().contains("archived"), "{err}");
-    assert!(err.to_string().contains("never names"), "{err}");
+    assert!(
+        err.to_string().contains("no kind can reach or hold"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -4236,7 +4239,7 @@ fn status_flow_refuses_a_region_disconnected_from_the_initial_status() {
     let toml = "[statuses]\n\
         allowed = [\"proposed\", \"active\", \"superseded\", \"review\", \"rework\"]\n\
         terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-        [statuses.flow.transitions]\n\
+        [[statuses.flow]]\n[statuses.flow.transitions]\n\
         proposed = [\"active\"]\nactive = [\"superseded\"]\n\
         review = [\"rework\"]\nrework = [\"review\"]\n";
     let err = toml::from_str::<Config>(toml)
@@ -4434,7 +4437,7 @@ fn a_refusal_names_the_list_that_separates_the_lock_from_the_flow() {
     let flow_over_everything = "[kinds]\nallowed = [\"adr\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\n\
+         [[statuses.flow]]\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\n\
          [[rules.frontmatter_immutable]]\nname = \"frozen-lifecycle\"\n\
          fields = [\"status\"]\nkinds = [\"adr\"]\n\
@@ -4451,8 +4454,8 @@ fn a_refusal_names_the_list_that_separates_the_lock_from_the_flow() {
     // And it does clear it: the block names `adr`, so a flow governing
     // `generic` alone moves nothing the block holds.
     toml::from_str::<Config>(&flow_over_everything.replace(
-        "[statuses.flow]\n",
-        "[statuses.flow]\nkinds = [\"generic\"]\n",
+        "[[statuses.flow]]\n",
+        "[[statuses.flow]]\nkinds = [\"generic\"]\n",
     ))
     .expect("parses")
     .validate()
@@ -4543,7 +4546,7 @@ fn a_lock_and_a_flow_that_share_no_kind_are_not_held_against_each_other() {
         "[kinds]\nallowed = [\"adr\", \"runbook\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\n\
          [[rules.body_immutable]]\nname = \"runbook-body\"\nmode = \"frozen\"\n\
          trigger = \"status\"\nkinds = [\"runbook\"]\nstatuses = [\"active\"]\n",
@@ -4561,7 +4564,7 @@ fn a_flow_owes_nothing_about_a_status_only_an_ungoverned_kind_holds() {
         "[kinds]\nallowed = [\"adr\", \"runbook\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"review\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"proposed\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n\n\
          [[schema.overrides]]\nkinds = [\"adr\"]\n\
          enums = { status = [\"proposed\", \"active\", \"superseded\"] }\n",
@@ -4578,7 +4581,7 @@ fn mixed_lifecycle(flow_initial: &str) -> String {
         "[kinds]\nallowed = [\"adr\", \"learning\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"active\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\n{flow_initial}\
+         [[statuses.flow]]\nkinds = [\"adr\"]\n{flow_initial}\
          transitions = {{ proposed = [\"active\"], active = [\"superseded\"] }}\n"
     )
 }
@@ -4603,7 +4606,7 @@ fn a_flow_without_its_own_entry_point_falls_back_to_the_global() {
         "[kinds]\nallowed = [\"adr\", \"learning\", \"generic\"]\n\
          [statuses]\nallowed = [\"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"active\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\n\
          transitions = { active = [\"superseded\"] }\n",
     )
     .expect("parses");
@@ -4655,7 +4658,7 @@ fn a_kind_scoped_flow_owes_nothing_about_the_statuses_other_kinds_use() {
         "[kinds]\nallowed = [\"adr\", \"runbook\", \"generic\"]\n\
          [statuses]\nallowed = [\"proposed\", \"draft\", \"active\", \"superseded\"]\n\
          terminal = [\"superseded\"]\ninitial = \"draft\"\n\
-         [statuses.flow]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\nkinds = [\"adr\"]\ninitial = \"proposed\"\n\
          transitions = { proposed = [\"active\"], active = [\"superseded\"] }\n",
     )
     .expect("parses")
@@ -4674,7 +4677,7 @@ fn a_flow_names_only_statuses_every_kind_it_governs_may_hold() {
             "[kinds]\nallowed = [\"adr\", \"spec\", \"generic\"]\n\
              [statuses]\nallowed = [\"proposed\", \"active\", \"superseded\"]\n\
              terminal = [\"superseded\"]\ninitial = \"active\"\n\
-             [statuses.flow]\nkinds = [{kinds}]\ninitial = \"proposed\"\n\
+             [[statuses.flow]]\nkinds = [{kinds}]\ninitial = \"proposed\"\n\
              transitions = {{ proposed = [\"active\"], active = [\"superseded\"] }}\n\
              [[schema.overrides]]\nkinds = [\"spec\"]\n\
              enums = {{ status = [\"proposed\", \"active\"] }}\n"

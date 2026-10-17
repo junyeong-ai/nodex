@@ -23,6 +23,7 @@ use regex::Regex;
 
 use crate::builder::resolver::{Bindings, Frame, PathBinding, Worlds, path_binding};
 use crate::config::ParserConfig;
+use crate::model::edge::ReferenceSyntax;
 use crate::parser::body;
 use crate::parser::body::trim_span;
 
@@ -94,14 +95,21 @@ pub fn rewrite_for_move(
                 &parser.extensions,
             );
             Proposal {
-                binds: binding(&span.target, from_dir, worlds.before, parser).is_some(),
+                binds: binding(
+                    span.form.syntax(),
+                    &span.target,
+                    from_dir,
+                    worlds.before,
+                    parser,
+                )
+                .is_some(),
                 repoint,
                 span,
             }
         })
         .collect();
-    let names = |text: &str| binding(text, to_dir, worlds.after, parser);
-    let was = |text: &str| binding(text, from_dir, worlds.before, parser);
+    let names = |text: &str, syntax| binding(syntax, text, to_dir, worlds.after, parser);
+    let was = |text: &str, syntax| binding(syntax, text, from_dir, worlds.before, parser);
     Ok(apply_proposals(
         &content,
         frontmatter,
@@ -241,6 +249,13 @@ enum ReferenceForm {
 }
 
 impl ReferenceForm {
+    fn syntax(&self) -> ReferenceSyntax {
+        match self {
+            Self::Destination { .. } => ReferenceSyntax::Markdown,
+            Self::Capture(_) | Self::Citation(_) => ReferenceSyntax::Pattern,
+        }
+    }
+
     /// The spellings of `target` to offer for this form, in the order a
     /// rewrite prefers them. Only a destination has a choice; every other
     /// form is written as the target reads.
@@ -391,24 +406,19 @@ impl<'a> Reading<'a> {
     }
 }
 
-/// Whether `target`, read from `source`, names a document — asked of the
-/// ladder the graph binds edges with, so a rewrite and the builder agree
-/// about which references carry an edge.
-fn binds(target: &str, source_dir: &Path, bindings: &Bindings, parser: &ParserConfig) -> bool {
-    binding(target, source_dir, bindings, parser).is_some()
-}
-
 /// Which document `target`, read from `source`, names — the ladder's own
 /// answer, so a reference is judged by what it binds rather than by how
 /// it is spelled. A path has more than one spelling and they are not the
 /// same string; they are the same document.
 fn binding(
+    syntax: ReferenceSyntax,
     target: &str,
     source_dir: &Path,
     bindings: &Bindings,
     parser: &ParserConfig,
 ) -> Option<String> {
     crate::builder::resolver::resolve_target(
+        syntax,
         target,
         crate::model::edge::BODY_REFERENCE_RELATION,
         source_dir,
@@ -628,6 +638,7 @@ fn is_id_reference(
         && span.target == id
         && matches!(
             crate::builder::resolver::path_binding(
+                crate::model::edge::ReferenceSyntax::Pattern,
                 &span.target,
                 source_dir,
                 bound,
@@ -638,14 +649,10 @@ fn is_id_reference(
         )
 }
 
-/// How many body id references name `id` — the references
-/// [`rewrite_id_references`] has a replacement for, counted where a repoint
+/// How many parsed body references resolve to `id` — the references
+/// [`rewrite_references`] has a replacement for, counted where a repoint
 /// is not going to be written and the caller still owes an account of what
 /// it declined to move.
-///
-/// A count is the whole of what those references have to say: an id
-/// reference spells the id verbatim, which is what makes it one, so there is
-/// nothing to quote that the caller is not already holding.
 ///
 /// Occurrences, not readers and not edges. `[[old]]` found by the wikilink
 /// reader and by a `\[\[(old)\]\]` pattern is one place in the body whatever
@@ -653,7 +660,7 @@ fn is_id_reference(
 /// readers would send someone looking for two of something the document
 /// holds one of. The graph may well hold two edges there; that is a fact
 /// about the graph, and `query backlinks` is where it is asked.
-pub fn count_id_references(
+pub fn count_references(
     content: &str,
     id: &str,
     source_dir: &Path,
@@ -664,22 +671,22 @@ pub fn count_id_references(
     let References { spans, .. } = references(content.as_ref(), parser)?;
     let mut counted = std::collections::BTreeSet::new();
     for span in &spans {
-        if is_id_reference(span, id, source_dir, bound, parser) {
+        if binding(span.form.syntax(), &span.target, source_dir, bound, parser).as_deref()
+            == Some(id)
+        {
             counted.insert((span.start, span.end));
         }
     }
     Ok(counted.len())
 }
 
-/// Rewrite every body *id* reference to `old_id` so it names `new_id`,
+/// Rewrite every parsed body reference resolving to `old_id` to name `new_id`,
 /// returning what the rewrite did — the document when it changed, and
 /// every reference it had a replacement for and could not write.
 ///
 /// `source_dir` is the scanned file's parent directory; `bound` is the
-/// project the references are read against. Which spans are id references
-/// at all is `is_id_reference`'s question, shared with
-/// [`count_id_references`].
-pub fn rewrite_id_references(
+/// project the references are resolved against, shared with [`count_references`].
+pub fn rewrite_references(
     content: &str,
     old_id: &str,
     new_id: &str,
@@ -690,21 +697,50 @@ pub fn rewrite_id_references(
     let content = crate::parser::frontmatter::canonicalize(content);
     let content = content.as_ref();
     let References { frontmatter, spans } = references(content, parser)?;
+    let successor_path = bound.path_of_id(new_id);
     let proposals: Vec<Proposal> = spans
         .into_iter()
         .map(|span| {
-            let retargeted = is_id_reference(&span, old_id, source_dir, bound, parser);
-            Proposal {
-                binds: binds(&span.target, source_dir, bound, parser),
-                repoint: retargeted.then(|| Repoint {
-                    spellings: vec![new_id.to_string()],
+            let syntax = span.form.syntax();
+            let named = binding(syntax, &span.target, source_dir, bound, parser);
+            let repoint = if named.as_deref() == Some(old_id) {
+                let mut paths = Vec::new();
+                if is_id_reference(&span, old_id, source_dir, bound, parser) {
+                    paths.push(new_id.to_string());
+                } else if let Some(path) = successor_path {
+                    let path = if parser
+                        .extensions
+                        .iter()
+                        .any(|ext| span.target.ends_with(ext))
+                    {
+                        path.to_string()
+                    } else {
+                        strip_configured_extension(path, &parser.extensions)
+                    };
+                    let relative = relative_from(source_dir, Path::new(&path));
+                    if syntax == ReferenceSyntax::Markdown {
+                        paths.push(relative);
+                    } else {
+                        paths.push(path);
+                        paths.push(relative);
+                        paths.push(new_id.to_string());
+                    }
+                }
+                Some(Repoint {
+                    spellings: paths,
                     intends: new_id.to_string(),
-                }),
+                })
+            } else {
+                None
+            };
+            Proposal {
+                binds: named.is_some(),
                 span,
+                repoint,
             }
         })
         .collect();
-    let names = |text: &str| binding(text, source_dir, bound, parser);
+    let names = |text: &str, syntax| binding(syntax, text, source_dir, bound, parser);
     Ok(apply_proposals(
         content,
         frontmatter,
@@ -751,9 +787,14 @@ fn moved_target(
     // all: the marker names the frame, and taking it off first is asking
     // about a reference the document does not hold.
     let normalized = forward.strip_prefix("./").unwrap_or(&forward);
-    let PathBinding::Bound(named) =
-        path_binding(&forward, from_dir, worlds.before, extensions, true)
-    else {
+    let PathBinding::Bound(named) = path_binding(
+        form.syntax(),
+        &forward,
+        from_dir,
+        worlds.before,
+        extensions,
+        true,
+    ) else {
         return None;
     };
     // Where the document it named stands once the move has happened.
@@ -773,9 +814,14 @@ fn moved_target(
         (Rewriting::Moved, true) => worlds.after.id_at(stands)?.to_string(),
         _ => named.id,
     };
-    if let PathBinding::Bound(after) =
-        path_binding(&forward, to_dir, worlds.after, extensions, true)
-        && after.path == stands
+    if let PathBinding::Bound(after) = path_binding(
+        form.syntax(),
+        &forward,
+        to_dir,
+        worlds.after,
+        extensions,
+        true,
+    ) && after.path == stands
     {
         return None;
     }
@@ -998,8 +1044,8 @@ fn apply_proposals(
     frontmatter: Option<(usize, usize)>,
     mut proposals: Vec<Proposal>,
     parser: &ParserConfig,
-    names: &dyn Fn(&str) -> Option<String>,
-    named_before: &dyn Fn(&str) -> Option<String>,
+    names: &dyn Fn(&str, ReferenceSyntax) -> Option<String>,
+    named_before: &dyn Fn(&str, ReferenceSyntax) -> Option<String>,
 ) -> Rewritten {
     proposals.sort_by_key(|proposal| proposal.span.start);
     // What each reference names where the document now stands, read out
@@ -1007,7 +1053,7 @@ fn apply_proposals(
     // rewrite are the bytes its author wrote.
     let stands: Vec<Option<String>> = proposals
         .iter()
-        .map(|proposal| names(&proposal.span.target))
+        .map(|proposal| names(&proposal.span.target, proposal.span.form.syntax()))
         .collect();
     // And the document each one named before any of this — what a rewrite
     // reaching over its bytes has to leave it still naming, since it can
@@ -1022,7 +1068,7 @@ fn apply_proposals(
                 .repoint
                 .as_ref()
                 .map(|repoint| repoint.intends.clone())
-                .or_else(|| named_before(&proposal.span.target))
+                .or_else(|| named_before(&proposal.span.target, proposal.span.form.syntax()))
         })
         .collect();
     // What the document already holds, by this reader's own reckoning: a
@@ -1160,8 +1206,8 @@ fn apply_proposals(
         (0..proposals.len())
             .filter_map(|at| {
                 let reference = left(at)?;
-                let was = named_before(&reference);
-                let now = names(&reference)?;
+                let was = named_before(&reference, proposals[at].span.form.syntax());
+                let now = names(&reference, proposals[at].span.form.syntax())?;
                 (was.as_deref() != Some(now.as_str())).then_some(Rebound {
                     reference,
                     was,
@@ -1180,7 +1226,8 @@ fn apply_proposals(
         .filter_map(|at| {
             let meant = proposals[at].repoint.as_ref()?.intends.as_str();
             let reference = left(at)?;
-            (names(&reference).as_deref() != Some(meant)).then_some(reference)
+            (names(&reference, proposals[at].span.form.syntax()).as_deref() != Some(meant))
+                .then_some(reference)
         })
         .filter(|reference| !rebound.iter().any(|one| one.reference == *reference))
         .collect();
@@ -1245,11 +1292,11 @@ fn mints_nothing(
     candidate: &str,
     account: &std::collections::BTreeSet<(&str, &str)>,
     parser: &ParserConfig,
-    names: &dyn Fn(&str) -> Option<String>,
+    names: &dyn Fn(&str, ReferenceSyntax) -> Option<String>,
 ) -> bool {
     references(candidate, parser).is_ok_and(|found| {
         found.spans.iter().all(|span| {
-            names(&span.target)
+            names(&span.target, span.form.syntax())
                 .is_none_or(|held| account.contains(&(span.relation.as_str(), held.as_str())))
         })
     })
@@ -1406,7 +1453,7 @@ fn take(
     subsumed: &mut [bool],
     index: usize,
     meant: &[Option<String>],
-    names: &dyn Fn(&str) -> Option<String>,
+    names: &dyn Fn(&str, ReferenceSyntax) -> Option<String>,
 ) {
     let rewritten = &proposals[index].span;
     let enclosed: Vec<usize> = (0..proposals.len())
@@ -1568,7 +1615,7 @@ fn reads(
     landings: &[Option<Landing>],
     meant: &[Option<String>],
     reading: &Reading<'_>,
-    names: &dyn Fn(&str) -> Option<String>,
+    names: &dyn Fn(&str, ReferenceSyntax) -> Option<String>,
 ) -> bool {
     let Some(at) = landings[index].as_ref() else {
         return true;
@@ -1580,7 +1627,7 @@ fn reads(
         // rendering — asked what that rendering *names*, because a frame
         // it did not intend can be shadowing the one it did.
         (Some(repoint), _) => span.form.reads_back(reading, at, &|says: &str| {
-            names(says).as_deref() == Some(repoint.intends.as_str())
+            names(says, span.form.syntax()).as_deref() == Some(repoint.intends.as_str())
         }),
         // The bytes are somebody else's rendering, and a path has more
         // than one: read out of `../docs2/a.md`, a capture of
@@ -1592,7 +1639,9 @@ fn reads(
             let carried = meant[index].as_deref();
             span.form.reads_back(reading, at, &|says: &str| {
                 says == own
-                    || carried.is_some_and(|document| names(says).as_deref() == Some(document))
+                    || carried.is_some_and(|document| {
+                        names(says, span.form.syntax()).as_deref() == Some(document)
+                    })
             })
         }
         (None, Landing::At(_) | Landing::Severed) => {
@@ -1711,10 +1760,10 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_root_relative_markdown_link() {
+    fn rewrites_markdown_link_from_project_root() {
         let out = rewrite(
             "See [x](docs/a.md).",
-            "docs",
+            "",
             "docs/a.md",
             "docs/b.md",
             &parser(),
@@ -1771,7 +1820,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                rewrite(before, "docs", "docs/a.md", "docs/b.md", &parser()),
+                rewrite(before, "", "docs/a.md", "docs/b.md", &parser()),
                 after,
                 "before: {before:?}"
             );
@@ -1784,7 +1833,7 @@ mod tests {
         // so the span holds `a\(1\).md` where the graph holds `a(1).md`.
         let out = rewrite(
             "[x](docs/a\\(1\\).md)",
-            "docs",
+            "",
             "docs/a(1).md",
             "docs/b.md",
             &parser(),
@@ -1796,7 +1845,7 @@ mod tests {
     fn preserves_anchor_fragment() {
         let out = rewrite(
             "[x](docs/a.md#section)",
-            "docs",
+            "",
             "docs/a.md",
             "docs/b.md",
             &parser(),
@@ -1832,16 +1881,21 @@ mod tests {
         let config = parser();
         for source_dir in ["", "nested"] {
             for target in ["name:colon.md", "name:directory/a.md"] {
-                let rewritten = rewrite(
-                    "[x](old.md?plain=1#part)",
-                    source_dir,
-                    "old.md",
-                    target,
-                    &config,
+                let authored = format!(
+                    "[x]({}old.md?plain=1#part)",
+                    if source_dir.is_empty() { "" } else { "../" }
                 );
+                let rewritten = rewrite(&authored, source_dir, "old.md", target, &config);
                 let destinations = body::Destination::in_document(&rewritten);
                 assert_eq!(destinations.len(), 1, "{rewritten}");
-                assert_eq!(destinations[0].path, target);
+                assert_eq!(
+                    destinations[0].path,
+                    if source_dir.is_empty() {
+                        target.to_string()
+                    } else {
+                        format!("../{target}")
+                    }
+                );
                 assert_eq!(destinations[0].suffix, "?plain=1#part");
             }
         }
@@ -2001,12 +2055,8 @@ mod tests {
     }
 
     #[test]
-    fn leaves_link_whose_literal_form_binds_another_in_scope_file() {
-        // Resolver disagreement: `[x](shared.md)` written in docs/sub
-        // binds the ROOT `shared.md` (literal frame wins, exactly as
-        // the build resolver). Renaming docs/sub/shared.md must NOT
-        // repoint it — the link was never an edge to the renamed file.
-        assert!(
+    fn markdown_links_keep_their_source_frame_despite_a_root_namesake() {
+        assert_eq!(
             rewrite_for_move(
                 "[x](shared.md)",
                 Rewriting::Referrer(Path::new("docs/sub")),
@@ -2028,11 +2078,9 @@ mod tests {
             )
             .unwrap()
             .content
-            .is_none(),
-            "literal binding to a different in-scope file must win over the relative frame"
+            .as_deref(),
+            Some("[x](renamed.md)")
         );
-        // Control: without the shadowing root file, the same relative
-        // link does bind the renamed file and is rewritten.
         assert_eq!(
             rewrite(
                 "[x](shared.md)",
@@ -2284,7 +2332,7 @@ mod tests {
         // one that changed what it names, because it did.
         let rewritten = rewrite_for_move(
             "[x](a.md)",
-            Rewriting::Referrer(Path::new("docs")),
+            Rewriting::Referrer(Path::new("")),
             Path::new("a.md"),
             Path::new("b.md"),
             Worlds {
@@ -2573,7 +2621,7 @@ mod tests {
         );
     }
 
-    // ─── rewrite_id_references ──────────────────────────────────────────
+    // ─── rewrite_references ──────────────────────────────────────────
 
     #[test]
     fn id_rewrite_repoints_wikilink_and_custom() {
@@ -2586,7 +2634,7 @@ mod tests {
             }],
             ..ParserConfig::default()
         };
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             "see [[old]] and @cite(old)",
             "old",
             "new",
@@ -2610,7 +2658,7 @@ mod tests {
             wikilink_enabled: true,
             ..ParserConfig::default()
         };
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             "para line\n    see [[old-id]] more\n",
             "old-id",
             "new-id",
@@ -2675,7 +2723,7 @@ mod tests {
             }],
             ..ParserConfig::default()
         };
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             "@cite( old-id )\n",
             "old-id",
             "new-id",
@@ -2705,7 +2753,7 @@ mod tests {
             }],
             ..ParserConfig::default()
         };
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             "old-id\nsee [[old-id]] too\n",
             "old-id",
             "---",
@@ -3534,7 +3582,7 @@ mod tests {
             }],
             ..ParserConfig::default()
         };
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             "see `@cite( old-id )`\n",
             "old-id",
             "new-id",
@@ -3629,7 +3677,7 @@ mod tests {
             ..ParserConfig::default()
         };
         assert_eq!(
-            rewrite_id_references(
+            rewrite_references(
                 "see [[old]]\n",
                 "old",
                 "new",
@@ -3662,7 +3710,7 @@ mod tests {
             ..ParserConfig::default()
         };
         assert!(
-            rewrite_id_references(
+            rewrite_references(
                 "old-id\nid: accidental\n---\nsee [[other]]\n",
                 "old-id",
                 "---",
@@ -3694,7 +3742,7 @@ mod tests {
             ..ParserConfig::default()
         };
         assert!(
-            rewrite_id_references(
+            rewrite_references(
                 "old-id\n\nsee [[other]]\n",
                 "old-id",
                 "~~~",
@@ -3726,7 +3774,7 @@ mod tests {
             ..ParserConfig::default()
         };
         assert!(
-            rewrite_id_references(
+            rewrite_references(
                 "cite `old-id`",
                 "old-id",
                 "new`id",
@@ -3756,7 +3804,7 @@ mod tests {
             }],
             ..ParserConfig::default()
         };
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             "see [[old]] and @cite(old)",
             "old",
             "paren)id",
@@ -3780,7 +3828,7 @@ mod tests {
         // `[[old-spec]]` must not match id `old` (substring), and prose `old`
         // is never a capture.
         assert!(
-            rewrite_id_references(
+            rewrite_references(
                 "[[old-spec]] and old in prose",
                 "old",
                 "new",
@@ -3805,7 +3853,7 @@ mod tests {
         p.extensions = vec![".md".into()];
         let scope: BTreeSet<String> = ["old.md".to_string()].into_iter().collect();
         assert!(
-            rewrite_id_references(
+            rewrite_references(
                 "see [[old]]",
                 "old",
                 "new",
@@ -3821,7 +3869,7 @@ mod tests {
         // With no file `old.md` in scope, the same wikilink is a genuine
         // id reference and is retargeted.
         assert_eq!(
-            rewrite_id_references(
+            rewrite_references(
                 "see [[old]]",
                 "old",
                 "new",
@@ -3850,7 +3898,7 @@ mod tests {
             ..ParserConfig::default()
         };
         let content = "cite `old-id`\nrun `use old-id here`\n```\n`old-id`\n```\nbare old-id\n";
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             content,
             "old-id",
             "new-id",
@@ -3874,7 +3922,7 @@ mod tests {
         // A wikilink inside an inline code span or a fenced block is a sample,
         // not a reference — a mutating rewrite must leave it alone.
         let content = "real [[old]]\n`[[old]]`\n```\n[[old]]\n```\n";
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             content,
             "old",
             "new",
@@ -3895,7 +3943,7 @@ mod tests {
         let mut p = parser();
         p.wikilink_enabled = true;
         let content = "---\nid: doc\nnote: \"[[old]]\"\n---\nBody [[old]].";
-        let out = rewrite_id_references(
+        let out = rewrite_references(
             content,
             "old",
             "new",
@@ -4376,7 +4424,7 @@ mod tests {
                     crate::parser::body::extract_links(body, &parser)
                         .into_iter()
                         .filter_map(|edge| {
-                            let named = binding(&edge.target_path, Path::new(""), world, &parser)?;
+                            let named = binding(edge.syntax, &edge.target_path, Path::new(""), world, &parser)?;
                             Some((edge.relation, named))
                         })
                         .collect()

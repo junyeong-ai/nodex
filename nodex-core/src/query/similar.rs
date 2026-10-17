@@ -147,7 +147,11 @@ pub fn compute_similarity(
         .map(String::as_str)
         .collect();
     let target_title_tokens = tokenize_title(target_view.title, &stop_words);
-    let target_tag_set: BTreeSet<String> = target_view.tags.iter().cloned().collect();
+    let target_tag_set: BTreeSet<String> = target_view
+        .tags
+        .iter()
+        .map(|tag| tag.to_lowercase())
+        .collect();
     // Pre-creation specs have no graph id → neighbour set is
     // undefined, not "empty". Track the distinction so the `linked`
     // component reports `None` instead of fabricating a 0.0.
@@ -176,7 +180,10 @@ pub fn compute_similarity(
         let title = jaccard(&target_title_tokens, &tokenize_title(&n.title, &stop_words));
         let tags = jaccard(
             &target_tag_set,
-            &n.tags.iter().cloned().collect::<BTreeSet<_>>(),
+            &n.tags
+                .iter()
+                .map(|tag| tag.to_lowercase())
+                .collect::<BTreeSet<_>>(),
         );
         let kind = kind_match(target_view.kind, n.kind.as_str());
         let directory = directory_match(target_view.parent_dir, n.path.as_path());
@@ -964,6 +971,7 @@ mod tests {
         }
         let edges = vec![
             Edge {
+                reference: None,
                 source: "a".to_string(),
                 target: ResolvedTarget::Resolved {
                     id: "c".to_string(),
@@ -972,6 +980,7 @@ mod tests {
                 location: "frontmatter:related".to_string(),
             },
             Edge {
+                reference: None,
                 source: "b".to_string(),
                 target: ResolvedTarget::Resolved {
                     id: "c".to_string(),

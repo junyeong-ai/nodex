@@ -315,6 +315,7 @@ pub(crate) fn parse_with_patterns(
     // 4. Generate edges from frontmatter relations
     for target in &node.supersedes {
         raw_edges.push(RawEdge {
+            syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "supersedes".to_string(),
             location: "frontmatter:supersedes".to_string(),
@@ -322,6 +323,7 @@ pub(crate) fn parse_with_patterns(
     }
     for target in &node.implements {
         raw_edges.push(RawEdge {
+            syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "implements".to_string(),
             location: "frontmatter:implements".to_string(),
@@ -329,6 +331,7 @@ pub(crate) fn parse_with_patterns(
     }
     for target in &node.related {
         raw_edges.push(RawEdge {
+            syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "related".to_string(),
             location: "frontmatter:related".to_string(),
@@ -340,6 +343,7 @@ pub(crate) fn parse_with_patterns(
     // by their relation tag.
     for target in &node.covers {
         raw_edges.push(RawEdge {
+            syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "covers".to_string(),
             location: "frontmatter:covers".to_string(),
@@ -387,11 +391,11 @@ mod tests {
             config.kinds.allowed = vec!["generic".into(), "spec".into()];
             config.statuses.allowed = vec!["active".into(), "draft".into(), "archived".into()];
             config.statuses.initial = Some("active".into());
-            config.statuses.flow = Some(StatusFlowConfig {
+            config.statuses.flow = vec![StatusFlowConfig {
                 kinds: flow_kinds.clone(),
                 initial: Some("draft".into()),
                 transitions: [("draft".to_string(), vec!["active".to_string()])].into(),
-            });
+            }];
             let parse = ParseConfig::new(&config);
             for (kind, status) in starts {
                 let content = format!("---\nid: p\ntitle: P\nkind: {kind}\n---\n# P\n");

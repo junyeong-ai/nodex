@@ -404,7 +404,7 @@ fn lock_steps(
                     steps: None,
                     today: ctx.today,
                 };
-                let verdict = rule.check(&reading).violations;
+                let verdict = rule.evaluate(&reading).violations;
                 permitted |= verdict.is_empty();
                 findings.extend(verdict);
             }
@@ -547,6 +547,25 @@ pub trait Rule: Send + Sync {
     fn id(&self) -> &str;
     fn severity(&self) -> Severity;
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun;
+
+    fn configured_severity(&self, config: &Config) -> Severity {
+        config
+            .rules
+            .severity
+            .get(self.id())
+            .copied()
+            .unwrap_or_else(|| self.severity())
+    }
+
+    /// Apply project policy before either a read or a write interprets findings.
+    fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleRun {
+        let mut run = self.check(ctx);
+        let severity = self.configured_severity(ctx.config);
+        for finding in &mut run.violations {
+            finding.severity = severity;
+        }
+        run
+    }
 
     /// The unit [`Rule::check`] counts into [`RuleRun::subjects`].
     /// Static per rule — a rule iterates one kind of thing.
@@ -702,7 +721,7 @@ fn rules_with_classification(
     rules.push(Box::new(superseded_reference::SupersededReferenceRule));
     // Both halves of the declared flow, or neither: a project that writes
     // no `statuses.flow` has no flow for a record to break.
-    if config.statuses.flow.is_some() {
+    if !config.statuses.flow.is_empty() {
         rules.push(Box::new(status_flow::StatusTransitionRule));
         rules.push(Box::new(status_flow::StatusEntryRule));
     }
@@ -731,12 +750,12 @@ fn rules_with_classification(
     for block in &config.rules.body_line {
         rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
     }
-    // One rule per error-severity `[[detection.unresolved_policy]]`
+    // One rule per non-info `[[detection.unresolved_policy]]`
     // row. The instances share one classification cell, so the cause
     // probes (stat-only, in-root) run once per check pass however many
-    // error rows the project declares.
+    // policy rows the project declares.
     for row in &config.detection.unresolved_policy {
-        if row.severity == crate::config::UnresolvedSeverity::Error {
+        if row.severity != crate::config::UnresolvedSeverity::Info {
             rules.push(Box::new(
                 unresolved_reference::UnresolvedReferenceRule::new(
                     row.clone(),
@@ -745,6 +764,9 @@ fn rules_with_classification(
             ));
         }
     }
+    rules.push(Box::new(
+        unresolved_reference::UnresolvedReferenceRule::fallback(classification),
+    ));
     // DAG cycle detection over the resolved edge graph. The relation
     // set is config-sourced (`rules.acyclic_relations`), validated
     // non-empty at load.
@@ -888,7 +910,7 @@ pub(crate) fn run_rules(
     let mut coverage: Vec<RuleCoverage> = Vec::new();
     for rule in &rules {
         if rule.is_applicable(&ctx) {
-            let run = rule.check(&ctx);
+            let run = rule.evaluate(&ctx);
             // A rule that found something looked at something. The reach and
             // the verdict are two readings of one pass, so a rule reporting
             // findings over an empty population has read the project in two

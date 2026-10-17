@@ -333,6 +333,7 @@ mod tests {
 
     fn edge(source: &str, target: &str, relation: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.to_string(),
             target: ResolvedTarget::resolved(target),
             relation: relation.to_string(),

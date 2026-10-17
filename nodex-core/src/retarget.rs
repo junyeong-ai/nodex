@@ -1,10 +1,7 @@
-//! Repointing references from one node id to another.
+//! Repointing references by resolved document identity.
 //!
-//! When a document is replaced (typically `lifecycle supersede`), other
-//! documents that referenced the old id should point at the successor.
-//! This rewrites those references — frontmatter relation fields and body
-//! id references — by *exact id match*: no prose heuristics, so an id that
-//! merely appears in running text is never touched.
+//! Frontmatter relations and parsed body references, including Markdown paths,
+//! are rewritten through the resolver. Prose mentions are outside this surface.
 
 use std::path::Path;
 
@@ -13,7 +10,7 @@ use crate::error::Result;
 use crate::model::Node;
 use crate::parser::editor::FrontmatterEditor;
 use crate::parser::frontmatter::split_frontmatter;
-use crate::reference_rewrite::rewrite_id_references;
+use crate::reference_rewrite::rewrite_references;
 
 /// The *list*-valued id-relation frontmatter fields retarget iterates.
 /// A narrower set than [`crate::model::edge::ID_RESOLVED_RELATIONS`] by
@@ -120,7 +117,7 @@ impl SelfEdges {
                 .filter(|field| relation_values(node, field).iter().any(|v| v == old_id))
                 .chain((node.superseded_by.as_deref() == Some(old_id)).then_some("superseded_by"))
                 .collect(),
-            body_references: crate::reference_rewrite::count_id_references(
+            body_references: crate::reference_rewrite::count_references(
                 content, old_id, source_dir, bound, parser,
             )
             .map_err(|source| crate::error::Error::Parse {
@@ -134,8 +131,8 @@ impl SelfEdges {
 /// Rewrite every reference to `old_id` in `content` so it names `new_id`.
 ///
 /// Covers the id-valued frontmatter relation fields (`supersedes`,
-/// `implements`, `related`, `superseded_by`) and body id references
-/// (wikilinks, custom patterns). The document whose own id is `new_id` is
+/// `implements`, `related`, `superseded_by`) and body references
+/// (Markdown paths, wikilinks and configured patterns). The document whose own id is `new_id` is
 /// never rewritten — a repoint does not rewrite the document it points at —
 /// and it is the one document that reports what it kept, in
 /// [`Retargeted::self_edges`].
@@ -175,7 +172,7 @@ pub fn retarget_document(
         .collect();
     let retarget_superseded_by = node.superseded_by.as_deref() == Some(old_id);
 
-    let body_rewrite = rewrite_id_references(content, old_id, new_id, source_dir, bound, parser)
+    let body_rewrite = rewrite_references(content, old_id, new_id, source_dir, bound, parser)
         .map_err(|source| crate::error::Error::Parse {
             path: node.path.clone(),
             source,
@@ -408,7 +405,7 @@ mod tests {
             &n,
             "spec-old",
             "spec-new",
-            &bound_of(&BTreeSet::new()),
+            &Bindings::of([(Path::new("old.md"), "spec-old")]),
             &wikilink_parser(),
         )
         .unwrap();
@@ -462,7 +459,7 @@ mod tests {
             &n,
             "spec-old",
             "spec-new",
-            &bound_of(&BTreeSet::new()),
+            &Bindings::of([(Path::new("old.md"), "spec-old")]),
             &parser,
         )
         .unwrap();

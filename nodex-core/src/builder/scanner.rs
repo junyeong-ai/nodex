@@ -1198,15 +1198,13 @@ fn walk_dir(
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let rel_str = crate::path_guard::forward_string(rel);
             let segments: Vec<&str> = rel_str.split('/').collect();
-            let metadata = std::fs::symlink_metadata(&path);
-            let linked = metadata
-                .as_ref()
-                .is_ok_and(|metadata| metadata.is_symlink());
+            let entry_type = entry.file_type();
+            let linked = entry_type.as_ref().is_ok_and(|kind| kind.is_symlink());
             // Unix non-symlink entries inherit their directory's real location.
             // Windows reparse points still require OS resolution.
-            let plain = cfg!(unix) && metadata.is_ok() && !linked;
-            let file_type = match metadata.as_ref() {
-                Ok(metadata) if plain => Some(metadata.file_type()),
+            let plain = cfg!(unix) && entry_type.is_ok() && !linked;
+            let file_type = match entry_type.as_ref() {
+                Ok(kind) if plain => Some(*kind),
                 _ => std::fs::metadata(&path)
                     .ok()
                     .map(|metadata| metadata.file_type()),
@@ -2505,11 +2503,14 @@ mod tests {
             config.statuses.allowed = vec!["active".to_string(), "archived".to_string()];
             config.statuses.terminal = vec!["archived".to_string()];
             config.statuses.initial = Some(initial.to_string());
-            config.statuses.flow = flow_initial.map(|entry| crate::config::StatusFlowConfig {
-                kinds: vec!["generic".to_string()],
-                initial: Some(entry.to_string()),
-                transitions: [("active".to_string(), vec!["archived".to_string()])].into(),
-            });
+            config.statuses.flow = flow_initial
+                .map(|entry| crate::config::StatusFlowConfig {
+                    kinds: vec!["generic".to_string()],
+                    initial: Some(entry.to_string()),
+                    transitions: [("active".to_string(), vec!["archived".to_string()])].into(),
+                })
+                .into_iter()
+                .collect();
             config.scope.conditional_exclude = vec![ConditionalExclude {
                 parent_glob: "*.md".to_string(),
                 child_glob: "*.notes.md".to_string(),

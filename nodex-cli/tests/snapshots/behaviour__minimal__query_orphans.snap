@@ -15,12 +15,14 @@ exit: 0
         "title": "Legacy note"
       }
     ],
-    "total": 1
+    "subjects": 3,
+    "total": 1,
+    "unjudged": 0
   },
   "ok": true,
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

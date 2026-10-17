@@ -184,6 +184,116 @@ pub fn deserialize_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PathBu
     Ok(PathBuf::from(s))
 }
 
+/// Document metadata for readers, independent of graph fingerprints.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NodeMetadata {
+    // === Identity ===
+    pub id: String,
+    #[serde(
+        serialize_with = "serialize_path_forward",
+        deserialize_with = "deserialize_path"
+    )]
+    #[schemars(with = "String")]
+    pub path: PathBuf,
+    pub title: String,
+    pub kind: Kind,
+
+    // === Lifecycle ===
+    pub status: Status,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewed: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+
+    // === Relations (from frontmatter) ===
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Source-code (or other out-of-graph) paths this document covers.
+    /// Each entry becomes an outgoing edge with relation `"covers"`;
+    /// the target stays [`crate::model::ResolvedTarget::Unresolved`]
+    /// by design because code paths sit outside the doc graph.
+    /// Consumed by `GitDriftRule` (drift signal against covered code)
+    /// and `nodex query covered-by` (reverse lookup).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
+
+    // === Flags ===
+    #[serde(default)]
+    pub orphan_ok: bool,
+
+    // === Extension point for project-specific frontmatter fields ===
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attrs: BTreeMap<String, serde_json::Value>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_issues: Vec<FieldParseIssue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferred_fields: Vec<String>,
+}
+
+impl From<&Node> for NodeMetadata {
+    fn from(node: &Node) -> Self {
+        let Node {
+            id,
+            path,
+            title,
+            kind,
+            status,
+            created,
+            updated,
+            reviewed,
+            owner,
+            supersedes,
+            superseded_by,
+            implements,
+            related,
+            tags,
+            covers,
+            orphan_ok,
+            attrs,
+            parse_issues,
+            inferred_fields,
+            body_hash: _,
+            body_lines_hash: _,
+            body_structure: _,
+            content_hash: _,
+        } = node;
+        Self {
+            id: id.clone(),
+            path: path.clone(),
+            title: title.clone(),
+            kind: kind.clone(),
+            status: status.clone(),
+            created: *created,
+            updated: *updated,
+            reviewed: *reviewed,
+            owner: owner.clone(),
+            supersedes: supersedes.clone(),
+            superseded_by: superseded_by.clone(),
+            implements: implements.clone(),
+            related: related.clone(),
+            tags: tags.clone(),
+            covers: covers.clone(),
+            orphan_ok: *orphan_ok,
+            attrs: attrs.clone(),
+            parse_issues: parse_issues.clone(),
+            inferred_fields: inferred_fields.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
