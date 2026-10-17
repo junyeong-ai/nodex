@@ -87,9 +87,9 @@ impl Rule for FrontmatterImmutableRule {
     }
 
     fn description(&self) -> &str {
-        "Listed frontmatter fields are immutable once the block's trigger engages — \
+        "Selected frontmatter fields are immutable once the block's trigger engages — \
          `terminal` locks at terminal status, `status` at the statuses the block names, \
-         `creation` from the document's first committed snapshot; needs a diff context \
+         `creation` at every status in the before snapshot; needs a diff context \
          from `--since <ref>` or `rules.immutable_baseline`"
     }
 
@@ -100,6 +100,7 @@ impl Rule for FrontmatterImmutableRule {
     fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("fields".into(), json!(self.config.fields));
+        m.insert("except".into(), json!(self.config.except));
         m.insert(
             "trigger".into(),
             json!(match self.config.trigger {
@@ -121,8 +122,8 @@ impl Rule for FrontmatterImmutableRule {
         true
     }
 
-    fn judges_steps(&self) -> bool {
-        true
+    fn judges_steps(&self, config: &crate::config::Config) -> bool {
+        config.rules.immutable_history == crate::config::ImmutableHistory::Steps
     }
 
     fn touched_by(
@@ -154,8 +155,6 @@ impl Rule for FrontmatterImmutableRule {
         let Some(diff) = ctx.since else {
             return RuleRun::clean(0);
         };
-        let locked: std::collections::BTreeSet<&str> =
-            self.config.fields.iter().map(String::as_str).collect();
 
         // The records the lock is armed over — every one whose fields it
         // would refuse an edit to, not the few whose fields moved this run.
@@ -182,7 +181,7 @@ impl Rule for FrontmatterImmutableRule {
         // kind the node held before the edit, which is what lets a block
         // lock `kind` itself.
         for change in &diff.field_changes {
-            if !locked.contains(change.field.as_str()) {
+            if !self.config.locks_field(&change.field) {
                 continue;
             }
             let Some(node) = ctx.graph.node(&change.id) else {
@@ -230,7 +229,7 @@ impl Rule for FrontmatterImmutableRule {
         // legitimate one and is allowed. Here `from` and `to` are the move
         // itself rather than the arming, so they are reported whatever the
         // trigger, and the trigger says which of them answers for the lock.
-        if locked.contains("status") {
+        if self.config.locks_field("status") {
             for transition in &diff.status_transitions {
                 let Some(node) = ctx.graph.node(&transition.id) else {
                     continue;
@@ -263,7 +262,9 @@ impl Rule for FrontmatterImmutableRule {
             RuleRun::new(subjects.len(), violations).unjudged(unjudged.len()),
             super::LockMerge::ChooseRevision,
             |before, after| {
-                crate::diff::same_frontmatter_fields(before, after, &self.config.fields)
+                crate::diff::same_frontmatter_fields(before, after, |field| {
+                    self.config.locks_field(field)
+                })
             },
         )
     }
@@ -325,6 +326,7 @@ mod tests {
     fn block(name: &str, fields: Vec<&str>) -> FrontmatterImmutableRuleConfig {
         FrontmatterImmutableRuleConfig {
             name: name.into(),
+            except: Vec::new(),
             fields: fields.into_iter().map(String::from).collect(),
             trigger: ImmutableTrigger::Terminal,
             kinds: vec![],
@@ -449,7 +451,7 @@ mod tests {
 
     #[test]
     fn multi_block_each_fires_for_its_own_fields() {
-        // Two blocks: one locks identity (`id`), another locks
+        // Two blocks: one locks ownership (`owner`), another locks
         // `decision_date` for ADR-kind only. Both must report under
         // distinct rule_ids.
         let mut c = cfg();
@@ -458,9 +460,10 @@ mod tests {
             .types
             .insert("decision_date".into(), crate::config::FieldType::Date);
         c.rules.frontmatter_immutable = vec![
-            block("identity", vec!["id"]),
+            block("ownership", vec!["owner"]),
             FrontmatterImmutableRuleConfig {
                 name: "adr-decision-date".into(),
+                except: Vec::new(),
                 fields: vec!["decision_date".into()],
                 trigger: ImmutableTrigger::Terminal,
                 kinds: vec!["adr".into()],
@@ -469,16 +472,16 @@ mod tests {
         ];
         let g = build_graph(vec![make_node("a", "superseded", "adr")]);
         let d = diff_with(vec![
-            field_change("a", "id"),
+            field_change("a", "owner"),
             field_change("a", "decision_date"),
         ]);
 
-        let identity = FrontmatterImmutableRule::new(c.rules.frontmatter_immutable[0].clone());
+        let owner = FrontmatterImmutableRule::new(c.rules.frontmatter_immutable[0].clone());
         let date = FrontmatterImmutableRule::new(c.rules.frontmatter_immutable[1].clone());
-        let identity_v = identity.check(&ctx(&g, &c, Some(&d))).violations;
+        let owner_v = owner.check(&ctx(&g, &c, Some(&d))).violations;
         let date_v = date.check(&ctx(&g, &c, Some(&d))).violations;
-        assert_eq!(identity_v.len(), 1);
-        assert_eq!(identity_v[0].rule_id, "frontmatter_immutable/identity");
+        assert_eq!(owner_v.len(), 1);
+        assert_eq!(owner_v[0].rule_id, "frontmatter_immutable/ownership");
         assert_eq!(date_v.len(), 1);
         assert_eq!(date_v[0].rule_id, "frontmatter_immutable/adr-decision-date");
     }
@@ -592,6 +595,7 @@ mod tests {
         c.kinds.allowed.push("runbook".into());
         c.rules.frontmatter_immutable = vec![FrontmatterImmutableRuleConfig {
             name: "identity".into(),
+            except: Vec::new(),
             fields: vec!["status".into()],
             trigger: ImmutableTrigger::Terminal,
             kinds: vec!["adr".into()],
@@ -623,6 +627,7 @@ mod tests {
         c.statuses.allowed = vec!["proposed".into(), "active".into(), "superseded".into()];
         c.rules.frontmatter_immutable = vec![FrontmatterImmutableRuleConfig {
             name: "identity".into(),
+            except: Vec::new(),
             fields: fields.into_iter().map(String::from).collect(),
             trigger,
             kinds: vec![],

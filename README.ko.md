@@ -345,6 +345,8 @@ Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석한다. W
 
 0.55의 스캔 진단은 건너뛴 트리 대신 실제 도달한 항목을 보고합니다. 업그레이드 후 스냅샷을 재빌드하세요. 문서 선택 범위는 유지됩니다.
 
+0.56에서는 설정한 `rules.immutable_baseline`이 `--since`와 내용 제안에도 적용됩니다. `--since`는 잠금 기준을 바꾸지 않고 보고·이력 범위를 정합니다. 제안 대상의 기존 잠금 위반은 거절하고, 상태 전이는 새로 도입한 위반을 판정합니다. 브랜치 내부 수정을 허용하려면 `immutable_history = "snapshot"`, 공통 조상을 기준으로 삼으려면 `immutable_baseline_mode = "merge_base"`를 선택하세요.
+
 ## 동작 원리
 
 ### Build 파이프라인
@@ -672,22 +674,35 @@ transitions = { proposed = ["active"], active = ["superseded", "archived"] }
 
 flow 는 자신이 **이름 붙인** status 에 대해서만 답한다: terminal 인 것에는 나갈 길이 없고 나머지마다 나갈 길이 있으며, 각각이 진입점에서 도달 가능하며, 지배하는 모든 kind 가 그 status 를 허용해야 한다(합집합이 아니라 kind 별로 확인). 어떤 flow 도 이름 붙이지 않고 지배받지 않는 kind 도 가질 수 없는 status 는, 어떤 문서도 가질 수 없는 어휘로서 로드 시점에 거부된다.
 
-두 rule 은 `rules.immutable_baseline` 이 아니라 git 이력을 한 걸음씩 판정한다: 모든 `check`·`query issues`·write seam 은 커밋되지 않은 변경 — `check --staged` 에서는 stage 된 변경 — 을 `HEAD` 에 (merge 진행 중이면 모든 `MERGE_HEAD` 에도) 대고 판정하고, `check --since <ref>` 는 여기에 더해 head 들이 도달하고 `<ref>` 는 도달하지 않는 커밋 각각을 그 부모들에 대고 판정한다. 그래서 구간의 판정은 현재 config 기준으로 각 커밋에 게이트를 걸었을 때의 판정과 같다 — `proposed` 로 작성하고 다음 커밋에서 승인한 레코드는 통과하고, 선언되지 않은 status 를 거친 우회는 그 걸음을 만든 커밋에서 보고된다(`details.commit`; 커밋되지 않은 변경이면 없음). 걸음의 발견은 커밋에 대한 것이므로 일반 `check` 는 이력을 다시 판정하지 않는다. `check --content` 는 커밋이 아닌 작업 트리에 대고 제안을 판정하므로 두 rule 을 skipped 로 보고하고, git 작업 트리 밖에서도 두 rule 은 skip 한다. node 는 곧 id 이므로, 어느 부모에서도 flow 가 지배하지 않던 레코드는 경위와 무관하게 flow 에 *진입*한다 — 작성, 경로에서 유도된 id 로의 이동, id 변경, 지배받는 kind 로의 변경, 복원. `nodex rename` 은 이동된 문서에 id 를 고정해 보존하므로 진입이 발생하지 않는다. 한 걸음을 모호하지 않게 읽을 수 없으면 — 공통 커밋이 없는 갈래, shallow clone 이 가져오지 않은 이력, 빌드가 트리를 거부하는 커밋 등 — 그 레코드는 판정하지 않고 `unjudged` 로 세며, 뒤의 둘은 `history_unread` 경고가 알린다. squash merge 는 레코드를 승인된 status 로 진입시키므로 squash merge 저장소는 승인을 별도 PR 로 올리고, shallow clone 이 담지 못한 `--since` 구간은 거부된다(`GIT_ERROR`) — 이력을 가져오면 된다(`fetch-depth: 0`). merge·parse 되지 않는 문서·git 이 무시하는 경로·amend 한 커밋을 어떻게 판정하는지와 실행마다 드는 비용은 [`reference/config.md` § Status flow](.claude/skills/nodex/reference/config.md#status-flow)(영문)에 있다. 각 flow는 서로 겹치지 않는 kind를 지배하며 중복 모집단은 설정 로드에서 거부한다.
+두 rule 은 `rules.immutable_baseline` 이 아니라 git 이력을 한 걸음씩 판정한다: 모든 `check`·`query issues`·write seam 은 커밋되지 않은 변경 — `check --staged` 에서는 stage 된 변경 — 을 `HEAD` 에 (merge 진행 중이면 모든 `MERGE_HEAD` 에도) 대고 판정하고, `check --since <ref>` 는 여기에 더해 head 들이 도달하고 `<ref>` 는 도달하지 않는 커밋 각각을 그 부모들에 대고 판정한다. 그래서 구간의 판정은 현재 config 기준으로 각 커밋에 게이트를 걸었을 때의 판정과 같다 — `proposed` 로 작성하고 다음 커밋에서 승인한 레코드는 통과하고, 선언되지 않은 status 를 거친 우회는 그 걸음을 만든 커밋에서 보고된다(`details.commit`; 커밋되지 않은 변경이면 없음). 걸음의 발견은 커밋에 대한 것이므로 일반 `check` 는 이력을 다시 판정하지 않는다. `check --content`도 제안한 내용이 커밋될 단계를 판정하며, git 작업 트리 밖에서는 두 rule이 skip한다. node 는 곧 id 이므로, 어느 부모에서도 flow 가 지배하지 않던 레코드는 경위와 무관하게 flow 에 *진입*한다 — 작성, 경로에서 유도된 id 로의 이동, id 변경, 지배받는 kind 로의 변경, 복원. `nodex rename` 은 이동된 문서에 id 를 고정해 보존하므로 진입이 발생하지 않는다. 한 걸음을 모호하지 않게 읽을 수 없으면 — 공통 커밋이 없는 갈래, shallow clone 이 가져오지 않은 이력, 빌드가 트리를 거부하는 커밋 등 — 그 레코드는 판정하지 않고 `unjudged` 로 세며, 뒤의 둘은 `history_unread` 경고가 알린다. squash merge 는 레코드를 승인된 status 로 진입시키므로 squash merge 저장소는 승인을 별도 PR 로 올리고, shallow clone 이 담지 못한 `--since` 구간은 거부된다(`GIT_ERROR`) — 이력을 가져오면 된다(`fetch-depth: 0`). merge·parse 되지 않는 문서·git 이 무시하는 경로·amend 한 커밋을 어떻게 판정하는지와 실행마다 드는 비용은 [`reference/config.md` § Status flow](.claude/skills/nodex/reference/config.md#status-flow)(영문)에 있다. 각 flow는 서로 겹치지 않는 kind를 지배하며 중복 모집단은 설정 로드에서 거부한다.
 
 `supersede` 만 별도 액션 — superseding 은 successor + supersession-DAG 안전성 검사라는 구조적 페이로드를 동반하기 때문. 그 외 모든 status 전이는 범용 `set` 으로 처리되며, target 은 write seam 에서 해당 kind 의 vocabulary(per-kind `status` enum 이 있으면 그것, 없으면 전역 `[statuses].allowed`)에 대해 검증된다 — `deprecated` 를 모델링하지 않는 프로젝트는 그저 허용하지 않으면 되고, `set --status deprecated` 가 write seam 에서 거부될 뿐 vocabulary 가 강제되지 않는다. `set` 은 `cross_field` 규칙이 요구하는 필드가 없는 status(예: `superseded_by` 가 필요한 `superseded` — 이는 `supersede` 의 몫)도 거부하므로, 도구가 자기 `check` 가 거부할 문서를 쓰는 일은 없다. terminal status 는 여전히 이탈이 거부되어 `set` 으로 un-terminalize 불가; `review` 는 status 를 바꾸지 않는 유일한 액션.
 
 ### Diff-aware 검증
 
-`nodex check --since <ref>` 는 named ref 시점의 그래프를 빌드하고, 구조 diff 를 계산해, 보고서를 그 diff 가 책임지는 finding 으로 좁힌 뒤, 두 스냅샷 의미가 필요한 룰을 활성화합니다. 어떤 finding 을 diff 가 책임지는지는 각 rule 이 답합니다(`Rule::touched_by`): 기본은 finding 의 문서 자체가 diff 가 건드린 레코드인 경우 — 추가·삭제·변경되었거나, 그 문서가 작성한 edge/annotation 이 움직인 경우 — 이고 neighbour 확장은 없습니다; 다른 문서의 레코드가 finding 을 결정하는 rule 은 넓힙니다: `orphan` 은 자신을 향한 포인터가 움직인 문서까지 — 추가·삭제된 edge, 또는 선행 문서의 `superseded_by` — (이웃의 편집으로 고아가 된 문서는 보고되고, 기존 고아는 diff 가 그 문서 자체의 레코드를 건드렸을 때만 보고됨), `superseded_reference` 는 인용된 문서와 그 후계 문서들의 레코드나 그 문서들을 향한 포인터가 움직인 경우까지 (그 문서들의 terminal 전환이나 대체 선언이 기존 인용을 낡게 만드는 편집이므로), `git_drift` 는 읽기 자체가 git 의 것이라, `<ref>..HEAD` 커밋이 그 읽기에 세어지는 커밋을 — 측정 대상 문서든 그래프 밖 covered 코드 경로든 — 추가했을 때 finding 을 유지; node-less 인 프로젝트 전역 finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) 은 항상 유지되고, `status_transition` / `status_entry` finding 은 각각 범위 안의 한 걸음에 대한 것이므로 범위가 나중에 되돌린 이동까지 모두 유지됩니다. `rule_coverage` 는 좁혀지지 않습니다 — rule 은 어떤 slice 를 보여주든 guard 하는 것을 guard 합니다. 두 스냅샷이 필요한 룰:
+`nodex check --since <ref>`는 지정한 ref의 그래프와 구조 diff를 계산해 보고 범위를 좁힙니다. `rules.immutable_baseline`이 설정되어 있으면 잠금은 그 기준을 유지하고, 설정이 없을 때만 지정 ref가 잠금 기준도 제공합니다. 어떤 finding 을 diff 가 책임지는지는 각 rule 이 답합니다(`Rule::touched_by`): 기본은 finding 의 문서 자체가 diff 가 건드린 레코드인 경우 — 추가·삭제·변경되었거나, 그 문서가 작성한 edge/annotation 이 움직인 경우 — 이고 neighbour 확장은 없습니다; 다른 문서의 레코드가 finding 을 결정하는 rule 은 넓힙니다: `orphan` 은 자신을 향한 포인터가 움직인 문서까지 — 추가·삭제된 edge, 또는 선행 문서의 `superseded_by` — (이웃의 편집으로 고아가 된 문서는 보고되고, 기존 고아는 diff 가 그 문서 자체의 레코드를 건드렸을 때만 보고됨), `superseded_reference` 는 인용된 문서와 그 후계 문서들의 레코드나 그 문서들을 향한 포인터가 움직인 경우까지 (그 문서들의 terminal 전환이나 대체 선언이 기존 인용을 낡게 만드는 편집이므로), `git_drift` 는 읽기 자체가 git 의 것이라, `<ref>..HEAD` 커밋이 그 읽기에 세어지는 커밋을 — 측정 대상 문서든 그래프 밖 covered 코드 경로든 — 추가했을 때 finding 을 유지; node-less 인 프로젝트 전역 finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) 은 항상 유지되고, `status_transition` / `status_entry` finding 은 각각 범위 안의 한 걸음에 대한 것이므로 범위가 나중에 되돌린 이동까지 모두 유지됩니다. `rule_coverage` 는 좁혀지지 않습니다 — rule 은 어떤 slice 를 보여주든 guard 하는 것을 guard 합니다. 두 스냅샷이 필요한 룰:
 
 - `frontmatter_immutable/<name>` — 블록의 `trigger` 가 이미 무장한 문서의 필드 동결(잠금을 처음 무장시키는 write 는 허용; before-status 기준). `id` 는 무장한 잠금이 자동으로 보호하므로 fields 에서 거부, 잠근 `status` 는 diff 의 status 전이에서 읽음. 다중 블록 지원, 각 블록은 unique `name` + `fields` + `trigger` + 선택적 `kinds` 필터. `kind` 를 잠그는 것이 그 기록이 어느 lifecycle 을 따르는지를 확정하는 방법 — kind 로 범위를 정하는 모든 룰이 `kind` 를 먼저 읽는데 `terminal` 은 기록이 끝난 뒤에야 그것을 확정하므로, registry 성격의 블록은 `creation` 이나 `status` 를 쓴다. `kinds` 필터도 before frame 으로 읽으므로, 기록을 블록의 kind 밖으로 내보내는 write 는 그 기록을 들고 있던 블록이 판정한다.
 - `body_immutable/<name>` — body 잠금. `mode = "frozen"` 은 어떤 body 편집도 거부; `mode = "append_only"` 는 locked body 가 새 body 의 prefix 로 유지될 것을 요구. `append_section = "## Corrections"` 는 그 증가를 이 헤딩이 여는 절 안으로 한정 — 덧붙인 줄 중 빈 줄이 아닌 것은 모두 그 절 안에 있어야 하고, 그 절 뒤에 같은 수준 이상의 헤딩이 오면 안 되며, 커밋된 참조가 해석되는 링크 참조 정의에 덧붙인 줄이 속해서도 안 되므로, 동결된 기록은 교정을 받되 그 위에 커밋된 내용은 전과 같이 읽힘. 헤딩은 마크다운 파서가 읽은 수준과 텍스트로 비교하므로 코드·인용·목록 안의 헤딩은 절을 열지 않음. `details.refusal` 이 되돌릴 대상을 알려 줌: `rewritten`, `outside_section`, `redefines_reference`. `trigger` 는 위와 같이 읽는다: `creation` 은 status 와 무관하게 이전 커밋 스냅샷이 존재하는 순간부터 body 를 동결 — 생성 커밋은 구조적으로 면제되고, frontmatter (`status` 포함) 는 supersession 을 위해 계속 편집 가능. 빌드 시 계산된 per-node body fingerprint (whole-body SHA-256 + per-line hash vector + 최상위 절 목록과 해석된 참조 정의) 로 구동 — check 시점 파일 재읽기 없음.
 
 병합에서는 보호하는 필드나 본문을 비교하므로 무관한 편집이나 파일 이동이 잠금 판단을 바꾸지 않는다. Frozen 병합의 step 판정은 독립적으로 잠긴 리비전 중 하나를 허용하며, 결과는 endpoint 비교에 사용한 잠긴 baseline도 만족해야 한다. Append-only 잠금은 적용 대상인 모든 잠긴 부모의 본문을 접두부로 보존해야 한다. 잠기지 않은 부모로 잠긴 리비전을 대체할 수 없다.
 
-잠금은 `--since` 의 각 커밋과 커밋되지 않은 변경도 판정합니다. 범위 안에서 승인된 기록은 이후 걸음부터 잠기며, 위반을 원복해도 해당 커밋의 finding 은 유지됩니다(`details.commit`). 기존 ID 가 다른 경로에도 남아 있지 않은 상태에서 무장한 기록의 ID 를 같은 경로에서 교체하면 거부합니다. ID 를 유지한 이동과 문서 범위에서 경로가 사라진 경우를 ID 변경으로 추정하지 않습니다.
+기본 `immutable_history = "steps"` 정책에서 잠금은 `--since`의 각 커밋과 커밋되지 않은 변경도 판정합니다. 범위 안에서 승인된 기록은 이후 걸음부터 잠기며, 위반을 원복해도 해당 커밋의 finding 은 유지됩니다(`details.commit`). 기존 ID 가 다른 경로에도 남아 있지 않은 상태에서 무장한 기록의 ID 를 같은 경로에서 교체하면 거부합니다. ID 를 유지한 이동과 문서 범위에서 경로가 사라진 경우를 ID 변경으로 추정하지 않습니다.
 
-두 패밀리는 같은 `trigger` 로 잠금 발동 시점을 고르고, 그것을 diff 의 *이전* frame 으로 읽으므로 잠금을 처음 무장시키는 단 한 번의 write 는 같은 편집에서 그 잠금이 덮는 것을 설정할 수 있다: `terminal` (기본) 은 `[statuses].terminal` 의 모든 status 에서, `status` 는 블록이 `statuses = [...]` 로 지정한 status 에서, `creation` 은 기록의 첫 커밋 스냅샷부터 모든 status 에서 무장한다. `[statuses].terminal` 로 status 를 옮겨 흉내내지 말고 `status` 를 쓸 것 — 그 단어는 `statuses.flow` 검증·`conditional_exclude`·trust 점수·`terminal` trigger·lifecycle seam·`git_drift`·orphan 과 stale 탐지·`superseded_reference`·`GRAPH.md` 보고가 함께 읽으므로, 그 단어로 잠금을 무장시키면 그 모두에게 그 기록이 끝났다고 선언하는 셈이고, 그 status 에서 나가는 이동을 선언한 flow 는 동작이 달라지는 대신 아예 로드되지 않는다. `[[statuses.flow]]` 가 그 블록이 잠그는 kind 를 지배하면 로드 시점에 무장에 대해 두 가지를 증명한다: 선언된 어떤 전이도 무장을 벗어나지 않으므로 status 편집으로 잠금을 풀 수 없고, 블록이 `status` 자체를 잠그는 경우 선언된 어떤 전이도 무장된 동안 문서를 움직이지 않으므로 잠금이 flow 가 합법이라 한 이동을 거부하는 일이 없다.
+기준 선택과 이력 검사 정책은 독립적으로 설정합니다.
+
+```toml
+[rules]
+immutable_baseline = "origin/main"
+immutable_baseline_mode = "merge_base" # 기본: "ref", 지정한 커밋 자체
+immutable_history = "snapshot"       # 기본: "steps", 각 커밋 단계도 검사
+```
+
+`snapshot`은 기준에 이미 잠긴 기록만 보호합니다. 브랜치에서 새로 작성하거나 확정한 기록은 기준에 포함될 때까지 수정할 수 있습니다. Append-only는 기준의 접두부를 보존하므로 브랜치에서만 추가한 정정 내용도 수정할 수 있습니다. 일반 검사·staged·제안·issues·쓰기는 같은 기준을 사용하며, `--since`는 설정된 잠금 기준을 바꾸지 않고 보고 범위와 검사할 이력 구간을 정합니다. Merge base가 없거나 여러 개이거나 필요한 이력을 읽을 수 없으면 거절합니다. 두 비기본 설정 모두 명시적인 `immutable_baseline`이 필요합니다. 기준 ref가 검사 대상 커밋까지 포함한 뒤에는 깨끗한 작업 트리를 자기 자신과 비교하므로, 통합된 변경을 감사하려면 이전 기준 SHA를 지정해야 합니다. 상태 전이 규칙은 계속 커밋 단계별로 검사합니다.
+
+`frontmatter_immutable`의 `fields = ["*"]`와 `except = ["status", "superseded_by", "covers"]`는 예외를 제외한 모든 frontmatter 필드를 보호합니다. 나중에 추가한 사용자 필드의 추가·삭제·의미 값 변경도 포함하며 ID는 구조적으로 계속 보호합니다. 자세한 계약은 [설정 레퍼런스](.claude/skills/nodex/reference/config.md#diff-aware-rules)에 있습니다.
+
+두 패밀리는 같은 `trigger` 로 잠금 발동 시점을 고르고, 그것을 diff 의 *이전* frame 으로 읽으므로 잠금을 처음 무장시키는 단 한 번의 write 는 같은 편집에서 그 잠금이 덮는 것을 설정할 수 있다: `terminal` (기본) 은 `[statuses].terminal` 의 모든 status 에서, `status` 는 블록이 `statuses = [...]` 로 지정한 status 에서, `creation`은 비교하는 이전 스냅샷의 모든 status에서 무장한다. `[statuses].terminal` 로 status 를 옮겨 흉내내지 말고 `status` 를 쓸 것 — 그 단어는 `statuses.flow` 검증·`conditional_exclude`·trust 점수·`terminal` trigger·lifecycle seam·`git_drift`·orphan 과 stale 탐지·`superseded_reference`·`GRAPH.md` 보고가 함께 읽으므로, 그 단어로 잠금을 무장시키면 그 모두에게 그 기록이 끝났다고 선언하는 셈이고, 그 status 에서 나가는 이동을 선언한 flow 는 동작이 달라지는 대신 아예 로드되지 않는다. `[[statuses.flow]]` 가 그 블록이 잠그는 kind 를 지배하면 로드 시점에 무장에 대해 두 가지를 증명한다: 선언된 어떤 전이도 무장을 벗어나지 않으므로 status 편집으로 잠금을 풀 수 없고, 블록이 `status` 자체를 잠그는 경우 선언된 어떤 전이도 무장된 동안 문서를 움직이지 않으므로 잠금이 flow 가 합법이라 한 이동을 거부하는 일이 없다.
 
 diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 
@@ -697,7 +712,7 @@ git 기반 기능 — immutability baseline, `git_drift`, status flow rule, `dif
 
 상속된 `GIT_DIR` / `GIT_WORK_TREE` 는 의도적으로 무시한다: 측정 대상 저장소는 프로젝트의 위치가 결정하므로, 환경변수로만 지정된 저장소(bare 저장소 dotfiles 패턴)는 보이지 않고 nodex 는 "work tree 없음"으로 보고한다 — 지시받은 저장소를 대신 측정하지 않는다. 반면 *탐색 범위만* 제한하는 변수(`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`)는 다른 저장소를 고를 수 없으므로 건드리지 않는다.
 
-잠금이 engage 할 수 없을 때 — 프로젝트가 git work tree 안에 없거나, baseline ref 가 프로젝트에 대해 아무것도 담고 있지 않을 때 — 실행은 계속되며 그 사실을 밝힌다: `warnings` 에 조건을 명시한 `baseline_inert` advisory 가 실리고 diff-aware 룰은 `skipped_rules` 에 나타난다. 이 advisory 는 문서를 쓰는 명령(`scaffold`, `lifecycle`, `rename`, `retarget`, `migrate --apply`)에도 함께 실리므로, 설정된 잠금이 강제되지 않은 write 가 깨끗한 실행처럼 읽히는 일은 없다. git 이 아예 해석하지 못하는 baseline ref 는 다른 경우다: 룰이 발화할 수도, 강제될 수도 없으므로 **양쪽 평면 모두** `CONFIG_ERROR` 로 거부한다 — 한쪽은 경고하고 다른 쪽은 쓰는 일이 없도록. 어떤 ref 도 커밋을 가리키지 않는 저장소는 이에 해당하지 않는다 — 거기서는 baseline 이 가리킬 스냅샷 자체가 없으므로 inert 로 남고, 첫 커밋 전에도 scaffold 가 가능하다.
+기본 ref/steps 정책에서는 Git 작업 트리 밖이거나 커밋이 없는 저장소일 때 `baseline_inert`를 보고합니다. snapshot 또는 merge-base 정책은 이 상태를 거절합니다. 선택한 커밋에 프로젝트가 없는 경우는 두 정책 모두 inert로 보고합니다. 검사와 쓰기에 경고가 함께 실리며 diff-aware 룰은 `skipped_rules`로 나타납니다. 해석할 수 없는 기준 ref는 읽기와 쓰기 모두 `CONFIG_ERROR`로 거절합니다.
 
 
 ### 쓰기시점 검증
@@ -708,7 +723,7 @@ nodex check --content docs/a.md=draft.md                     # …또는 파일�
 nodex check --content docs/a.md=- --content docs/b.md=b.md   # 배치: N개 제안을 한 빌드로
 ```
 
-`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 하나의 결합된 제안으로 판정한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 모든 룰 — schema, cross-field, diff-aware immutability 잠금 — 을 양쪽에 대해 실행해 정확한 before/after 차이만 보고한다: 제안 없이도 이미 존재하는 위반은 절대 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이고 drift 히스토리는 참조만 하므로, 쓰기시점 검증은 출력 디렉터리에 아무것도 쓰지 않는다(`cache.json` 도 `history.json` 도). 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since`, `--staged` 와 상호 배타적이다.
+`check --content <path>=<source>` 는 문서의 **제안된**(아직 쓰지 않은) 내용을 쓰기 전에 검증한다(`<source>` 는 `-`=stdin 또는 파일 경로). 플래그는 반복 가능하며, 모든 제안을 **하나의** 그래프 빌드에 오버레이하므로 한 제안이 작성한 참조가 같은 배치의 다른 제안에 대해 해소된다 — N개 referrer 를 함께 재작성하는 `supersede` 가, 한 번에 하나씩 검사하면 여전히 dangling 으로 보고될 링크를 하나의 결합된 제안으로 판정한다. nodex 는 워킹 트리 그래프와 제안을 오버레이한 그래프를 각각 빌드하고, 일반 룰은 before/after 차이로 판정한다. 잠금은 실제 쓰기와 같은 설정 기준으로 제안된 문서를 절대 판정하며 기존 잠금 위반도 거절한다. 상태 전이는 제안이 커밋될 단계를 판정한다. 일반 룰에서 제안 없이도 이미 존재하는 위반은 제안을 거부하지 않고, 오버레이가 *도입* 하는 위반 — 제안된 문서에서든, 영향을 받는 다른 노드에서든, 자기 노드를 파괴하는 제안의 node 없는 `parse_failure` 든 — 이 exit 1 로 게이트를 red 시킨다. 제안 파일은 디스크에 아직 없어도 되고, scope 밖 경로는 공허하게 clean 하며 검증한 것이 없다고 경고한다(쓰기 게이트가 빗나간 경로에서 조용히 통과하지 않도록). 두 빌드 모두 읽기 전용이고 drift 히스토리는 참조만 하므로, 쓰기시점 검증은 출력 디렉터리에 아무것도 쓰지 않는다(`cache.json` 도 `history.json` 도). 결과의 `proposals` 배열은 pair 마다 `{path, in_scope, has_path_errors}` 판정을 담고(`has_path_errors` 는 해당 제안 자신의 경로에 귀속된 위반만 반영하며, 실행 전체의 게이트 판정은 최상위 `has_errors`), 모든 위반은 타입화된 `details` 페이로드를 함께 싣는다. stdin 은 최대 하나, 경로는 한 번만, `--since`, `--staged` 와 상호 배타적이다.
 
 파일을 편집하는 에이전트의 자연스러운 게이트: *before* 스냅샷은 현재 디스크 상태(오래된 커밋 ref 가 아님)이므로, 문서를 active 로 커밋한 뒤 terminal 이 된 후에 편집하는 식으로 immutability 잠금을 세탁할 수 없다.
 
@@ -732,7 +747,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.55, <0.56"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.56, <0.57"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -862,7 +877,7 @@ fields = ["superseded_by"]
 # (예: "## Corrections") 은 그 증가를 이 헤딩이 여는 마지막 절로 한정.
 # `trigger` 는 위와 같이 읽는다 — 두 잠금 패밀리가 공유한다:
 # "terminal"(기본), 블록 자신의 `statuses = [...]` 를 쓰는 "status",
-# 첫 커밋 스냅샷부터인 "creation".
+# 이전 스냅샷의 모든 status에서 발동하는 "creation".
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
@@ -1010,7 +1025,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[scaffold.paths]` | kind별 명시적 생성 경로 템플릿. `--path`로 직접 지정 가능 |
 | `[identity]` | `kind_rules` + `id_rules` (template: `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
 | `[parser]` | 커스텀 `link_patterns` (각각 `relation` 과 선택적 `code_spans` 를 가짐), `extensions` (문서로 인정되는 링크 대상 확장자, 선행 점 포함), `wikilink_enabled` (`[[id]]` 본문 문법, 기본 off) |
-| `[rules]` | `immutable_baseline` (plain `check` 가 diff 할 ref; `nodex init` 은 `"HEAD"` 를 씀) + `acyclic_relations` (기본 `["implements"]`) + `naming` 패턴 + `frontmatter_immutable` (필드 잠금) + `body_immutable` (body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사); 두 잠금 모두 `trigger` = `terminal` / `status` / `creation` 으로 발동 시점 선택 |
+| `[rules]` | `immutable_baseline` (공통 잠금 기준 ref; `nodex init`은 `"HEAD"`를 씀), `immutable_baseline_mode` (`ref` / `merge_base`), `immutable_history` (`steps` / `snapshot`) + `acyclic_relations` (기본 `["implements"]`) + `naming` 패턴 + `frontmatter_immutable` (필드 잠금) + `body_immutable` (body 잠금, `frozen` / `append_only`, 선택적 `append_section`) + `body_line` (per-line vocabulary 검사); 두 잠금 모두 `trigger` = `terminal` / `status` / `creation` 으로 발동 시점 선택 |
 | `[[annotations]]` | 본문 마커 패턴 (regex + named-capture key); `query annotations` 로 surface, `[detection].superseded_reference_ok_annotation` 이 가리키는 블록은 `superseded_reference` 도 읽음 |
 | `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` (`forbidden` 도 받음) + `mode` + `require_explicit` (추론 가능한 빌트인 — `id` / `title` / `kind` / `status` — 을 추론에 맡기지 않고 명시 작성; `explicit_field` 규칙으로 `check` 에서 red) |
 | `[detection]` | `stale_days` / `orphan_grace_days` (기본 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_annotation` / 선택적 `git_drift_threshold` 와 `git_drift_relations` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
@@ -1118,7 +1133,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.55, <0.56" build
+nodex --check-version ">=0.56, <0.57" build
 ```
 
 ---

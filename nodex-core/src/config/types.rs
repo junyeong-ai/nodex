@@ -708,18 +708,15 @@ pub struct RulesConfig {
     pub severity: BTreeMap<String, crate::rules::Severity>,
     #[serde(default)]
     pub naming: Vec<NamingRuleConfig>,
-    /// Lock declared frontmatter fields against further edits once a
-    /// node has reached a terminal status, with one block per locking
-    /// policy. Every doc terminal at `superseded` keeps its identity
-    /// stable; ADR-kind docs additionally lock `decision_date` once
-    /// they hit `archived`. Inert without `--since`. Drives
+    /// Named frontmatter locks, each selecting fields, kinds and an arming
+    /// trigger. Requires a before-snapshot. Drives
     /// [`crate::rules::frontmatter_immutable::FrontmatterImmutableRule`].
     #[serde(default)]
     pub frontmatter_immutable: Vec<FrontmatterImmutableRuleConfig>,
-    /// Lock document bodies against post-terminal edits, with one
+    /// Lock document bodies once their configured triggers arm, with one
     /// block per locking policy (a project may freeze some kinds
     /// outright while permitting append-only growth on others).
-    /// Inert without a `--since` ref. Drives
+    /// Requires a before-snapshot. Drives
     /// [`crate::rules::body_immutable::BodyImmutableRule`].
     #[serde(default)]
     pub body_immutable: Vec<BodyImmutableRuleConfig>,
@@ -730,16 +727,18 @@ pub struct RulesConfig {
     /// [`crate::rules::body_line::BodyLineRule`].
     #[serde(default)]
     pub body_line: Vec<BodyLineRuleConfig>,
-    /// Default git ref that `nodex check` diffs against when `--since`
-    /// is omitted, so the diff-aware immutability rules
-    /// (`frontmatter_immutable`, `body_immutable`) are enforced by
-    /// default instead of only when a ref is passed explicitly.
-    /// `None` leaves them inert until `--since` is given. Unlike
-    /// `--since`, the baseline never narrows the reported violations to
-    /// changed nodes — it only supplies the before-state the
-    /// immutability rules need.
+    /// Source ref for the baseline shared by checks, proposals and writes.
+    /// An explicit `--since` scopes the report without replacing this source.
+    /// Without a configured source, `--since` supplies the lock baseline and
+    /// authored proposals compare against the working tree.
     #[serde(default)]
     pub immutable_baseline: Option<String>,
+    /// How the configured source selects the lock baseline.
+    #[serde(default)]
+    pub immutable_baseline_mode: ImmutableBaselineMode,
+    /// Whether locks preserve each commit step or only the baseline snapshot.
+    #[serde(default)]
+    pub immutable_history: ImmutableHistory,
     /// Relations whose resolved edge graph must stay acyclic — a cycle
     /// is a design defect (circular dependency) reported at Error
     /// severity. Validated against [`Config::known_relations`] at load;
@@ -763,6 +762,8 @@ impl Default for RulesConfig {
             body_immutable: Vec::new(),
             body_line: Vec::new(),
             immutable_baseline: None,
+            immutable_baseline_mode: ImmutableBaselineMode::default(),
+            immutable_history: ImmutableHistory::default(),
             acyclic_relations: default_acyclic_relations(),
         }
     }
@@ -770,6 +771,24 @@ impl Default for RulesConfig {
 
 pub(crate) fn default_acyclic_relations() -> Vec<String> {
     vec!["implements".to_string()]
+}
+
+/// How a configured ref selects the snapshot protected by locks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImmutableBaselineMode {
+    #[default]
+    Ref,
+    MergeBase,
+}
+
+/// The changes an immutability policy judges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImmutableHistory {
+    #[default]
+    Steps,
+    Snapshot,
 }
 
 /// One body-immutability policy. Multiple blocks let a project apply
@@ -890,6 +909,12 @@ impl BodyImmutableRuleConfig {
 }
 
 impl FrontmatterImmutableRuleConfig {
+    pub fn locks_field(&self, field: &str) -> bool {
+        field != "id"
+            && self.fields.iter().any(|name| name == "*" || name == field)
+            && !self.except.iter().any(|name| name == field)
+    }
+
     pub(crate) fn arming(&self) -> LockArming<'_> {
         LockArming {
             trigger: self.trigger,
@@ -901,7 +926,7 @@ impl FrontmatterImmutableRuleConfig {
 
 /// One frontmatter-immutability policy. Multiple blocks let a project
 /// lock different field sets in different parts of the corpus.
-/// Inert without `--since`. Symmetric with
+/// Requires a before-snapshot. Symmetric with
 /// [`BodyImmutableRuleConfig`]: each block carries a unique `name`,
 /// a kind filter, an [`ImmutableTrigger`] saying when the lock engages,
 /// and the per-block payload (`fields`).
@@ -913,15 +938,13 @@ pub struct FrontmatterImmutableRuleConfig {
     /// Must be unique across all `[[rules.frontmatter_immutable]]`
     /// blocks.
     pub name: String,
-    /// Frontmatter fields locked by this block. Each entry must be
-    /// either a built-in field or declared in `[schema]` — locking
-    /// an unknown field would silently never fire, the same failure
-    /// mode `Config::load` already refuses for body-derived rules.
-    /// `id` is refused too: it is structurally immutable (a changed id
-    /// is a different node) and has no reliable diff signal, so a lock on
-    /// it could only ever be a false positive. `status` is fine — it is
-    /// enforced from the transition stream.
+    /// Fields to lock, or `["*"]` to select all semantic frontmatter fields.
+    /// Named fields must be built-in or declared in `[schema]`. Identity is
+    /// protected structurally and cannot be listed or excepted.
     pub fields: Vec<String>,
+    /// Mutable fields under the all-fields selector `fields = ["*"]`.
+    #[serde(default)]
+    pub except: Vec<String>,
     /// When the lock engages for matching documents.
     #[serde(default)]
     pub trigger: ImmutableTrigger,

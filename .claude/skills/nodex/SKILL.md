@@ -6,7 +6,7 @@ description: >-
   graph queries, guarded authoring and replacement, and machine-readable exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.55.0
+  version: 0.56.0
 ---
 
 # nodex — markdown document graph CLI
@@ -82,13 +82,13 @@ nodex check --staged     # pre-commit: the index git commits, not the working tr
 
 Validate proposed bytes **before** writing them. `SOURCE` is `-` (stdin) or a file path resolved against the invoking directory, never `-C <dir>`. At most one `SOURCE` may be `-`; a target `PATH` may appear once. Excludes `--since` and `--staged`.
 
-Every proposal is overlaid into ONE graph build, so a reference one proposal authors resolves against another in the same batch — a supersede that rewrites N referrers is judged as one combined proposal. The reported set is the **introduced delta**: a violation already present without the proposal never blocks it; one the overlay adds reds the gate at exit 1.
+Every proposal is overlaid into ONE graph build, so a reference one proposal authors resolves against another in the same batch — a supersede that rewrites N referrers is judged as one combined proposal. Ordinary rules report introduced errors; targeted lock findings judge the proposed state absolutely against the shared baseline. Step rules use the same commit parents as writes and gate introduced findings. Unrelated standing errors do not block the proposal.
 
 Caveats:
 
 - `required_field` never fires for engine-derived fields. A proposal missing `id` / `status` (or a stem-derived `title`) still passes because the build infers them. A clean verdict does not certify those keys are spelled out unless `schema.require_explicit` is configured.
 - Both builds are read-only, so a write-time check never touches `cache.json`. A path need not exist yet — that is the point. A path inside the project root but outside the scope globs is vacuously clean and the run warns it validated nothing; a path escaping the root is refused with `PATH_ESCAPES_ROOT`.
-- The gate reports what a proposal *introduces*; a write seam's immutability verdict is **absolute**. A document that already drifted from its frozen baseline passes the gate and is still refused by the write. Revert the drift or supersede the record.
+- A proposed record already drifted from its lock baseline is refused. Revert the drift or supersede it. Without a configured baseline, authored proposals compare against the working tree.
 
 `--severity` narrows the list, never the verdict: `has_errors` and the exit code answer for every violation checked, so `--severity warning` over a project holding errors still exits 1. A `gate_suppression` warning counts what the **envelope** stops carrying, which is not the same as what the list stops showing — in `--content` mode a filtered-out warning on a proposal path is still in `standing`, so no suppression is announced for it.
 

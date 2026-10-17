@@ -124,10 +124,8 @@ enum Binding {
 }
 
 /// What `rules.immutable_baseline` names, before any snapshot of it is
-/// taken. Cheap by construction: the config gate decides first, so a
-/// project with no baseline — or none of the rules a baseline feeds —
-/// never spawns a process, and a bound one costs only the repository
-/// binding.
+/// taken. With no configured source or applicable rules, resolution spawns
+/// no process. Otherwise it binds the repository and selects a commit.
 ///
 /// The activation is established up front rather than inferred from the
 /// first document: a ref that carries nothing for this project looks
@@ -136,12 +134,8 @@ enum Binding {
 /// resolved once, and its three answers are kept apart: bound, nothing
 /// to compare against, or — refused at resolution — unreadable.
 ///
-/// [`snapshot`](Self::snapshot) turns a binding into the
-/// [`BaselineProbe`] a write seam consults. A command that needs only the
-/// refusal resolves a binding and drops it: `check --content` gates a
-/// proposal against the working tree, never against a ref, so it pays for
-/// resolving the ref — discovery and `ref_state` — and never for
-/// materialising it. A project with no baseline bound at all pays nothing.
+/// [`snapshot`](Self::snapshot) materialises the resolved commit for read and
+/// write gates. Every comparison in an invocation uses that commit ID.
 pub struct BaselineBinding {
     binding: Binding,
 }
@@ -170,15 +164,28 @@ impl BaselineBinding {
             });
         };
         let baseline = baseline.to_string();
+        let requires_history = config.rules.immutable_baseline_mode
+            == crate::config::ImmutableBaselineMode::MergeBase
+            || config.rules.immutable_history == crate::config::ImmutableHistory::Snapshot;
         let repository = match crate::git::Repository::discover(root) {
             Ok(Some(repository)) => repository,
             Ok(None) => {
+                if requires_history {
+                    return Err(crate::error::Error::Config(format!(
+                        "rules.immutable_baseline {baseline:?} requires a Git work tree"
+                    )));
+                }
                 return Ok(Self::inert(
                     baseline,
                     format!("no git work tree was found for {}", root.display()),
                 ));
             }
             Err(e) => {
+                if requires_history {
+                    return Err(crate::error::Error::Config(format!(
+                        "rules.immutable_baseline {baseline:?} could not resolve its Git repository: {e}"
+                    )));
+                }
                 return Ok(Self::inert(
                     baseline,
                     format!(
@@ -195,27 +202,55 @@ impl BaselineBinding {
                  baseline"
             ))
         };
-        match repository.ref_state(&baseline) {
+        let source_state = repository
+            .ref_state(&baseline)
+            .map_err(|e| unreadable(e.to_string()))?;
+        if matches!(source_state, RefState::Unborn) {
+            if requires_history {
+                return Err(unreadable(
+                    "the selected lock policy requires recorded commits".into(),
+                ));
+            }
+            return Ok(Self::inert(
+                baseline,
+                "no ref in the repository names a commit, so there is nothing to compare against"
+                    .into(),
+            ));
+        }
+        if matches!(source_state, RefState::Unresolvable) {
+            return Err(unreadable("git resolves no such ref".into()));
+        }
+        let source = repository
+            .commit(&baseline)
+            .map_err(|e| unreadable(e.to_string()))?;
+        let selected = match config.rules.immutable_baseline_mode {
+            crate::config::ImmutableBaselineMode::Ref => source,
+            crate::config::ImmutableBaselineMode::MergeBase => {
+                let head = repository
+                    .head()
+                    .map_err(|e| unreadable(e.to_string()))?
+                    .ok_or_else(|| unreadable("HEAD names no commit".into()))?;
+                repository
+                    .unique_merge_base(&[head, source])
+                    .map_err(|e| unreadable(e.to_string()))?
+            }
+        };
+        match repository.ref_state(&selected) {
             Ok(RefState::CarriesProject) => Ok(Self {
                 binding: Binding::Bound {
                     repository,
-                    baseline,
+                    baseline: selected,
                 },
             }),
             Ok(RefState::WithoutProject) => {
                 let reason = format!(
-                    "it does not carry {:?}",
+                    "selected commit {selected} does not carry {:?}",
                     crate::path_guard::forward_string(repository.prefix())
                 );
                 Ok(Self::inert(baseline, reason))
             }
-            Ok(RefState::Unborn) => Ok(Self::inert(
-                baseline,
-                "no ref in the repository names a commit, so there is nothing to compare against"
-                    .to_string(),
-            )),
-            Ok(RefState::Unresolvable) => Err(unreadable("git resolves no such ref".to_string())),
-            Err(e) => Err(unreadable(format!("it could not be resolved ({e})"))),
+            Ok(_) => Err(unreadable("the selected commit cannot be read".into())),
+            Err(e) => Err(unreadable(e.to_string())),
         }
     }
 
@@ -322,6 +357,18 @@ pub struct GraphedBaseline {
 }
 
 impl BaselineProbe {
+    pub fn diff(&self, graph: &crate::model::Graph) -> Option<crate::diff::GraphDiff> {
+        self.baseline
+            .as_ref()
+            .map(|baseline| crate::diff::compute_diff(baseline, graph))
+    }
+
+    pub fn steps(&self, graph: &crate::model::Graph) -> Option<Vec<crate::ancestry::Step>> {
+        self.ancestry
+            .as_ref()
+            .map(|ancestry| ancestry.through(graph))
+    }
+
     /// The status a write moving record `id` to `to` makes a move from that
     /// `statuses.flow` does not declare, if it makes one.
     ///
@@ -534,7 +581,7 @@ impl BaselineProbe {
             return Ok(Refusals::default());
         }
 
-        let fed = |rule: &dyn crate::rules::Rule| rule.diff_aware() || rule.judges_steps();
+        let fed = |rule: &dyn crate::rules::Rule| rule.diff_aware() || rule.judges_steps(config);
         let gated: Vec<Box<dyn crate::rules::Rule>> = crate::rules::registered_rules(config)
             .into_iter()
             .filter(|rule| fed(rule.as_ref()))
@@ -550,14 +597,8 @@ impl BaselineProbe {
 
         let history = crate::rules::git_drift::DriftHistory::of(config, root);
         let judge = |graph: &crate::model::Graph, files: ProjectFiles<'_>| {
-            let diff = self
-                .baseline
-                .as_ref()
-                .map(|baseline| crate::diff::compute_diff(baseline, graph));
-            let steps = self
-                .ancestry
-                .as_ref()
-                .map(|ancestry| ancestry.through(graph));
+            let diff = self.diff(graph);
+            let steps = self.steps(graph);
             crate::rules::run_rules(
                 crate::rules::registered_rules(config)
                     .into_iter()
@@ -1221,11 +1262,9 @@ pub enum ProposalDiff {
     /// opinion would refuse a write on a rule the same project's `check`
     /// reports as skipped.
     Inert,
-    /// The proposal's own delta over the working tree, which activates the
-    /// diff-aware rules against it. The seams that gate *authored* content
-    /// (`scaffold`, mirrored on the read plane by `check --content`) take
-    /// this: already-on-disk is the launder-safe boundary, so a frozen field
-    /// cannot be edited by proposing over a working tree edited first.
+    /// Authored content compares against the working tree when no baseline
+    /// is configured. With a configured baseline, `BaselineProbe` owns locks
+    /// and this pass checks ordinary introduced errors.
     OverWorkingTree,
 }
 
@@ -1355,7 +1394,10 @@ pub fn introduced(
     let after = crate::builder::build_with_overlay(root, config, proposal)?;
     let since = match diff {
         ProposalDiff::Inert => None,
-        ProposalDiff::OverWorkingTree => Some(crate::diff::compute_diff(before, &after.graph)),
+        ProposalDiff::OverWorkingTree if config.rules.immutable_baseline.is_none() => {
+            Some(crate::diff::compute_diff(before, &after.graph))
+        }
+        ProposalDiff::OverWorkingTree => None,
     };
     // One reading of git for both passes: the proposal is unwritten
     // bytes, and no unwritten byte is a commit.
@@ -2447,6 +2489,7 @@ mod tests {
             config.rules.frontmatter_immutable =
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "owner-locked".into(),
+                    except: Vec::new(),
                     fields: vec!["owner".into()],
                     trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
@@ -2479,6 +2522,7 @@ mod tests {
             config.rules.frontmatter_immutable =
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "status-locked".into(),
+                    except: Vec::new(),
                     fields: vec!["status".into()],
                     trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
@@ -2515,6 +2559,7 @@ mod tests {
             config.rules.frontmatter_immutable =
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "owner-locked".into(),
+                    except: Vec::new(),
                     fields: vec!["owner".into()],
                     trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],
@@ -2535,6 +2580,7 @@ mod tests {
             config.rules.frontmatter_immutable =
                 vec![crate::config::FrontmatterImmutableRuleConfig {
                     name: "owner-locked".into(),
+                    except: Vec::new(),
                     fields: vec!["owner".into()],
                     trigger: crate::config::ImmutableTrigger::Terminal,
                     kinds: vec![],

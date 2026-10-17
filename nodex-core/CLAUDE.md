@@ -86,9 +86,9 @@ safety: `src/git.rs` rustdoc.
   no longer occupies the old path, so a free old path is not itself frozen.
 - `mutate::introduced` runs the whole registry before and after a proposal and
   takes a count-aware multiset delta. Unrelated standing violations do not block
-  a write; duplicated findings still introduce another violation. Authored bytes
-  (`ProposalDiff`, scaffold and `check --content`) activate diff-aware rules
-  against the working tree; transformations use the configured baseline probe.
+  a write; duplicated findings still introduce another violation. Without a
+  configured baseline, authored bytes compare against the working tree.
+  Configured locks use the baseline probe for authored content and transformations.
   All document writes except config-derived `migrate` take this gate.
   Default-only scaffold advises on findings owned by its new node; supplying
   body/fields is strict. Findings owned by other nodes or no node always refuse
@@ -136,7 +136,7 @@ safety: `src/git.rs` rustdoc.
   against HEAD and all MERGE_HEADs; staged check substitutes the committed index.
   An explicit `--since` also judges each added commit against its parents; all
   step findings survive report narrowing. A baseline neither bounds nor arms
-  non-diff-aware step rules; proposals against the working tree have no steps.
+  non-diff-aware step rules. Proposals use the step their overlay would commit.
 - Merge priors come from changes since all merge bases, in the asking rule's
   sight (`Step::priors`). An untouched line claims no move, and a line moving a
   record outside the rule's scope must not displace its visible prior. Missing

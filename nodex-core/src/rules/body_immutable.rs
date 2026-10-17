@@ -84,7 +84,7 @@ impl Rule for BodyImmutableRule {
     fn description(&self) -> &str {
         "Document bodies are locked once the block's trigger engages — \
          `terminal` locks at terminal status, `status` at the statuses the \
-         block names, `creation` once a prior committed snapshot exists; `frozen` rejects any change, \
+         block names, `creation` at every status in the before snapshot; `frozen` rejects any change, \
          `append_only` rejects non-prefix changes and, with `append_section`, \
          anything appended outside that closing section. Needs a diff \
          context from `--since <ref>` or `rules.immutable_baseline`"
@@ -128,8 +128,8 @@ impl Rule for BodyImmutableRule {
         true
     }
 
-    fn judges_steps(&self) -> bool {
-        true
+    fn judges_steps(&self, config: &crate::config::Config) -> bool {
+        config.rules.immutable_history == crate::config::ImmutableHistory::Steps
     }
 
     fn touched_by(

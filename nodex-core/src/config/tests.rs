@@ -1791,6 +1791,7 @@ fn validate_rejects_frontmatter_immutable_unknown_field() {
         rules: RulesConfig {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "lock".into(),
+                except: Vec::new(),
                 fields: vec!["superceded_by".into()], // typo
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
@@ -1824,6 +1825,7 @@ fn validate_rejects_frontmatter_immutable_lock_on_id() {
         rules: RulesConfig {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "identity".into(),
+                except: Vec::new(),
                 fields: vec!["id".into(), "superseded_by".into()],
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
@@ -1846,6 +1848,7 @@ fn validate_rejects_frontmatter_immutable_lock_on_id() {
         rules: RulesConfig {
             frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
                 name: "lifecycle".into(),
+                except: Vec::new(),
                 fields: vec!["status".into()],
                 trigger: crate::config::ImmutableTrigger::Terminal,
                 kinds: vec![],
@@ -1873,6 +1876,7 @@ fn validate_accepts_frontmatter_immutable_builtin_and_declared_fields() {
     config.rules = RulesConfig {
         frontmatter_immutable: vec![FrontmatterImmutableRuleConfig {
             name: "lock".into(),
+            except: Vec::new(),
             fields: vec!["superseded_by".into(), "decision_date".into()],
             trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
@@ -3121,6 +3125,7 @@ fn frontmatter_immutable_block(
 ) -> crate::config::FrontmatterImmutableRuleConfig {
     crate::config::FrontmatterImmutableRuleConfig {
         name: name.into(),
+        except: Vec::new(),
         fields: fields.into_iter().map(String::from).collect(),
         trigger: crate::config::ImmutableTrigger::Terminal,
         kinds: vec![],
@@ -4823,4 +4828,59 @@ fn validate_accepts_a_forbidden_field_other_kinds_may_still_carry_or_constrain()
         let config: Config = toml::from_str(&format!("{base}{tail}")).expect("parses");
         config.validate().unwrap_or_else(|e| panic!("{tail}: {e}"));
     }
+}
+
+#[test]
+fn immutable_comparison_requires_a_source_for_nondefault_policies() {
+    for setting in [
+        "immutable_baseline_mode = \"merge_base\"",
+        "immutable_history = \"snapshot\"",
+    ] {
+        let config: Config = toml::from_str(&format!("[rules]\n{setting}\n")).unwrap();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("require rules.immutable_baseline")
+        );
+        let config: Config = toml::from_str(&format!(
+            "[rules]\nimmutable_baseline = \"release\"\n{setting}\n"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+    }
+}
+
+#[test]
+fn all_frontmatter_fields_validate_exceptions_and_status_flow() {
+    for (fields, except, valid) in [
+        ("[\"*\"]", "[]", true),
+        ("[\"*\"]", "[\"status\", \"superseded_by\"]", true),
+        ("[\"*\", \"title\"]", "[]", false),
+        ("[\"title\"]", "[\"status\"]", false),
+        ("[\"*\"]", "[\"unknown\"]", false),
+        ("[\"*\"]", "[\"id\"]", false),
+        ("[\"*\"]", "[\"status\", \"status\"]", false),
+    ] {
+        let config: Config = toml::from_str(&format!(
+            "[[rules.frontmatter_immutable]]\nname = \"sealed\"\nfields = {fields}\nexcept = {except}\n"
+        )).unwrap();
+        assert_eq!(config.validate().is_ok(), valid, "{fields} except {except}");
+    }
+    let policy = "[statuses]\nallowed = [\"open\", \"accepted\", \"superseded\"]\nterminal = [\"superseded\"]\n\
+        [[statuses.flow]]\nkinds = [\"generic\"]\ninitial = \"open\"\n\
+        transitions = { open = [\"accepted\"], accepted = [\"superseded\"] }\n\
+        [[rules.frontmatter_immutable]]\nname = \"sealed\"\nfields = [\"*\"]\n\
+        trigger = \"status\"\nstatuses = [\"accepted\", \"superseded\"]\n";
+    let config: Config = toml::from_str(policy).unwrap();
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("locks \"status\"")
+    );
+    let config: Config = toml::from_str(&format!("{policy}except = [\"status\"]\n")).unwrap();
+    config.validate().unwrap();
 }
