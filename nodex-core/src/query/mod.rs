@@ -80,6 +80,7 @@ pub struct RankingOutcome<T> {
 pub struct DetectionOutcome<T> {
     pub entries: Vec<T>,
     pub subjects: usize,
+    pub unjudged: usize,
 }
 
 impl<T> DetectionOutcome<T> {
@@ -91,6 +92,7 @@ impl<T> DetectionOutcome<T> {
         Self {
             entries: Vec::new(),
             subjects: 0,
+            unjudged: 0,
         }
     }
 }
@@ -194,4 +196,15 @@ impl NodeListingEntry {
 /// the same way.
 pub(crate) fn days_between_clamped(today: NaiveDate, date: NaiveDate) -> u32 {
     (today - date).num_days().max(0).min(u32::MAX as i64) as u32
+}
+
+/// A bounded detection listing with the population the detector could judge.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DetectionListing<T> {
+    pub items: Vec<T>,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned: Option<usize>,
+    pub subjects: usize,
+    pub unjudged: usize,
 }

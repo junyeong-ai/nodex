@@ -14,7 +14,7 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - `parser.extensions` entries carry the leading dot.
 - `[[annotations]]` patterns need a named capture matching `key`.
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
-- `[statuses.flow]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
+- `[[statuses.flow]]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
 
 With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is **also** parsed as a wikilink and surfaces as an unresolved edge in `query issues`. Use a non-bracket marker syntax if you want annotations only.
@@ -85,7 +85,7 @@ Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers
 
 ## Built-in rule ids
 
-`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `forbidden_field` (registered only when an override declares `forbidden`) · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (registered only when `detection.stale_days` is set) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `superseded_reference` (always registered; its population is the citations live documents make, less `supersedes` itself, those of `detection.superseded_reference_ok_kinds`, body citations of a target the citing document names in a `detection.superseded_reference_ok_annotation` marker, and any read from a part an immutability lock holds in the run; a run with no baseline cannot tell, and counts the citations a lock could hold as `unjudged` until `--since` or `rules.immutable_baseline` supplies one) · `git_drift` (registered only when `git_drift_threshold` is set) · `status_transition` / `status_entry` (registered only when `[statuses.flow]` is declared) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges — a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`).
+`parse_failure` (node-less, one per dropped in-scope document) · `field_parse` (one per wrong-typed built-in field on a present node) · `required_field` · `forbidden_field` (registered only when an override declares `forbidden`) · `field_type` · `field_enum` · `cross_field` · `unknown_field` (registered in strict mode only) · `explicit_field` (registered only when `schema.require_explicit` is set) · `stale_review` (registered only when `detection.stale_days` is set) · `orphan` (always registered; its exemptions narrow the population, and a corpus they cover entirely reads `subjects: 0`) · `superseded_reference` (always registered; its population is the citations live documents make, less `supersedes` itself, those of `detection.superseded_reference_ok_kinds`, body citations of a target the citing document names in a `detection.superseded_reference_ok_annotation` marker, and any read from a part an immutability lock holds in the run; a run with no baseline cannot tell, and counts the citations a lock could hold as `unjudged` until `--since` or `rules.immutable_baseline` supplies one) · `git_drift` (registered only when `git_drift_threshold` is set) · `status_transition` / `status_entry` (registered only when `[[statuses.flow]]` is declared) · `filename_pattern` (registered only with a `[[rules.naming]]` block) · `sequential_numbering` / `unique_numbering` (only when a naming block sets `sequential` / `unique`) · `acyclic_relation` (always on; the relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges — a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`).
 
 Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>`.
 
@@ -170,11 +170,11 @@ kinds = ["adr"]
 
 Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `statuses.flow` validation, `conditional_exclude`, trust scoring, the `terminal` trigger, the lifecycle write seam, `git_drift`, orphan and stale detection, `superseded_reference`, and the `GRAPH.md` report, so arming a lock through it declares the record finished to every one of them. The first is not a behaviour change but a refusal — a flow declaring a move out of that status stops loading.
 
-Declare `[statuses.flow]` over the same kinds and load proves two things about the arming, both `CONFIG_ERROR`s naming the pair. No declared transition may leave the arming, or a status edit would disarm the lock. And where the block locks `status` itself, no declared transition may move a document while it is armed, or the lock would refuse a move the flow calls legal and no document could satisfy both — which is why locking `status` fits `terminal`, where a terminal status declares no move, and not `creation`, which arms everywhere. For a kind no flow governs there is nothing to prove against: a status edit can disarm the lock, and the project has declared no lifecycle that would say otherwise.
+Declare `[[statuses.flow]]` over the same kinds and load proves two things about the arming, both `CONFIG_ERROR`s naming the pair. No declared transition may leave the arming, or a status edit would disarm the lock. And where the block locks `status` itself, no declared transition may move a document while it is armed, or the lock would refuse a move the flow calls legal and no document could satisfy both — which is why locking `status` fits `terminal`, where a terminal status declares no move, and not `creation`, which arms everywhere. For a kind no flow governs there is nothing to prove against: a status edit can disarm the lock, and the project has declared no lifecycle that would say otherwise.
 
 ## Status flow
 
-`[statuses.flow]` declares a lifecycle — which statuses follow which, over the kinds that have that lifecycle. Omit it and nothing is judged; declare it and two rules register:
+`[[statuses.flow]]` declares a lifecycle — which statuses follow which, over the kinds that have that lifecycle. Omit it and nothing is judged; declare it and two rules register:
 
 ```toml
 [kinds]
@@ -185,7 +185,7 @@ allowed = ["proposed", "active", "superseded", "archived"]
 terminal = ["superseded", "archived"]
 initial = "proposed"
 
-[statuses.flow]
+[[statuses.flow]]
 kinds = ["adr"]          # empty = every kind
 initial = "proposed"     # where a governed kind starts; omitted = statuses.initial
 transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
@@ -201,7 +201,7 @@ Both rules judge history **a step at a time**, against git rather than `rules.im
 
 In each step a governed record the flow also governed on a parent is `status_transition`'s — its status must equal a parent's or be a declared move from one — and one it governed on no parent is `status_entry`'s. That second set is what **entering the flow** means, and a node is its id, so every way in reads the same: written here, moved under an id that follows its path, re-keyed, given a governed kind, or restored after a commit that deleted it. A document a commit could not parse holds the record it held before the change that broke it, read at the path it stands on, so one broken and repaired is judged as the record it was and one never readable before its repair enters there. A commit that both moves a document and leaves it unparseable takes the path's history with it, and the repair reads as an arrival — move it in a commit of its own. Where a shallow clone cuts that reading off, or a commit's tree is one the build refuses under today's config (`history_unread` names either), the records that may have stood there are counted `unjudged` rather than judged; a clone fetched with `fetch-depth: 0` judges the first. A document git ignores takes no step, since no commit can hold it, so both rules count it `unjudged`. A branch with no commit yet enters every record its first commit carries. The finding names the remedies — author at the entry status and move in a later commit, or give a document that already existed its record back by anchoring `id` in frontmatter or moving it with `nodex rename`, which anchors it. A record leaving the governed kinds is judged by neither rule.
 
-The history judged is the one the repository keeps: a squash merge enters a record authored and accepted on the branch at its accepted status, so a squash-merging repository accepts in a PR of its own; a `--since` range a shallow clone cuts is refused (`GIT_ERROR`) rather than read as every record arriving — fetch it (`fetch-depth: 0`); and an amended commit records its step from `HEAD^`, while a `check` run before `git commit --amend` judged it from `HEAD`. Each run builds `HEAD`'s snapshot, every `MERGE_HEAD` and every place the lines agreed while a merge is under way, and each commit in a `--since` range one more; a document a commit could not parse costs one per commit the read-back crosses, answered once each however many commits stand on it. A run with no applicable step rules reads no such history. **One flow per project**: a second lifecycle would be a config-key change, deferred because `kinds` already expresses the requirement that arrived (kinds with *no* lifecycle) and the guards are already scoped per kind.
+The history judged is the one the repository keeps: a squash merge enters a record authored and accepted on the branch at its accepted status, so a squash-merging repository accepts in a PR of its own; a `--since` range a shallow clone cuts is refused (`GIT_ERROR`) rather than read as every record arriving — fetch it (`fetch-depth: 0`); and an amended commit records its step from `HEAD^`, while a `check` run before `git commit --amend` judged it from `HEAD`. Each run builds `HEAD`'s snapshot, every `MERGE_HEAD` and every place the lines agreed while a merge is under way, and each commit in a `--since` range one more; a document a commit could not parse costs one per commit the read-back crosses, answered once each however many commits stand on it. A run with no applicable step rules reads no such history. Each flow governs disjoint kinds; overlapping populations are rejected at load.
 
 ### Locks are identity-scoped
 
@@ -220,7 +220,7 @@ So: move a locked document with `nodex rename`, and give it an id that is not de
 `[[detection.unresolved_policy]]` is an ordered, first-match-wins table of `(cause, relations?, glob?) → severity` rows classifying unresolved references.
 
 - `error` registers a check rule `unresolved_reference/<name>`; matching edges fail `nodex check` and count as `violation_unresolved_reference/<name>`.
-- `warning` edges count in `summary.total` under `unresolved_edge`.
+- `warning` registers the same per-row rule at warning severity and counts once through its violation category. Unmatched edges use the built-in warning rule `unresolved_reference`.
 - `info` edges are reported out of `total` under their row's name.
 
 Three axes narrow a row, and only `cause` is required:
@@ -278,3 +278,11 @@ configured sequence numbering. `{stem}` must occur once as the complete filename
 stem; use `{slug}` in directories. Templates cannot traverse parents and must use
 a configured document extension. Scope, naming, identity and content gates still
 apply to the generated path. `export config` includes the resolved templates.
+
+## Severity and independent lifecycles
+
+`[rules] severity = { orphan = "error", unresolved_reference = "error" }` promotes registered warning rules consistently across checks, exports and mutation gates. Structural errors cannot be weakened, and unresolved-policy rows own their severity. `init` makes unmatched unresolved references errors.
+
+Each `[[statuses.flow]]` owns disjoint kinds; an empty kind list governs every kind and therefore must stand alone. Default inferred identity is `{kind}-{path_slug}`; explicit templates remain authoritative.
+
+When upgrading a project that relied on the previous inferred identity, anchor ids with the previous binary’s `migrate --apply` before upgrading, or explicitly retain `template = "{kind}-{stem}"`. Rebuilding alone does not preserve inferred ids across a fallback-template change.

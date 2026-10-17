@@ -128,8 +128,10 @@ where
         let locks_status = block
             .fields
             .is_some_and(|f| f.iter().any(|f| f == "status"));
-        if let Some(flow) = &config.statuses.flow
-            && kinds_overlap(block.arming.kinds, &flow.kinds)
+        for flow in config
+            .status_flows()
+            .iter()
+            .filter(|flow| kinds_overlap(block.arming.kinds, &flow.kinds))
         {
             // Which list to separate is not the block's to pick: a flow naming
             // no kind governs every one of them, so a block already down to a
@@ -357,6 +359,28 @@ impl Config {
         self.validate_merged_field_enums()?;
         self.validate_merged_cross_fields()?;
         self.validate_merged_forbidden()?;
+        let registered = crate::rules::registered_rules(self);
+        for id in self.rules.severity.keys() {
+            if id.starts_with("unresolved_reference/") {
+                return Err(Error::Config(format!(
+                    "rules.severity[{id:?}] duplicates detection.unresolved_policy; set the row's severity"
+                )));
+            }
+            if registered
+                .iter()
+                .any(|rule| rule.id() == id && rule.severity() == crate::rules::Severity::Error)
+                && self.rules.severity[id] != crate::rules::Severity::Error
+            {
+                return Err(Error::Config(format!(
+                    "rules.severity cannot weaken structural rule {id:?}"
+                )));
+            }
+            if !registered.iter().any(|rule| rule.id() == id) {
+                return Err(Error::Config(format!(
+                    "rules.severity names unregistered rule {id:?}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -428,13 +452,46 @@ impl Config {
     /// or a declared move would write a document its own `field_enum`
     /// rejects.
     fn validate_status_flow(&self) -> Result<()> {
-        let Some(flow) = &self.statuses.flow else {
+        for (index, flow) in self.status_flows().iter().enumerate() {
+            if self.status_flows()[..index]
+                .iter()
+                .any(|other| kinds_overlap(&flow.kinds, &other.kinds))
+            {
+                return Err(Error::Config(
+                    "statuses.flow entries must govern disjoint kinds".into(),
+                ));
+            }
+            self.validate_one_status_flow(flow)?;
+        }
+        if self.status_flows().is_empty() {
             return Ok(());
-        };
+        }
+        for status in &self.statuses.allowed {
+            let usable = self.kinds.allowed.iter().any(|kind| {
+                self.allowed_statuses_for(kind).contains(status)
+                    && self.status_flow_for(kind).is_none_or(|flow| {
+                        self.flow_entry(flow) == status
+                            || flow.transitions.contains_key(status)
+                            || flow
+                                .transitions
+                                .values()
+                                .any(|targets| targets.contains(status))
+                    })
+            });
+            if !usable {
+                return Err(Error::Config(format!(
+                    "statuses.allowed carries {status:?}, which no kind can reach or hold"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_one_status_flow(&self, flow: &StatusFlowConfig) -> Result<()> {
         let transitions = &flow.transitions;
         if transitions.is_empty() {
             return Err(Error::Config(
-                "statuses.flow.transitions must not be empty; omit the [statuses.flow] table \
+                "statuses.flow.transitions must not be empty; omit the [[statuses.flow]] table \
                  to declare no status flow, or list the transitions your project allows"
                     .to_string(),
             ));
@@ -555,32 +612,6 @@ impl Config {
             }
         }
 
-        // And the outward half: vocabulary no document could legally hold.
-        // A governed kind holds only what its flow names — `status_entry`
-        // admits the entry point and `status_transition` a declared move —
-        // so a status is dead only if no *ungoverned* kind may hold it
-        // either. That is the exact question, and asking it this way is
-        // what lets a flow scoped to one kind ignore the statuses the rest
-        // of the project uses without a per-kind enum to say so.
-        for status in &self.statuses.allowed {
-            if named.contains(status.as_str()) {
-                continue;
-            }
-            let held_elsewhere = self
-                .kinds
-                .allowed
-                .iter()
-                .filter(|kind| !crate::model::kind_allowed(&flow.kinds, kind))
-                .any(|kind| self.allowed_statuses_for(kind).iter().any(|s| s == status));
-            if !held_elsewhere {
-                return Err(Error::Config(format!(
-                    "statuses.allowed carries {status:?}, which statuses.flow never names and \
-                     no kind outside that flow may hold; a governed document reaches only what \
-                     its flow names, so no document could ever legally carry it. Name it in the \
-                     flow, narrow the flow's kinds, or drop it from statuses.allowed"
-                )));
-            }
-        }
         Ok(())
     }
 

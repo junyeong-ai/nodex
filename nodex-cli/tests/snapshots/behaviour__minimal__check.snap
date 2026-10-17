@@ -59,11 +59,17 @@ exit: 0
         "rule_id": "stale_review",
         "subjects": 2,
         "unit": "nodes",
-        "unjudged": 0
+        "unjudged": 1
       },
       {
         "rule_id": "superseded_reference",
         "subjects": 2,
+        "unit": "edges",
+        "unjudged": 0
+      },
+      {
+        "rule_id": "unresolved_reference",
+        "subjects": 1,
         "unit": "edges",
         "unjudged": 0
       }

@@ -34,12 +34,14 @@ exit: 0
         "title": "Deploy"
       }
     ],
-    "total": 3
+    "subjects": 6,
+    "total": 3,
+    "unjudged": 1
   },
   "ok": true,
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

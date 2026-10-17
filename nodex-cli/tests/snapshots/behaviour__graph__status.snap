@@ -6,10 +6,10 @@ exit: 0
 {
   "data": {
     "graph_path": "_index/graph.json",
-    "snapshot_nodex_version": "0.53.0",
-    "snapshot_schema_version": 13,
+    "snapshot_nodex_version": "0.54.0",
+    "snapshot_schema_version": 14,
     "state": "current",
-    "supported_schema_version": 13
+    "supported_schema_version": 14
   },
   "ok": true
 }

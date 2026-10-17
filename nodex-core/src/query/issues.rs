@@ -28,6 +28,8 @@ pub use crate::model::edge::categories;
 /// dangling reference (rename, create missing doc, or delete the link).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct UnresolvedEdge {
+    pub syntax: crate::model::edge::ReferenceSyntax,
+    pub sought: Vec<String>,
     pub source: String,
     pub source_path: String,
     pub relation: String,
@@ -154,10 +156,10 @@ pub fn find_issues(
     // info-level edges count under their policy row's name, out of
     // `total`; error-level edges are counted solely through their
     // `violation_unresolved_reference/<name>` category below.
-    let mut warning_edges = 0usize;
+
     for edge in &unresolved_edges {
         match edge.severity {
-            UnresolvedSeverity::Warning => warning_edges += 1,
+            UnresolvedSeverity::Warning => {}
             UnresolvedSeverity::Info => {
                 let name = edge.policy_name.clone().expect(
                     "info severity is only assigned by a policy row, never the fallthrough",
@@ -167,15 +169,12 @@ pub fn find_issues(
             UnresolvedSeverity::Error => {}
         }
     }
-    if warning_edges > 0 {
-        by_category.insert(categories::UNRESOLVED_EDGE.to_string(), warning_edges);
-    }
     for v in &report.violations {
         let key = format!("{}{}", categories::VIOLATION_PREFIX, v.rule_id);
         *by_category.entry(key).or_insert(0) += 1;
     }
 
-    let total = warning_edges + report.violations.len();
+    let total = report.violations.len();
 
     IssueReport {
         orphans,
@@ -253,6 +252,7 @@ fn unresolved_from(
     // below and the policy matcher can never disagree with the build
     // about what the reference was for.
     let sought = crate::builder::resolver::sought_names(
+        edge.syntax(),
         raw,
         &edge.relation,
         source_node.map(|n| n.path.as_path()),
@@ -265,8 +265,18 @@ fn unresolved_from(
         files,
         crate::model::edge::is_path_only_relation(&edge.relation),
     );
-    let (severity, policy_name) = assign_policy(cause, &edge.relation, sought.names(), policy);
+    let (mut severity, policy_name) = assign_policy(cause, &edge.relation, sought.names(), policy);
+    if policy_name.is_none()
+        && let Some(level) = config.rules.severity.get("unresolved_reference")
+    {
+        severity = match level {
+            crate::rules::Severity::Error => UnresolvedSeverity::Error,
+            crate::rules::Severity::Warning => UnresolvedSeverity::Warning,
+        };
+    }
     Some(UnresolvedEdge {
+        syntax: edge.syntax(),
+        sought: sought.names().to_vec(),
         source: edge.source.clone(),
         source_path,
         relation: edge.relation.clone(),
@@ -412,6 +422,7 @@ mod tests {
 
     fn dangling(source: &str, raw: &str, relation: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.to_string(),
             target: ResolvedTarget::unresolved(raw, UnresolvedCause::Missing),
             relation: relation.to_string(),
@@ -423,6 +434,7 @@ mod tests {
     /// `supersedes:` / `related:` / `superseded_by:` value it cannot bind.
     fn dangling_id(source: &str, raw: &str, relation: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.to_string(),
             target: ResolvedTarget::unresolved(raw, UnresolvedCause::IdNotFound),
             relation: relation.to_string(),
@@ -473,6 +485,7 @@ mod tests {
         document_ref: bool,
     ) -> bool {
         let candidates = crate::builder::resolver::normalized_resolution_candidates(
+            crate::model::edge::ReferenceSyntax::Pattern,
             raw,
             source,
             extensions,
@@ -494,6 +507,7 @@ mod tests {
         document_ref: bool,
     ) -> UnresolvedCause {
         let candidates = crate::builder::resolver::normalized_resolution_candidates(
+            crate::model::edge::ReferenceSyntax::Pattern,
             raw,
             source,
             extensions,
@@ -528,6 +542,7 @@ mod tests {
 
         let probe = |overlay: &[(PathBuf, crate::builder::scanner::Proposed)]| {
             let candidates = crate::builder::resolver::normalized_resolution_candidates(
+                crate::model::edge::ReferenceSyntax::Pattern,
                 "target.md",
                 Some(source.as_path()),
                 &extensions,
@@ -556,6 +571,7 @@ mod tests {
         // every question asked of the project it produces.
         assert!(!root.path().join("docs/fresh.md").exists());
         let candidates = crate::builder::resolver::normalized_resolution_candidates(
+            crate::model::edge::ReferenceSyntax::Pattern,
             "fresh.md",
             Some(source.as_path()),
             &extensions,
@@ -700,6 +716,7 @@ mod tests {
         let graph = graph_of(
             vec![node("a")],
             vec![Edge {
+                reference: None,
                 source: "a".to_string(),
                 target: ResolvedTarget::unresolved("missing.md", UnresolvedCause::Missing),
                 relation: "references".to_string(),
@@ -744,6 +761,7 @@ mod tests {
         let graph = graph_of(
             vec![both],
             vec![Edge {
+                reference: None,
                 source: "both-problems".to_string(),
                 target: ResolvedTarget::unresolved("gone.md", UnresolvedCause::Missing),
                 relation: "references".to_string(),
@@ -819,12 +837,14 @@ mod tests {
             vec![node("a")],
             vec![
                 Edge {
+                    reference: None,
                     source: "a".to_string(),
                     target: ResolvedTarget::unresolved("x.md", UnresolvedCause::Missing),
                     relation: "references".to_string(),
                     location: "L1".to_string(),
                 },
                 Edge {
+                    reference: None,
                     source: "a".to_string(),
                     target: ResolvedTarget::unresolved("y.md", UnresolvedCause::Missing),
                     relation: "references".to_string(),
@@ -841,7 +861,10 @@ mod tests {
             crate::test_today(),
         );
         assert_eq!(report.unresolved_edges.len(), 2);
-        assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 2);
+        assert_eq!(
+            report.summary.by_category["violation_unresolved_reference"],
+            2
+        );
     }
 
     #[test]
@@ -1109,7 +1132,10 @@ mod tests {
             UnresolvedSeverity::Warning
         );
         assert_eq!(report.unresolved_edges[0].policy_name, None);
-        assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 1);
+        assert_eq!(
+            report.summary.by_category["violation_unresolved_reference"],
+            1
+        );
         assert_eq!(report.summary.total, 1);
     }
 
@@ -1244,6 +1270,9 @@ mod tests {
         // No default row matches it → counted fallthrough, like Missing.
         assert_eq!(edge.severity, UnresolvedSeverity::Warning);
         assert_eq!(edge.policy_name, None);
-        assert_eq!(report.summary.by_category[categories::UNRESOLVED_EDGE], 1);
+        assert_eq!(
+            report.summary.by_category["violation_unresolved_reference"],
+            1
+        );
     }
 }

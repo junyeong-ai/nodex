@@ -27,6 +27,7 @@ pub(crate) fn run_nodes(
     reject_empty_csv_entries("--status", &args.status)?;
     reject_empty_csv_entries("--tag", &args.tag)?;
     reject_empty_csv_entries("--fields", &args.fields)?;
+    reject_empty_csv_entries("--missing", &args.missing)?;
     reject_unknown_vocabulary("--kind", &args.kind, &config.kinds.allowed)?;
     reject_unknown_vocabulary("--status", &args.status, &config.statuses.allowed)?;
     // `--fields` accepts the NodeRef identity spine PLUS any field the
@@ -43,6 +44,7 @@ pub(crate) fn run_nodes(
     );
     let field_vocab: Vec<String> = field_vocab.into_iter().collect();
     reject_unknown_vocabulary("--fields", &args.fields, &field_vocab)?;
+    reject_unknown_vocabulary("--missing", &args.missing, &field_vocab)?;
     // `--where field=value`: exact equality over the same scalar
     // vocabulary as `--fields`, read with the same logic as a
     // `cross_field` when predicate. Parse FIELD=VALUE (first `=` splits),
@@ -92,6 +94,7 @@ pub(crate) fn run_nodes(
         tags: args.tag,
         require_all_tags: args.all_tags,
         field_equals,
+        missing_fields: args.missing,
     };
     // Route each requested field: identity spine projects in place,
     // everything else enriches `attrs`. With no `--fields`, project the

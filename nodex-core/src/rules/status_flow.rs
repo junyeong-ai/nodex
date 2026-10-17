@@ -157,10 +157,8 @@ impl Rule for StatusTransitionRule {
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
-        let flow = config.status_flow();
         let mut m = Map::new();
-        m.insert("kinds".into(), json!(flow.map(|f| &f.kinds)));
-        m.insert("transitions".into(), json!(flow.map(|f| &f.transitions)));
+        m.insert("flows".into(), json!(config.status_flows()));
         m
     }
 
@@ -188,7 +186,7 @@ impl Rule for StatusTransitionRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let (Some(steps), Some(flow)) = (ctx.steps, ctx.config.status_flow()) else {
+        let Some(steps) = ctx.steps else {
             return RuleRun::clean(0);
         };
         // A record is judged by this rule at every step a parent already held
@@ -199,7 +197,9 @@ impl Rule for StatusTransitionRule {
         let mut entered = BTreeSet::new();
         let mut unknown = BTreeSet::new();
         let mut violations = Vec::new();
-        for (step, id, now, priors) in governed(steps, flow) {
+        for (flow, step, id, now, priors) in ctx.config.status_flows().iter().flat_map(|flow| {
+            governed(steps, flow).map(move |(step, id, now, priors)| (flow, step, id, now, priors))
+        }) {
             let stood_at: Vec<&Position> = priors.positions().collect();
             if stood_at.is_empty() || !priors.known() {
                 match priors.known() {
@@ -233,8 +233,18 @@ impl Rule for StatusTransitionRule {
         }
         let standing = unknown
             .into_iter()
-            .chain(uncarried(ctx, flow, steps))
-            .chain(ambiguous(steps, flow))
+            .chain(
+                ctx.config
+                    .status_flows()
+                    .iter()
+                    .flat_map(|flow| uncarried(ctx, flow, steps)),
+            )
+            .chain(
+                ctx.config
+                    .status_flows()
+                    .iter()
+                    .flat_map(|flow| ambiguous(steps, flow)),
+            )
             .collect();
         RuleRun::new(judged.len(), violations).unjudged(unjudged(
             entered.into_iter(),
@@ -264,18 +274,7 @@ impl Rule for StatusEntryRule {
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
-        m.insert(
-            "kinds".into(),
-            json!(config.status_flow().map(|flow| &flow.kinds)),
-        );
-        m.insert(
-            "initial".into(),
-            json!(
-                config
-                    .status_flow()
-                    .and_then(|flow| flow.initial.as_deref())
-            ),
-        );
+        m.insert("flows".into(), json!(config.status_flows()));
         m
     }
 
@@ -302,7 +301,7 @@ impl Rule for StatusEntryRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let (Some(steps), Some(flow)) = (ctx.steps, ctx.config.status_flow()) else {
+        let Some(steps) = ctx.steps else {
             return RuleRun::clean(0);
         };
         // Every record a step holds under the flow is asked whether it entered
@@ -311,7 +310,9 @@ impl Rule for StatusEntryRule {
         let mut judged = BTreeSet::new();
         let mut unknown = BTreeSet::new();
         let mut violations = Vec::new();
-        for (step, id, now, priors) in governed(steps, flow) {
+        for (flow, step, id, now, priors) in ctx.config.status_flows().iter().flat_map(|flow| {
+            governed(steps, flow).map(move |(step, id, now, priors)| (flow, step, id, now, priors))
+        }) {
             let stood_at: Vec<&Position> = priors.positions().collect();
             if !priors.known() {
                 unknown.insert(id);
@@ -345,8 +346,18 @@ impl Rule for StatusEntryRule {
         }
         let standing = unknown
             .into_iter()
-            .chain(uncarried(ctx, flow, steps))
-            .chain(ambiguous(steps, flow))
+            .chain(
+                ctx.config
+                    .status_flows()
+                    .iter()
+                    .flat_map(|flow| uncarried(ctx, flow, steps)),
+            )
+            .chain(
+                ctx.config
+                    .status_flows()
+                    .iter()
+                    .flat_map(|flow| ambiguous(steps, flow)),
+            )
             .collect();
         RuleRun::new(judged.len(), violations).unjudged(unjudged(
             std::iter::empty(),
@@ -378,7 +389,7 @@ allowed = ["proposed", "active", "superseded", "archived"]
 terminal = ["superseded", "archived"]
 initial = "proposed"
 
-[statuses.flow]
+[[statuses.flow]]
 kinds = ["adr"]
 transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
 "#,

@@ -25,7 +25,7 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`.
 
-`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[statuses.flow]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on trust / similarity / detection tuning.
+`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[[statuses.flow]]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on trust / similarity / detection tuning.
 
 `unbuildable_paths` lists the snapshot's recorded parse failures. They are covered by the digest the failed parse consumed, so unchanged broken bytes are never staleness — fix the document, `check` reds it. One exception: a path the build could not read at all had no bytes to digest, so the probe can never confirm it and the state stays `outdated` (naming that path in `changed_paths`) until the file is readable; a rebuild will not clear it.
 
@@ -41,7 +41,7 @@ Optional `divergence` counts measured drift (`config_changed`, `added`, `removed
 verify content. Content fidelity does not imply every document parsed successfully.
 Detailed unbuildable paths are available through `status` and `check`.
 
-`query --require-current` applies to every query leaf. Configuration, membership or
+Every query leaf verifies configuration, membership and content by default. `query --allow-stale` opts into membership-only snapshot reads with drift advisories. In the default mode, configuration, membership or
 content drift refuses with `GRAPH_OUTDATED`; probe I/O errors remain `IO_ERROR`.
 No rebuild is performed. Files may change after the probe.
 
@@ -64,19 +64,19 @@ including nodes outside the returned cap. Parse failures are disclosed as omitte
 
 ```bash
 nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags]
-                  [--where F=V ...] [--limit N] [--fields id,title,...]
+                  [--where F=V ...] [--missing F1,F2] [--limit N] [--fields id,title,...]
 ```
 Generic listing: AND across categories, OR within. Empty filter = all nodes in id order. Tag matching is case-insensitive.
 `--fields` projects: spine fields (`id`, `title`, `kind`, `status`, `path`) in place; any project-declared field (other built-ins, `attrs` keys) under a nested `attrs` object. An undeclared field is `CONFIG_ERROR`.
 `--where field=value` (repeatable) narrows by exact equality over the same vocabulary's scalar fields, `path` included. A collection built-in like `tags` is rejected — use `--tag`.
 
 ```bash
-nodex query node <id> [--with-body]
+nodex query node <id> [--with-body [--body-lines START:END]]
 nodex query node --path <file>
 ```
 `query node --with-body` compares the file's exact content revision with the indexed node before attaching text. `GRAPH_OUTDATED` requires rebuilding; metadata and body are never mixed across revisions.
 
-Full detail plus incoming and outgoing edges, honest — self-edges are visible. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
+Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects positive, inclusive canonical body lines and returns `body_range: {start, end, total}`; invalid ranges are refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
 
 ```bash
 nodex query backlinks <id> [--limit N]
@@ -100,7 +100,7 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 ```
 `query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.
 
-Both listings are the typed half of a rule: `orphan` and `stale_review` read the same predicates, so `query orphans` and the `orphan` violations are one pass seen twice, and `rule_coverage` answers for the population either way. A finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`. Only what no rule gates counts on its own: the warning-severity unresolved fallthrough under `unresolved_edge`, and info rows under their own name, outside `total`.
+Both listings are the typed half of a rule: `orphan` and `stale_review` read the same predicates, so `query orphans` and the `orphan` violations are one pass seen twice, and `rule_coverage` answers for the population either way. A finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`. Unresolved warning and error findings follow the same counting. Info rows are reported under their own name outside `total`.
 
 ```bash
 nodex query trust <id>
@@ -211,7 +211,7 @@ Move plus reference rewrite, one document only — a directory argument is refus
 
 A markdown link destination *spells* a path rather than being one, so `rename` repoints what the destination **names**: `[x](old&#x2e;md)` and `[x](a\(1\).md)` are edges like any other and move with the file. It writes back the spelling the parser reads as the new path — plain where that works (byte-for-byte the author's style), pointy `<…>` or backslash-escaped where the name needs it, so a move to `docs/new one.md` repoints rather than leaving the link behind. A reference no spelling survives (a wikilink whose new target carries `]`) is left untouched and visible, surfacing as an unresolved edge rather than being mangled.
 
-The envelope carries `id_stability: {type: already_anchored | unchanged | anchored | bare_no_frontmatter | anchor_failed}`. When the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so cross-references stay valid. `unchanged` is the move the id template reads nothing of — under the default `{kind}-{stem}` a document changes directory without changing id, and nothing needs anchoring — so what re-keys a record is the part of the path its own `identity.id_rules` template names, not the path.
+The envelope carries `id_stability: {type: already_anchored | unchanged | anchored | bare_no_frontmatter | anchor_failed}`. When the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so cross-references stay valid. `unchanged` is the move the id template reads nothing of — under an explicit `{kind}-{stem}` template a document changes directory without changing id, and nothing needs anchoring — so what re-keys a record is the part of the path its own `identity.id_rules` template names, not the path.
 
 The source is moved without editing its content first. Preparation or move failure leaves
 its content unchanged. After the move, the prepared destination content is committed
@@ -221,18 +221,18 @@ references stay unchanged, and the result reports `completion: partial` and `fai
 inspect the destination before rebuilding or retrying. Each file replacement is guarded;
 the move and rewrites are not one filesystem transaction and no rollback is promised.
 
-`rename` also names every reference it leaves something to say about, once each. Two kinds: one it had a replacement for and **declined to write** (no spelling the move could accept — it goes on naming what it named, and the next build reports the unresolved edge, which `query issues` counts and `check` never reds — a project whose `[[detection.unresolved_policy]]` calls that cause an error is one whose write gate refuses the move outright, leaving no warning to read), and one it left standing that **now names somebody else** (the move took the rung out from under it, or carried the referring document to where the same spelling means something different). The second is the one nothing downstream would mention: the graph it produces is valid, so only the command that made it can say so.
+`rename` also names every reference it leaves something to say about, once each. Two kinds: one it had a replacement for and **declined to write** (no spelling the move could accept — it goes on naming what it named, and the next build reports the unresolved edge, which `check` and `query issues` report according to configured severity — a project whose `[[detection.unresolved_policy]]` calls that cause an error is one whose write gate refuses the move outright, leaving no warning to read), and one it left standing that **now names somebody else** (the move took the rung out from under it, or carried the referring document to where the same spelling means something different). The second is the one nothing downstream would mention: the graph it produces is valid, so only the command that made it can say so.
 
 ```bash
-nodex retarget <old-id> <new-id>
+nodex retarget <old-id> <new-id> [--supersede]
 ```
-Rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body id references (`[[wikilinks]]`, custom `link_patterns`). The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
+Rewrites every reference to `<old-id>` so it names `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and body references (Markdown paths, `[[wikilinks]]`, custom `link_patterns`). The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
 
-Matching is by **exact id** — an id that merely appears in prose is never touched — and the successor document is skipped so nothing in it comes to name itself. Both ids must exist. A reference-unsafe successor id is refused: trim-unstable, or carrying a metacharacter of a syntax nodex writes (`[`, `]`, `|`, `` ` ``, line breaks).
+Matching is by **resolved document identity** — an id that merely appears in prose is never touched — and the successor document is skipped so nothing in it comes to name itself. Both ids must exist. A reference-unsafe successor id is refused: trim-unstable, or carrying a metacharacter of a syntax nodex writes (`[`, `]`, `|`, `` ` ``, line breaks).
 
 A lock names a *part* of a document, so that is what it costs: a `body_immutable` block keeps the body's citations naming the predecessor — a point-in-time record — while the same document's relation fields are repointed, and a `frontmatter_immutable` block covering `superseded_by` keeps that field while the rest of the write lands. The warning names the parts kept back and the rule that froze them. Two cases are held back whole: a document already drifted from its frozen baseline (the finding is not this write's to clear — `nodex check` names the field), and one carrying a finding about the document rather than a part of it.
 
-Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated, completion, failures?}`. Standard markdown **path** links (`[text](old.md)`) are path-bound, not id references — they keep resolving to the now-superseded file and are not rewritten. The `superseded_reference` warning names each one a live document holds outside a part a lock holds, `detection.superseded_reference_ok_kinds` and a `detection.superseded_reference_ok_annotation` marker; repoint them by hand, or `rename` the file when the path itself should change.
+Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated, completion, failures?}`. Path references are rendered relative to the citing document and checked by resolution before writing. `--supersede` plans the predecessor lifecycle change and reference edits together, so strict citation rules judge the complete proposal. A held predecessor transition refuses the operation before writing. File commits retain the documented partial-write reporting.
 
 `migrate`, `rename` and `retarget` report actual write failures in `failures`
 with `path`, `code` and `message`; the field is omitted when empty. Planned
@@ -278,10 +278,12 @@ nodex export diagnostics         # error / warning / exit-code vocabularies
 
 External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema`, `commands` and `diagnostics` read no `nodex.toml`, not even a broken one, so they can be invoked anywhere; the `version` field in their output is the source of truth for downstream drift gates.
 
-`export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[statuses.flow]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
+`export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
 `export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom` / `--top`).
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one; `judges_steps` reads git's history a commit at a time. A lock can require both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 
 Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change lacking the promised version bump.
+
+`nodes --missing F1,F2` selects documents missing all named schema-declared fields. `stale` and `orphans` return `subjects` and `unjudged` alongside the ordinary list fields. Missing review dates are unjudged; use `nodes --missing reviewed` to list them. `scaffold --force` preserves the document identity unless `--id` explicitly replaces it.

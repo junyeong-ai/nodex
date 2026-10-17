@@ -248,14 +248,44 @@ pub(crate) fn is_path_only_relation(relation: &str) -> bool {
     relation == PATH_ONLY_RELATION
 }
 
+/// The grammar that authored a reference. Markdown destinations use the
+/// referring document as their base; graph citations use document lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceSyntax {
+    Markdown,
+    Wikilink,
+    Pattern,
+    Frontmatter,
+}
+
+/// Authored reference evidence, retained even when its target resolves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Reference {
+    pub source: String,
+    pub syntax: ReferenceSyntax,
+    pub target: String,
+    pub location: String,
+}
+
 /// A resolved edge in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Edge {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<Reference>,
     pub source: String,
     pub target: ResolvedTarget,
     pub relation: String,
     /// Source location, e.g. "L42" or "frontmatter:supersedes".
     pub location: String,
+}
+
+impl Edge {
+    pub fn syntax(&self) -> ReferenceSyntax {
+        self.reference
+            .as_ref()
+            .map_or(ReferenceSyntax::Frontmatter, |r| r.syntax)
+    }
 }
 
 /// Type-safe representation of an edge target. `Hash + Ord` participate
@@ -293,13 +323,13 @@ impl ResolvedTarget {
     }
 
     /// Component used for edge deduplication. For unresolved targets we
-    /// key on the raw user-written string and ignore the diagnostic
+    /// key on the raw target and grammar, and ignore the diagnostic
     /// `cause`, so two callers' different explanations don't yield a
     /// duplicate edge.
-    fn dedup_target(&self) -> DedupTarget {
+    fn dedup_target(&self, syntax: ReferenceSyntax) -> DedupTarget {
         match self {
             Self::Resolved { id } => DedupTarget::Resolved(id.clone()),
-            Self::Unresolved { raw, .. } => DedupTarget::Unresolved(raw.clone()),
+            Self::Unresolved { raw, .. } => DedupTarget::Unresolved(raw.clone(), syntax),
         }
     }
 }
@@ -307,17 +337,18 @@ impl ResolvedTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum DedupTarget {
     Resolved(String),
-    Unresolved(String),
+    Unresolved(String, ReferenceSyntax),
 }
 
 impl Edge {
-    /// Identity for deduplication: source, target, and relation.
+    /// Identity for deduplication: source, target and relation. Unresolved
+    /// targets retain their grammar because identical text can seek different paths.
     /// `location` is not part of identity — two authoring sites for
     /// the same logical relation collapse to the first encountered.
     pub(crate) fn identity(&self) -> EdgeIdentity {
         EdgeIdentity {
             source: self.source.clone(),
-            target: self.target.dedup_target(),
+            target: self.target.dedup_target(self.syntax()),
             relation: self.relation.clone(),
         }
     }
@@ -336,6 +367,7 @@ pub(crate) struct EdgeIdentity {
 /// directly — there is no mirror struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawEdge {
+    pub syntax: ReferenceSyntax,
     /// Raw target path or id from the document.
     pub target_path: String,
     pub relation: String,

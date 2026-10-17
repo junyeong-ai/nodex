@@ -270,6 +270,7 @@ mod tests {
 
     fn edge(source: &str, target: &str, relation: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.into(),
             target: ResolvedTarget::Resolved { id: target.into() },
             relation: relation.into(),

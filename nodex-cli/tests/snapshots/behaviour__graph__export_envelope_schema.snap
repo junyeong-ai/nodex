@@ -3662,6 +3662,16 @@ exit: 0
             ],
             "type": "object"
           },
+          "ReferenceSyntax": {
+            "description": "The grammar that authored a reference. Markdown destinations use the\nreferring document as their base; graph citations use document lookup.",
+            "enum": [
+              "markdown",
+              "wikilink",
+              "pattern",
+              "frontmatter"
+            ],
+            "type": "string"
+          },
           "RuleCoverage": {
             "description": "One applied rule's reach: the rule ran, and this is how much of the\nproject it had to run over.\n\nA rule that examines nothing passes for the same reason a rule that\nexamines everything passes, and `violations` alone cannot tell the two\napart. A declared rule whose subject set is empty is inert config —\ngovernance in the file, none in effect — and the only place that shows\nis here.",
             "properties": {
@@ -3830,14 +3840,25 @@ exit: 0
                 "$ref": "#/$defs/UnresolvedSeverity",
                 "description": "Severity the `[[detection.unresolved_policy]]` table assigns —\nper-edge attribution, so a downgrade is visible, never silent.\nConsumers branch on this instead of re-deriving the policy\n(actionable ⇔ not `info`)."
               },
+              "sought": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "source": {
                 "type": "string"
               },
               "source_path": {
                 "type": "string"
+              },
+              "syntax": {
+                "$ref": "#/$defs/ReferenceSyntax"
               }
             },
             "required": [
+              "syntax",
+              "sought",
               "source",
               "source_path",
               "relation",
@@ -4788,28 +4809,20 @@ exit: 0
       },
       "query.node": {
         "$defs": {
-          "BodySection": {
-            "description": "The run of body lines a top-level heading opens, or the lines before the\nfirst heading when they hold anything but blank lines.",
+          "BodyRange": {
+            "description": "Inclusive coordinates into the canonical body, with its full line count.",
             "properties": {
-              "content_end": {
-                "description": "One past the section's last non-blank line.",
+              "end": {
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
               },
-              "heading": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/SectionHeading"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "`None` for the lines before the first heading."
-              },
               "start": {
-                "description": "The line the section opens on.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -4817,28 +4830,9 @@ exit: 0
             },
             "required": [
               "start",
-              "content_end"
+              "end",
+              "total"
             ],
-            "type": "object"
-          },
-          "BodyStructure": {
-            "description": "A body's top-level sections and the link reference definitions its\nreferences resolve to.",
-            "properties": {
-              "definitions": {
-                "description": "Only the definitions some reference resolves to, in body order.",
-                "items": {
-                  "$ref": "#/$defs/ReferenceDefinition"
-                },
-                "type": "array"
-              },
-              "sections": {
-                "description": "In body order ([`crate::parser::body::extract_structure`]).",
-                "items": {
-                  "$ref": "#/$defs/BodySection"
-                },
-                "type": "array"
-              }
-            },
             "type": "object"
           },
           "FieldParseIssue": {
@@ -4864,6 +4858,16 @@ exit: 0
           "IncomingEdgeRef": {
             "description": "One edge pointing **into** the queried node. `source` is the other\nend — the node that links to us. Split from [`OutgoingEdgeRef`] so the\nJSON shape names each end honestly instead of overloading \"target\"\nto also mean \"source for incoming\".",
             "properties": {
+              "reference": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Reference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "relation": {
                 "type": "string"
               },
@@ -4881,33 +4885,12 @@ exit: 0
             "description": "Document kind. Config-driven — no hardcoded variants.",
             "type": "string"
           },
-          "Node": {
-            "description": "A document node in the graph.",
+          "NodeMetadata": {
+            "description": "Document metadata for readers, independent of graph fingerprints.",
             "properties": {
               "attrs": {
                 "additionalProperties": true,
                 "type": "object"
-              },
-              "body_hash": {
-                "default": "",
-                "description": "SHA-256 hex of the body text after frontmatter splitting,\n`\"\"` for a body-less document.",
-                "type": "string"
-              },
-              "body_lines_hash": {
-                "description": "Per-line SHA-256 hex of every body line (in order, frontmatter\nexcluded). Vec length equals the number of `body.lines()`\nelements; collapse-detection (`append_only`) compares this\nvector for prefix equality. Empty for a body-less document.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "body_structure": {
-                "$ref": "#/$defs/BodyStructure",
-                "description": "The body's sections and resolved reference definitions\n([`crate::parser::body::extract_structure`])."
-              },
-              "content_hash": {
-                "default": "",
-                "description": "SHA-256 hex of the exact bytes the parse consumed\n(pre-canonicalisation) — the digest the build cache keys on.",
-                "type": "string"
               },
               "covers": {
                 "description": "Source-code (or other out-of-graph) paths this document covers.\nEach entry becomes an outgoing edge with relation `\"covers\"`;\nthe target stays [`crate::model::ResolvedTarget::Unresolved`]\nby design because code paths sit outside the doc graph.\nConsumed by `GitDriftRule` (drift signal against covered code)\nand `nodex query covered-by` (reverse lookup).",
@@ -4933,7 +4916,6 @@ exit: 0
                 "type": "array"
               },
               "inferred_fields": {
-                "description": "Inferrable built-in fields (`id` / `title` / `kind` / `status`)\nthe document did **not** author with a non-empty value — their\nvalue came from a fallback (identity rule, H1/stem title,\n`statuses.initial`), not from frontmatter. An empty authored\nstring counts as not-authored here, matching the resolver, which\ninfers an empty `id`/`kind`/`status` all the same. Captured once\nat parse, before inference fills the resolved value, so a\ncheck-time rule can tell \"inferred\" from \"authored\" without\nre-reading the file. A field authored but malformed is **excluded**\n(it carries a `parse_issue` instead, which `field_parse` reds) — so\nthis never claims a value the author wrote was \"not authored\".\nDrives the opt-in `schema.require_explicit` rule. Sorted for\ndeterministic output.",
                 "items": {
                   "type": "string"
                 },
@@ -4953,7 +4935,6 @@ exit: 0
                 ]
               },
               "parse_issues": {
-                "description": "Built-in frontmatter fields whose authored value failed coercion.\nEach entry reads as an absent field downstream and produces one\nError-severity `field_parse` violation in `check`. Sorted by\nfield name for deterministic output.",
                 "items": {
                   "$ref": "#/$defs/FieldParseIssue"
                 },
@@ -5019,6 +5000,16 @@ exit: 0
           "OutgoingEdgeRef": {
             "description": "One edge originating **from** the queried node. `target` is the\nresolved node id when the edge points into the graph, or the raw\nuser string for out-of-graph references (e.g. `covers` pointing at\nsource files).",
             "properties": {
+              "reference": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Reference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "relation": {
                 "type": "string"
               },
@@ -5032,53 +5023,39 @@ exit: 0
             ],
             "type": "object"
           },
-          "ReferenceDefinition": {
-            "description": "A link reference definition (`[label]: destination \"title\"`) that at least\none reference link or image in the body resolves to. A definition applies\nto references anywhere in the document, before it as much as after, which\nis why a line added at the end can change what an earlier line says.",
+          "Reference": {
+            "description": "Authored reference evidence, retained even when its target resolves.",
             "properties": {
-              "end": {
-                "description": "One past the definition's last line.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
+              "location": {
+                "type": "string"
               },
-              "first_use": {
-                "description": "The line the first reference resolving to it starts on.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
+              "source": {
+                "type": "string"
               },
-              "start": {
-                "description": "The line the definition opens on.",
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "start",
-              "end",
-              "first_use"
-            ],
-            "type": "object"
-          },
-          "SectionHeading": {
-            "description": "A heading as the markdown parser reads it: its level and its plain text,\nwhichever way it is spelled (ATX or setext, closing `#`s, inline\nemphasis).",
-            "properties": {
-              "level": {
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
+              "syntax": {
+                "$ref": "#/$defs/ReferenceSyntax"
               },
-              "text": {
+              "target": {
                 "type": "string"
               }
             },
             "required": [
-              "level",
-              "text"
+              "source",
+              "syntax",
+              "target",
+              "location"
             ],
             "type": "object"
+          },
+          "ReferenceSyntax": {
+            "description": "The grammar that authored a reference. Markdown destinations use the\nreferring document as their base; graph citations use document lookup.",
+            "enum": [
+              "markdown",
+              "wikilink",
+              "pattern",
+              "frontmatter"
+            ],
+            "type": "string"
           },
           "Status": {
             "description": "Lifecycle status. Config-driven — no hardcoded variants.\n\nDeliberately does not implement [`Default`]: the canonical\nproject-wide default lives in [`crate::config::Config::initial_status`]\nand depends on the document's kind. A blanket `Default` here would\nhardcode a status string the user's config might not even allow,\nre-introducing exactly the kind of out-of-vocabulary write the\nconfig validator is built to prevent.",
@@ -5095,6 +5072,16 @@ exit: 0
               "null"
             ]
           },
+          "body_range": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BodyRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "incoming": {
             "items": {
               "$ref": "#/$defs/IncomingEdgeRef"
@@ -5102,7 +5089,7 @@ exit: 0
             "type": "array"
           },
           "node": {
-            "$ref": "#/$defs/Node"
+            "$ref": "#/$defs/NodeMetadata"
           },
           "outgoing": {
             "items": {
@@ -5230,6 +5217,7 @@ exit: 0
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A bounded detection listing with the population the detector could judge.",
         "properties": {
           "items": {
             "items": {
@@ -5245,7 +5233,17 @@ exit: 0
               "null"
             ]
           },
+          "subjects": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unjudged": {
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -5253,9 +5251,11 @@ exit: 0
         },
         "required": [
           "items",
-          "total"
+          "total",
+          "subjects",
+          "unjudged"
         ],
-        "title": "ItemsEnvelopeShape",
+        "title": "DetectionListing",
         "type": "object"
       },
       "query.recent": {
@@ -5716,6 +5716,7 @@ exit: 0
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A bounded detection listing with the population the detector could judge.",
         "properties": {
           "items": {
             "items": {
@@ -5731,7 +5732,17 @@ exit: 0
               "null"
             ]
           },
+          "subjects": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unjudged": {
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -5739,9 +5750,11 @@ exit: 0
         },
         "required": [
           "items",
-          "total"
+          "total",
+          "subjects",
+          "unjudged"
         ],
-        "title": "ItemsEnvelopeShape",
+        "title": "DetectionListing",
         "type": "object"
       },
       "query.trust": {
@@ -6489,7 +6502,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.53.0"
+    "version": "0.54.0"
   },
   "ok": true
 }

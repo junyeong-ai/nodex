@@ -620,6 +620,7 @@ mod tests {
 
     fn edge(source: &str, target: &str, relation: &str) -> Edge {
         Edge {
+            reference: None,
             source: source.into(),
             target: ResolvedTarget::Resolved { id: target.into() },
             relation: relation.into(),
@@ -727,6 +728,7 @@ mod tests {
         // so the caller knows *why* the edge failed to resolve.
         let unresolved_edge =
             |source: &str, raw: &str, cause: crate::model::UnresolvedCause| Edge {
+                reference: None,
                 source: source.into(),
                 target: ResolvedTarget::Unresolved {
                     raw: raw.into(),

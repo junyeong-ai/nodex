@@ -104,15 +104,15 @@ impl Config {
         }
     }
 
-    /// The declared lifecycle, or `None` when the project declares none.
-    pub fn status_flow(&self) -> Option<&StatusFlowConfig> {
-        self.statuses.flow.as_ref()
+    /// Every declared lifecycle, with disjoint kind populations.
+    pub fn status_flows(&self) -> &[StatusFlowConfig] {
+        &self.statuses.flow
     }
 
-    /// The lifecycle governing `kind`, or `None` when none does.
     pub fn status_flow_for(&self, kind: &str) -> Option<&StatusFlowConfig> {
-        self.status_flow()
-            .filter(|flow| crate::model::kind_allowed(&flow.kinds, kind))
+        self.status_flows()
+            .iter()
+            .find(|flow| crate::model::kind_allowed(&flow.kinds, kind))
     }
 
     /// Whether nodes of the given kind are exempt from orphan detection.
@@ -345,34 +345,48 @@ impl Config {
     /// same change.
     pub(crate) fn initial_status_inputs(&self) -> InitialStatusInputs<'_> {
         let global = self.initial_status();
-        InitialStatusInputs {
+        let mut inputs = InitialStatusInputs {
             global,
-            flow: self.status_flow().and_then(|flow| {
-                let initial = self.flow_entry(flow);
-                (initial != global).then_some(FlowEntry {
-                    kinds: &flow.kinds,
-                    initial,
+            flows: self
+                .status_flows()
+                .iter()
+                .filter_map(|flow| {
+                    let initial = self.flow_entry(flow);
+                    (initial != global).then_some(FlowEntry {
+                        kinds: &flow.kinds,
+                        initial,
+                    })
                 })
-            }),
-        }
+                .collect(),
+        };
+        inputs.flows.sort_by_cached_key(|flow| {
+            (
+                flow.kinds
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>(),
+                flow.initial,
+            )
+        });
+        inputs
     }
 }
 
 /// See [`Config::initial_status_inputs`].
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct InitialStatusInputs<'a> {
     global: &'a str,
-    flow: Option<FlowEntry<'a>>,
+    flows: Vec<FlowEntry<'a>>,
 }
 
 impl<'a> InitialStatusInputs<'a> {
     /// Where a document of `kind` starts — the one derivation behind
     /// [`Config::initial_status_for`].
     pub(crate) fn initial_for(&self, kind: &str) -> &'a str {
-        match self.flow {
-            Some(flow) if crate::model::kind_allowed(flow.kinds, kind) => flow.initial,
-            _ => self.global,
-        }
+        self.flows
+            .iter()
+            .find(|flow| crate::model::kind_allowed(flow.kinds, kind))
+            .map_or(self.global, |flow| flow.initial)
     }
 }
 

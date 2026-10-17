@@ -7,31 +7,17 @@ exit: 0
   "data": {
     "incoming": [
       {
+        "reference": {
+          "location": "L4",
+          "source": "adr-storage",
+          "syntax": "markdown",
+          "target": "../overview.md"
+        },
         "relation": "references",
         "source": "adr-storage"
       }
     ],
     "node": {
-      "body_hash": "75e77c300b1cab8241b6d949eb7fc324325bd28ddf813cffa02760ea3d71f203",
-      "body_lines_hash": [
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "e1cb7d861aecdf5efcbabedd31ee970857b02eec940d72c08574a7b1b3bdf580",
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "e498ab7696f682dd327b27a4c4252e2be48103b1eba08c9480a11800011e2019"
-      ],
-      "body_structure": {
-        "sections": [
-          {
-            "content_end": 4,
-            "heading": {
-              "level": 1,
-              "text": "Overview"
-            },
-            "start": 1
-          }
-        ]
-      },
-      "content_hash": "d27d53676579ee2d88328e35f1b9a24261bb8bb25e1aeaf49ee1cace411c7265",
       "covers": [
         "nodex.toml"
       ],
@@ -50,10 +36,22 @@ exit: 0
     },
     "outgoing": [
       {
+        "reference": {
+          "location": "frontmatter:covers",
+          "source": "guide-overview",
+          "syntax": "frontmatter",
+          "target": "nodex.toml"
+        },
         "relation": "covers",
         "target": "nodex.toml"
       },
       {
+        "reference": {
+          "location": "L4",
+          "source": "guide-overview",
+          "syntax": "markdown",
+          "target": "decisions/storage.md"
+        },
         "relation": "references",
         "target": "adr-storage"
       }
@@ -63,6 +61,6 @@ exit: 0
   "snapshot": {
     "unbuildable": 0,
     "unfollowed": 0,
-    "verification": "membership"
+    "verification": "content"
   }
 }

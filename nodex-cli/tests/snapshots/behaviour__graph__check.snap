@@ -59,17 +59,23 @@ exit: 1
         "rule_id": "stale_review",
         "subjects": 6,
         "unit": "nodes",
-        "unjudged": 0
+        "unjudged": 1
       },
       {
         "rule_id": "superseded_reference",
         "subjects": 4,
         "unit": "edges",
         "unjudged": 0
+      },
+      {
+        "rule_id": "unresolved_reference",
+        "subjects": 2,
+        "unit": "edges",
+        "unjudged": 0
       }
     ],
     "skipped_rules": [],
-    "total": 7,
+    "total": 8,
     "violations": [
       {
         "details": {
@@ -146,6 +152,20 @@ exit: 1
         "node_id": "runbook-deploy",
         "path": "docs/runbooks/deploy.md",
         "rule_id": "stale_review",
+        "severity": "warning"
+      },
+      {
+        "details": {
+          "cause": "missing",
+          "location": "L5",
+          "raw_target": "../does-not-exist.md",
+          "relation": "references",
+          "type": "unresolved_reference"
+        },
+        "message": "references reference \"../does-not-exist.md\" (L5) does not resolve: nothing in scope resolves this target",
+        "node_id": "adr-gamma",
+        "path": "docs/decisions/gamma.md",
+        "rule_id": "unresolved_reference",
         "severity": "warning"
       }
     ]
