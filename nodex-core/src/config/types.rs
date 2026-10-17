@@ -1168,7 +1168,8 @@ pub struct DetectionConfig {
     /// here. Rows are evaluated in declared order and the first row
     /// whose `cause` equals the edge's cause and whose `glob` (when
     /// present) matches wins; an edge no row matches takes the
-    /// built-in fallthrough, [`UnresolvedSeverity::Warning`].
+    /// unmatched `unresolved_reference` rule (warning unless promoted by
+    /// `rules.severity`).
     /// Declaring the table replaces this default entirely (the
     /// `rules.acyclic_relations` replacement discipline) — re-declare
     /// the `excluded_target` row to keep it. Evaluated at query/check
@@ -1246,30 +1247,22 @@ impl UnresolvedPolicyRuleConfig {
     }
 }
 
-/// Severity a `[[detection.unresolved_policy]]` row assigns to the
-/// unresolved edges it classifies. Distinct from
-/// [`crate::rules::Severity`]: only `Error` has a check-plane mapping;
-/// `Warning` and `Info` are `query issues` report-plane levels.
+/// Severity assigned to an unresolved reference. Warning and error rows
+/// register check rules; informational rows remain outside the finding total.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnresolvedSeverity {
-    /// Gate plane: the row registers one check rule
-    /// `unresolved_reference/<name>` (Error severity), so matching
-    /// edges fail `nodex check` at exit 1 and are counted by
-    /// `query issues` as `violation_unresolved_reference/<name>`.
+    /// Error check finding; fails `check` and contributes once through its rule.
     Error,
-    /// Triage plane: counted in `query issues` `summary.total` under
-    /// `unresolved_edge`, never a check violation. Also the built-in
-    /// fallthrough for edges no row matches.
+    /// Warning check finding; contributes once through its rule without
+    /// failing `check`. The unmatched rule defaults to this level.
     Warning,
-    /// Informational plane: the edge is reported but kept out of
-    /// `summary.total`, counted under `by_category[<row name>]`.
+    /// Informational reference; reported under its policy name outside total.
     Info,
 }
 
-/// The single default policy row: a link to a real on-disk file that
-/// scope keeps out of the graph is informational, not broken. Every
-/// other cause falls through to the counted `warning` plane.
+/// The default policy classifies existing out-of-scope targets as informational.
+/// Other causes use the unmatched rule's configured severity.
 pub(crate) fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
     vec![UnresolvedPolicyRuleConfig {
         name: crate::model::edge::categories::EXCLUDED_TARGET.to_string(),

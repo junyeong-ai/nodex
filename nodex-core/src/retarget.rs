@@ -67,21 +67,9 @@ impl Retargeted {
     }
 }
 
-/// The predecessor references the successor holds, which a repoint never
-/// writes: it does not rewrite the document it points at, so nothing there
-/// can be made to name it.
-///
-/// Everything else the repoint leaves behind comes to name nothing and
-/// surfaces as an unresolved edge on the next build. These do not — the
-/// predecessor still exists and the reference goes on naming it — so the
-/// project this command leaves is in order, no rule has a reason to mention
-/// them, and `total_updated: 0` reads the same whether the successor held a
-/// reference or the project held none at all. The command is the only place
-/// the difference is known, which is why it says it.
-///
-/// A frontmatter field holds the id under a name, so the name is what a
-/// site has to say; a body id reference spells the id verbatim — that is
-/// what makes it one — so a count is.
+/// Predecessor references retained in the successor to avoid self-references.
+/// The `supersedes` succession record is exempt; other frontmatter sites are
+/// named by field and parsed body sites are counted once per occurrence.
 #[derive(Debug, Default)]
 pub struct SelfEdges {
     pub fields: Vec<&'static str>,

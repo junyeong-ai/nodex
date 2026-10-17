@@ -68,6 +68,7 @@ nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags]
 ```
 Generic listing: AND across categories, OR within. Empty filter = all nodes in id order. Tag matching is case-insensitive.
 `--fields` projects: spine fields (`id`, `title`, `kind`, `status`, `path`) in place; any project-declared field (other built-ins, `attrs` keys) under a nested `attrs` object. An undeclared field is `CONFIG_ERROR`.
+`--missing F1,F2` selects documents missing every named field, using schema presence semantics; nonempty collections, objects, `false` and `0` are present.
 `--where field=value` (repeatable) narrows by exact equality over the same vocabulary's scalar fields, `path` included. A collection built-in like `tags` is rejected — use `--tag`.
 
 ```bash
@@ -98,6 +99,8 @@ nodex query orphans [--limit N]        # live docs no record names (no incoming 
 nodex query stale   [--limit N]        # live docs past detection.stale_days (unset: none, with threshold_undeclared)
 nodex query issues                     # orphans + stale + unresolved + violations + coverage
 ```
+`orphans` and `stale` also return `subjects` and `unjudged`. Missing review dates are unjudged; use `nodes --missing reviewed` to list them.
+
 `query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.
 
 Both listings are the typed half of a rule: `orphan` and `stale_review` read the same predicates, so `query orphans` and the `orphan` violations are one pass seen twice, and `rule_coverage` answers for the population either way. A finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`. Unresolved warning and error findings follow the same counting. Info rows are reported under their own name outside `total`.
@@ -191,7 +194,7 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 
 `--body` reads the same `SOURCE` grammar as `check --content` (`-` = stdin, else a file path). `--field KEY=VALUE` (value is YAML, repeatable) renders after the identity lines and feeds the `cross_field` fixpoint. A key with a canonical source — a dedicated flag, a config derivation, or the structural `path` — is refused as a `--field` key and the error names the exact set.
 
-`--force` still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
+`--force` preserves the existing identity unless `--id` explicitly replaces it. It still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
 
 `scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession.
 
@@ -285,5 +288,3 @@ External lints consume these instead of re-parsing `nodex.toml`. `envelope-schem
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one; `judges_steps` reads git's history a commit at a time. A lock can require both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 
 Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI fails any envelope shape change lacking the promised version bump.
-
-`nodes --missing F1,F2` selects documents missing all named schema-declared fields. `stale` and `orphans` return `subjects` and `unjudged` alongside the ordinary list fields. Missing review dates are unjudged; use `nodes --missing reviewed` to list them. `scaffold --force` preserves the document identity unless `--id` explicitly replaces it.

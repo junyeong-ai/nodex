@@ -16,7 +16,7 @@ consumers without a regeneration step learn about drift at upgrade
 time, not runtime. Every release publishes
 `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json`
 as assets — pin against them instead of regenerating locally when you
-want an attested contract artifact.
+want a version-pinned, checksummed contract artifact.
 
 ## The pattern
 

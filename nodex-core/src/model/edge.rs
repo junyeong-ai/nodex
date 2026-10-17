@@ -288,10 +288,8 @@ impl Edge {
     }
 }
 
-/// Type-safe representation of an edge target. `Hash + Ord` participate
-/// in `Edge` deduplication, so two unresolved edges with the same `raw`
-/// but different causes still collapse — the *target* is the raw
-/// string the user wrote, not our diagnostic.
+/// Resolved document identity or unresolved lookup evidence. Deduplication
+/// retains unresolved grammar and raw target, independently of diagnostic cause.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResolvedTarget {
