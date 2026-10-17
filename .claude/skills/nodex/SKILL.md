@@ -6,7 +6,7 @@ description: >-
   graph queries, guarded authoring and replacement, and machine-readable exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.54.1
+  version: 0.54.2
 ---
 
 # nodex — markdown document graph CLI
