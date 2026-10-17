@@ -19,13 +19,13 @@ fn kinds_overlap(a: &[String], b: &[String]) -> bool {
 /// Common view of an immutability-rule config block — owned by the
 /// validator so the two families (`body_immutable`,
 /// `frontmatter_immutable`) reject the same typos with the same
-/// message shape. `fields` is `Some` only for `frontmatter_immutable`,
-/// whose per-block payload is a frontmatter field list. Body
+/// message shape. `frontmatter` supplies the field selection only for
+/// `frontmatter_immutable`. Body
 /// immutability has no field-list payload; its `mode` is enforced at
 /// check time, not at config load.
 struct ImmutableBlock<'a> {
     name: &'a str,
-    fields: Option<&'a [String]>,
+    frontmatter: Option<&'a FrontmatterImmutableRuleConfig>,
     arming: LockArming<'a>,
 }
 
@@ -53,8 +53,35 @@ where
         }
         let ctx = format!("{family}[{idx}] ({name:?})", name = block.name);
         config.validate_kinds(&ctx, block.arming.kinds)?;
-        if let Some(fields) = block.fields {
+        if let Some(frontmatter) = block.frontmatter {
+            let fields = &frontmatter.fields;
+            let all = fields.iter().any(|field| field == "*");
+            if all && fields.len() != 1 {
+                return Err(Error::Config(format!(
+                    "{ctx}.fields must use [\"*\"] alone to select all fields"
+                )));
+            }
+            if !all && !frontmatter.except.is_empty() {
+                return Err(Error::Config(format!(
+                    "{ctx}.except requires fields = [\"*\"]"
+                )));
+            }
+            for (index, field) in frontmatter.except.iter().enumerate() {
+                if field == "id" || !field_universe.contains(field) {
+                    return Err(Error::Config(format!(
+                        "{ctx}.except contains {field:?}, which must name a declared mutable frontmatter field; identity is always protected"
+                    )));
+                }
+                if frontmatter.except[..index].contains(field) {
+                    return Err(Error::Config(format!(
+                        "{ctx}.except contains {field:?} more than once"
+                    )));
+                }
+            }
             for field in fields {
+                if field == "*" {
+                    continue;
+                }
                 if field == "id" {
                     return Err(Error::Config(format!(
                         "{ctx}.fields contains \"id\", which cannot be locked here: \
@@ -125,9 +152,7 @@ where
         // moves no kind this block locks can move nothing it holds, and a
         // refusal whose transition could never reach a locked record would
         // name a reason that does not apply.
-        let locks_status = block
-            .fields
-            .is_some_and(|f| f.iter().any(|f| f == "status"));
+        let locks_status = block.frontmatter.is_some_and(|f| f.locks_field("status"));
         for flow in config
             .status_flows()
             .iter()
@@ -297,7 +322,7 @@ impl Config {
     pub fn judges_steps(&self) -> bool {
         crate::rules::registered_rules(self)
             .iter()
-            .any(|rule| rule.judges_steps())
+            .any(|rule| rule.judges_steps(self))
     }
 
     /// Validate internal consistency. Called automatically by `load()`.
@@ -1825,12 +1850,18 @@ impl Config {
     /// rule_ids and route through one validator so a future third
     /// family lands once.
     fn validate_immutability(&self) -> Result<()> {
+        if self.rules.immutable_baseline.is_none()
+            && (self.rules.immutable_baseline_mode != ImmutableBaselineMode::Ref
+                || self.rules.immutable_history != ImmutableHistory::Steps)
+        {
+            return Err(Error::Config("rules.immutable_baseline_mode and immutable_history require rules.immutable_baseline".into()));
+        }
         validate_immutable_blocks(
             self,
             "rules.body_immutable",
             self.rules.body_immutable.iter().map(|b| ImmutableBlock {
                 name: &b.name,
-                fields: None,
+                frontmatter: None,
                 arming: b.arming(),
             }),
         )?;
@@ -1842,7 +1873,7 @@ impl Config {
                 .iter()
                 .map(|b| ImmutableBlock {
                     name: &b.name,
-                    fields: Some(&b.fields),
+                    frontmatter: Some(b),
                     arming: b.arming(),
                 }),
         )?;

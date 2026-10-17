@@ -481,7 +481,7 @@ pub fn export_rules(config: &Config) -> RulesManifest {
             severity: rule.configured_severity(config),
             description: rule.description().to_string(),
             diff_aware: rule.diff_aware(),
-            judges_steps: rule.judges_steps(),
+            judges_steps: rule.judges_steps(config),
             params: rule.params(config),
         })
         .collect();
@@ -2078,6 +2078,7 @@ mod tests {
         let mut c = Config::default();
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
+            except: Vec::new(),
             fields: vec!["id".into(), "kind".into()],
             trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
@@ -2123,6 +2124,7 @@ mod tests {
         let mut c = Config::default();
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
+            except: Vec::new(),
             fields: vec!["id".into()],
             trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],
@@ -2204,6 +2206,7 @@ mod tests {
         let mut c = Config::default();
         c.rules.frontmatter_immutable = vec![crate::config::FrontmatterImmutableRuleConfig {
             name: "identity".into(),
+            except: Vec::new(),
             fields: vec!["id".into()],
             trigger: crate::config::ImmutableTrigger::Terminal,
             kinds: vec![],

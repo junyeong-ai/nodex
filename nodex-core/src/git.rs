@@ -726,6 +726,12 @@ impl Repository {
             .args(commits)
             .output()?;
         if !output.status.success() {
+            if output.status.code() != Some(1) {
+                return Err(io::Error::other(format!(
+                    "git merge-base failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
             return match self.is_shallow()? {
                 true => Ok(Before::Cut),
                 false => Ok(Before::Commits(Vec::new())),
@@ -737,6 +743,28 @@ impl Repository {
                 .map(str::to_string)
                 .collect(),
         ))
+    }
+
+    /// Select one best base only when the available ancestry establishes it.
+    pub fn unique_merge_base(&self, commits: &[String]) -> io::Result<String> {
+        let base = match self.merge_base(commits)? {
+            Before::Commits(mut bases) if bases.len() == 1 => bases.remove(0),
+            Before::Commits(bases) if bases.is_empty() => {
+                return Err(io::Error::other("the commits have no common ancestor"));
+            }
+            Before::Commits(_) => {
+                return Err(io::Error::other("the commits have multiple merge bases"));
+            }
+            Before::Cut => {
+                return Err(io::Error::other(
+                    "shallow history cannot establish a merge base; fetch the required ancestry",
+                ));
+            }
+        };
+        if self.is_shallow()? {
+            self.range(&base, commits)?;
+        }
+        Ok(base)
     }
 
     /// Every path under the project that git ignores and does not track, as
@@ -917,6 +945,11 @@ impl Repository {
             )));
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+
+    /// Resolve a ref to the immutable commit used by this invocation.
+    pub fn commit(&self, git_ref: &str) -> io::Result<String> {
+        self.object_id(&format!("{git_ref}^{{commit}}"))
     }
 
     /// The root tree `commit` records.

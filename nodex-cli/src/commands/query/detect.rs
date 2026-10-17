@@ -92,6 +92,7 @@ pub(crate) fn run_issues(
             graph,
             files: context.root,
         },
+        crate::commands::git_checkout::Steps::Uncommitted,
     )?;
     warnings.extend(unread);
     let diff = match baseline {

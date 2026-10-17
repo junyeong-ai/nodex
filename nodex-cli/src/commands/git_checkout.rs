@@ -76,8 +76,9 @@ pub fn diff_against_ref(
     git_ref: &str,
     config: &nodex_core::Config,
     current: Current<'_>,
+    steps: Steps<'_>,
 ) -> Result<Prior> {
-    prior(repository, git_ref, config, current, Steps::Range)
+    prior(repository, git_ref, config, current, steps)
 }
 
 /// The baseline at `git_ref` and the history `steps` reaches, read through
@@ -87,17 +88,21 @@ fn prior(
     git_ref: &str,
     config: &nodex_core::Config,
     current: Current<'_>,
-    steps: Steps,
+    steps: Steps<'_>,
 ) -> Result<Prior> {
     let since = match steps {
-        Steps::Uncommitted => None,
-        Steps::Range => Some(git_ref),
+        Steps::None | Steps::Uncommitted => None,
+        Steps::Range(source) => Some(source),
     };
     let (baseline, ancestry) =
         match baseline_graph(current.files, repository, git_ref, config, steps)? {
             BaselineSnapshot::Absent { warning } => (
                 BaselineResolution::Inert { warning },
-                history(repository, config, since)?,
+                if matches!(steps, Steps::None) {
+                    None
+                } else {
+                    history(repository, config, since)?
+                },
             ),
             BaselineSnapshot::Graphed(baseline) => (
                 BaselineResolution::Resolved(Box::new(BaselineDiff {
@@ -146,7 +151,9 @@ pub enum BaselineSnapshot {
 /// at a time. Read only where a registered rule does
 /// (`Config::judges_steps`).
 #[derive(Debug, Clone, Copy)]
-pub enum Steps {
+pub enum Steps<'a> {
+    /// Only materialise the comparison snapshot.
+    None,
     /// What the uncommitted change is made on, and nothing earlier: what a
     /// plain `check`, `query issues` and every write seam judge. A step
     /// finding is about a commit, so re-judging every commit since a
@@ -155,7 +162,7 @@ pub enum Steps {
     Uncommitted,
     /// Every commit the heads reach and the ref does not, as well — what
     /// `check --since <ref>` asks about.
-    Range,
+    Range(&'a str),
 }
 
 /// The project graphed at `git_ref`, plus everything about that build a
@@ -177,7 +184,7 @@ pub fn baseline_graph(
     repository: &Repository,
     git_ref: &str,
     config: &nodex_core::Config,
-    steps: Steps,
+    steps: Steps<'_>,
 ) -> Result<BaselineSnapshot> {
     let tree = match recorded(repository, git_ref)? {
         Recorded::Tree(tree) => tree,
@@ -275,7 +282,7 @@ pub fn baseline_graph(
             )
         }))
         .collect();
-    let ancestry = match config.judges_steps() {
+    let ancestry = match config.judges_steps() && !matches!(steps, Steps::None) {
         true => {
             let mut snapshots = Snapshots::new(repository, config, Some(checkout));
             snapshots.graphed.insert(
@@ -283,8 +290,8 @@ pub fn baseline_graph(
                 Arc::new(snapshots.documents.snapshot(&before_result.graph)),
             );
             Some(snapshots.ancestry(match steps {
-                Steps::Uncommitted => None,
-                Steps::Range => Some(git_ref),
+                Steps::None | Steps::Uncommitted => None,
+                Steps::Range(source) => Some(source),
             })?)
         }
         false => None,
@@ -335,7 +342,7 @@ pub fn uncommitted_history(root: &Path, config: &nodex_core::Config) -> Result<O
 fn needs_unbound_history(config: &nodex_core::Config) -> bool {
     nodex_core::rules::registered_rules(config)
         .iter()
-        .any(|rule| rule.judges_steps() && !rule.diff_aware())
+        .any(|rule| rule.judges_steps(config) && !rule.diff_aware())
 }
 
 /// Whether any record stands differently on one of these snapshots than on
@@ -854,17 +861,24 @@ pub fn baseline_diff(
     root: &Path,
     config: &nodex_core::Config,
     current: Current<'_>,
+    steps: Steps<'_>,
 ) -> Result<Prior> {
     // A baseline whose ref cannot be read refuses the run outright, the
     // same way every write seam does: a `check` that went green here would
     // be reporting on rules that can never fire.
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     match binding.bound() {
-        Some((repository, git_ref)) => {
-            prior(repository, git_ref, config, current, Steps::Uncommitted)
-        }
+        Some((repository, git_ref)) => prior(repository, git_ref, config, current, steps),
         None => {
-            let ancestry = uncommitted_history(root, config)?;
+            let ancestry = match steps {
+                Steps::None => None,
+                Steps::Uncommitted => uncommitted_history(root, config)?,
+                Steps::Range(source) => history(
+                    &ensure_repository(root, "nodex check --since")?,
+                    config,
+                    Some(source),
+                )?,
+            };
             Ok(Prior {
                 baseline: match binding.advisory() {
                     Some(warning) => BaselineResolution::Inert { warning },

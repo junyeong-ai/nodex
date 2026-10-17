@@ -393,9 +393,6 @@ pub fn scaffold(
     // composed document is overlaid onto the working tree and the
     // proposal answers for exactly the violations it introduces, so a
     // pre-existing project violation never blocks an unrelated scaffold.
-    // `OverWorkingTree` is the `check --content` semantics this command
-    // mirrors — already-on-disk is the launder-safe boundary the
-    // diff-aware rules judge a newly authored document against.
     // Structural breakage (a duplicate id elsewhere on disk, a supersedes
     // cycle from a supplied relation) refuses here too: the overlay build
     // itself errors.

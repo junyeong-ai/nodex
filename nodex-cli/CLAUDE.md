@@ -67,9 +67,9 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
   wording come from core `BaselineBinding`, not a second CLI derivation.
 - With step rules, baseline_graph also reads history. Without an applicable
   baseline, `history` / `uncommitted_history` still feeds non-diff-aware step rules
-  (status flows), while diff-aware locks skip. Explicit `--since` alone reads
-  `Steps::Range`; plain check, issues and write gates read HEAD/MERGE_HEAD through
-  `Steps::Uncommitted`. Read judgment receives Prior plus Current (graph + files).
+  (status flows), while diff-aware locks skip. Snapshot locks read no steps.
+  Explicit `--since` alone reads `Steps::Range`; plain check, issues and write
+  gates read HEAD/MERGE_HEAD through `Steps::Uncommitted`. Read judgment receives Prior plus Current (graph + files).
 - `check --staged` holds the index tree's checkout through judgment; baseline and
   history use a second checkout. `staged_tree` alone reads GIT_INDEX_FILE.
   `Checkout::tree_of_index` copies the operator's index before `write-tree`, which

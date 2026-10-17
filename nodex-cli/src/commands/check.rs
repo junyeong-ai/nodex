@@ -77,7 +77,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
     // to measure the project that graph describes rather than the tree on
     // disk. Any other target carries an empty overlay over the working tree,
     // so one construction serves all three.
-    let check_report = check(
+    let mut check_report = check(
         &target.graph,
         &config,
         nodex_core::builder::scanner::ProjectFiles::proposed(&target.files, &target.overlay),
@@ -86,6 +86,20 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
         target.steps.as_deref(),
         today,
     );
+    if let Some(proposals) = &target.proposals {
+        let locks: BTreeSet<_> = nodex_core::rules::registered_rules(&config)
+            .into_iter()
+            .filter(|rule| rule.is_lock())
+            .map(|rule| rule.id().to_string())
+            .collect();
+        check_report.violations.retain(|violation| {
+            !locks.contains(&violation.rule_id)
+                || violation
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| proposals.iter().any(|(proposed, _)| proposed == path))
+        });
+    }
     // Released before a verdict can end the process, which runs no destructor.
     drop(target.staged);
 
@@ -233,15 +247,13 @@ struct CheckTarget {
     /// History a step at a time for the rules that judge steps: the
     /// uncommitted change (under `--staged`, the staged one) against the
     /// heads, preceded by every commit an explicit `--since` adds. `None`
-    /// for a `--content` proposal, which is no commit, and outside a git
-    /// work tree.
+    /// outside a git work tree.
     steps: Option<Vec<nodex_core::Step>>,
-    /// `--since <ref>`: the report is narrowed to what `diff` answers
-    /// for, and the ref is what a rule reading git asks about. Absent
-    /// without a diff — a `--since` ref that does not carry the project
+    /// The report's change diff and source ref, independent of the lock
+    /// comparison. Absent without a report diff — a `--since` ref that does not carry the project
     /// widens back to the whole project and says so; one git cannot
     /// resolve is refused before this is built.
-    narrowed: Option<String>,
+    narrowed: Option<(nodex_core::diff::GraphDiff, String)>,
     /// One `(normalized forward-slash path, in_scope)` per `--content`
     /// proposal, in invocation order. `Some` only in `--content` mode —
     /// drives the per-proposal verdicts so a clean or out-of-scope
@@ -269,27 +281,23 @@ struct CheckTarget {
 impl CheckTarget {
     fn since(&self) -> Since<'_> {
         match (&self.diff, &self.narrowed) {
-            (Some(diff), Some(since)) => Since::Narrowed { diff, since },
+            (diff, Some((changes, since))) => Since::Narrowed {
+                diff: diff.as_ref(),
+                changes,
+                since,
+            },
             (Some(diff), None) => Since::Baseline(diff),
-            (None, _) => Since::None,
+            (None, None) => Since::None,
         }
     }
 }
 
 /// Resolve what to check and how to scope it.
 ///
-/// `--content` validates one or more unwritten proposals: the *before*
-/// graph is the working tree and the *after* graph overlays every
-/// proposed `PATH=SOURCE` pair at once, so the diff names exactly what
-/// the edit (or batch) changes and the diff-aware immutability rules see
-/// "already on disk" as the baseline (the launder-safe boundary — never
-/// an older committed ref).
-/// Both graphs are built read-only and the drift reading only consults
-/// what was kept, so a write-time check writes nothing to the output
-/// directory. `--staged` is [`resolve_staged_target`]'s. Otherwise the
-/// working tree is the target, scoped by `--since` /
-/// `rules.immutable_baseline` via [`resolve_diff`], and it refreshes both
-/// `cache.json` and the kept drift reading.
+/// Proposals overlay the working tree; staged checks read the index. Locks
+/// compare the selected baseline, or the working tree when none is configured.
+/// Proposal builds are read-only. Ordinary working-tree and staged checks
+/// refresh the parse cache and drift reading.
 fn resolve_target(
     root: &Path,
     args: &CheckArgs,
@@ -417,13 +425,7 @@ fn resolve_content_target(
     config: &nodex_core::Config,
     today: NaiveDate,
 ) -> Result<CheckTarget> {
-    // `--content` gates a write, so it must refuse whatever the write
-    // would refuse. Its own diff comes from the overlay — the working
-    // tree is the before-state, and the configured baseline plays no
-    // part in the verdict — but a baseline whose ref cannot be read
-    // refuses every mutating command, and a gate that stayed green while
-    // the write it clears cannot run would be the misleading answer.
-    nodex_core::BaselineBinding::resolve(root, config)?;
+    let probe = super::git_checkout::write_baseline(root, config)?;
 
     let overlay = parse_proposals(root, pairs)?;
 
@@ -506,30 +508,33 @@ fn resolve_content_target(
         "gate this proposal against",
     ));
     warnings.extend(out_of_scope);
+    warnings.extend(probe.advisories().iter().cloned());
     warnings.extend(evicted);
     let before = before.graph;
     let after = after.graph;
-    let diff = nodex_core::diff::compute_diff(&before, &after);
-    // The before-report anchors the delta: it runs without a diff
-    // (diff-aware rules need "what changed", and nothing has), so any
-    // diff-aware violation in the after-report is new by construction and
-    // gates the batch.
+    let diff = if config.rules.immutable_baseline.is_some() {
+        probe.diff(&after)
+    } else {
+        Some(nodex_core::diff::compute_diff(&before, &after))
+    };
+    let steps = probe.steps(&after);
     let history = DriftHistory::of(config, root);
+    let before_steps = probe.steps(&before);
     let baseline = check(
         &before,
         config,
         nodex_core::builder::scanner::ProjectFiles::working_tree(root),
         &history,
         Since::None,
-        None,
+        before_steps.as_deref(),
         today,
     )
     .violations;
     Ok(CheckTarget {
         graph: after,
         baseline_violations: Some(baseline),
-        diff: Some(diff),
-        steps: None,
+        diff,
+        steps,
         narrowed: None,
         proposals: Some(proposals),
         history,
@@ -596,90 +601,99 @@ fn parse_proposals(
     Ok(overlay)
 }
 
-/// `(diff, steps, narrowed, warnings)` from [`resolve_diff`]: the diff that
-/// activates diff-aware rules, the same change a step at a time for the rules
-/// that judge steps, the ref the report is narrowed to (only for an explicit
-/// `--since`), and any non-fatal advisories.
 type DiffResolution = (
     Option<nodex_core::diff::GraphDiff>,
     Option<Vec<nodex_core::Step>>,
-    Option<String>,
+    Option<(nodex_core::diff::GraphDiff, String)>,
     Vec<nodex_core::Warning>,
 );
 
-/// Resolve the diff baseline for a check run, returning
-/// `(diff, steps, narrowed, warnings)`.
-///
-/// An explicit `--since` does double duty: it supplies the diff that
-/// activates diff-aware rules AND narrows the reported violations to
-/// what that same diff answers for (`Since::Narrowed` — one diff, so
-/// the narrowing and the activation can never disagree). When `--since` is omitted, the
-/// configured `rules.immutable_baseline` supplies a diff so the
-/// immutability rules run by default. The baseline deliberately does NOT
-/// narrow the violation set, because the operator never asked to scope
-/// the report.
-///
-/// Both go through the one shared substrate (`git_checkout`, also
-/// consumed by `query issues`), so every consumer surfaces the same
-/// violations and the same inert advisory when the baseline cannot
-/// engage — not a silent skip, and not the misleading "needs --since"
-/// skip reason the rules would emit. The diff is computed against the
-/// already-built `current` graph, never a rebuild.
-///
-/// Single-lens semantics: the config of the project being checked — the
-/// working tree's, or the index's under `--staged` — is the one lens and
-/// the ref supplies *content only* — the before tree's own
-/// `nodex.toml` is never loaded. The diff reports content changes under
-/// today's contract (mirroring `--content`, where one config views two
-/// content states), and a PR that migrates the config format itself can
-/// still pass the gate — under per-ref configs such a PR deadlocks,
-/// because the base ref's config no longer parses under the new binary.
 fn resolve_diff(
     root: &Path,
     args: &CheckArgs,
     config: &nodex_core::Config,
     current: Current<'_>,
 ) -> Result<DiffResolution> {
-    let (prior, narrowing) = match args.since.as_deref() {
+    let (mut prior, changes) = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
-            let prior =
-                super::git_checkout::diff_against_ref(&repository, git_ref, config, current)?;
-            (prior, Some(git_ref.to_string()))
+            let report_steps = if config.rules.immutable_baseline.is_some() {
+                super::git_checkout::Steps::None
+            } else {
+                super::git_checkout::Steps::Range(git_ref)
+            };
+            let mut prior = super::git_checkout::diff_against_ref(
+                &repository,
+                git_ref,
+                config,
+                current,
+                report_steps,
+            )?;
+            if config.rules.immutable_baseline.is_some() {
+                let configured = super::git_checkout::baseline_diff(
+                    root,
+                    config,
+                    current,
+                    super::git_checkout::Steps::Range(git_ref),
+                )?;
+                prior.steps = configured.steps;
+                let changes = std::mem::replace(&mut prior.baseline, configured.baseline);
+                prior.unread.extend(configured.unread);
+                (prior, Some((changes, git_ref.to_string())))
+            } else {
+                (prior, None)
+            }
         }
         None => (
-            super::git_checkout::baseline_diff(root, config, current)?,
+            super::git_checkout::baseline_diff(
+                root,
+                config,
+                current,
+                super::git_checkout::Steps::Uncommitted,
+            )?,
             None,
         ),
+    };
+    let narrowed = match changes {
+        Some((BaselineResolution::Resolved(baseline), source)) => {
+            prior.unread.extend(baseline.warnings);
+            Some((baseline.diff, source))
+        }
+        Some((BaselineResolution::Inert { warning }, _)) => {
+            prior.unread.push(warning);
+            prior.unread.push(nodex_core::Warning::new(nodex_core::WarningCode::GateSuppression,
+                "--since could not be resolved into a set of changed nodes, so the report covers every node rather than the scope requested"));
+            None
+        }
+        Some((BaselineResolution::NotApplicable, _)) => None,
+        None => match (&prior.baseline, args.since.as_deref()) {
+            (BaselineResolution::Resolved(baseline), Some(source)) => {
+                Some((baseline.diff.clone(), source.to_string()))
+            }
+            (BaselineResolution::Inert { .. }, Some(_)) => {
+                prior.unread.push(nodex_core::Warning::new(nodex_core::WarningCode::GateSuppression,
+                    "--since could not be resolved into a set of changed nodes, so the report covers every node rather than the scope requested"));
+                None
+            }
+            _ => None,
+        },
     };
     let Prior {
         baseline,
         steps,
-        unread,
+        mut unread,
     } = prior;
-    Ok(match baseline {
+    let diff = match baseline {
         BaselineResolution::Resolved(baseline) => {
             let BaselineDiff { diff, warnings } = *baseline;
-            (Some(diff), steps, narrowing, [warnings, unread].concat())
+            unread.extend(warnings);
+            Some(diff)
         }
-        // An inert resolution leaves nothing to narrow *to*, so an
-        // explicit `--since` widens back to the whole project. The
-        // operator asked for a scope and is getting another one, which
-        // they must hear — the advisory alone reads as being about the
-        // rules, not about the report they are holding.
         BaselineResolution::Inert { warning } => {
-            let mut warnings = vec![warning];
-            warnings.extend(unread);
-            if narrowing.is_some() {
-                warnings.push(nodex_core::Warning::new(
-                    nodex_core::WarningCode::GateSuppression,
-                    "--since could not be resolved into a set of changed nodes, so the \
-                     report covers every node rather than the scope requested"
-                        .to_string(),
-                ));
-            }
-            (None, steps, None, warnings)
+            unread.push(warning);
+            None
         }
-        BaselineResolution::NotApplicable => (None, steps, None, unread),
-    })
+        BaselineResolution::NotApplicable => None,
+    };
+    Ok((diff, steps, narrowed, unread))
 }
