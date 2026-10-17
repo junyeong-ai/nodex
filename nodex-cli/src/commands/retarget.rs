@@ -106,7 +106,7 @@ pub fn run(
     // asks what the project looks like after the whole repoint lands, which
     // no single file can answer — and a write must not land before the
     // answer, or a refused file would already be on disk.
-    let mut plans = Vec::new();
+    let mut plans: Vec<_> = succession.iter().cloned().collect();
     let mut skipped: Vec<String> = Vec::new();
     // Kept apart from `skipped` because the codes are: one says a write was
     // attempted and something stood in the way, the other that no write was
@@ -117,6 +117,12 @@ pub fn run(
     // `[[old]]` that binds a different document by path is left alone.
     let bound = nodex_core::builder::resolver::Bindings::of_graph(&graph);
     for node in graph.nodes().values() {
+        if succession
+            .as_ref()
+            .is_some_and(|plan| plan.rel_path == node.path)
+        {
+            continue;
+        }
         let shown = nodex_core::path_guard::forward_string(&node.path);
         // A reference the rewrite had a replacement for and could not
         // write. A retarget moves no file, so the reference goes on
@@ -133,12 +139,6 @@ pub fn run(
         let retarget = |content: &str| {
             if !node.matches_content(content) {
                 return Err(CoreError::WriteConflict(node.path.clone()));
-            }
-            if let Some(plan) = succession
-                .as_ref()
-                .filter(|plan| plan.rel_path == node.path)
-            {
-                return Ok(Some(plan.content.clone()));
             }
             let retargeted = nodex_core::retarget::retarget_document(
                 content,

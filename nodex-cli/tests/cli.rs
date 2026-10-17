@@ -26039,3 +26039,51 @@ severity="info"
         assert_eq!(issues["unresolved_edges"].as_array().unwrap().len(), 2);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn composed_replacement_refuses_an_external_predecessor_before_citations_change() {
+    use std::os::unix::fs::symlink;
+
+    let root = scratch();
+    let external = scratch();
+    write_doc(
+        root.path(),
+        "nodex.toml",
+        "[scope]\ninclude=[\"docs/**/*.md\"]\nfollow_symlinks=true\n[parser]\nwikilink_enabled=true\n",
+    );
+    let predecessor = "---\nid: old\nstatus: active\n---\n# Old\n";
+    let citation = "---\nid: use\n---\n[[old]]\n";
+    write_doc(external.path(), "old.md", predecessor);
+    write_doc(root.path(), "docs/new.md", "---\nid: new\n---\n# New\n");
+    write_doc(root.path(), "docs/use.md", citation);
+    symlink(external.path(), root.path().join("docs/external")).unwrap();
+
+    let output = nodex(root.path())
+        .args(["retarget", "old", "new", "--supersede"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "PATH_ESCAPES_ROOT");
+    assert_eq!(
+        fs::read_to_string(external.path().join("old.md")).unwrap(),
+        predecessor
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("docs/use.md")).unwrap(),
+        citation
+    );
+
+    let ordinary = run_json(nodex(root.path()).args(["retarget", "old", "new"]));
+    assert_eq!(ordinary["completion"], "complete");
+    assert_eq!(
+        fs::read_to_string(external.path().join("old.md")).unwrap(),
+        predecessor
+    );
+    assert!(
+        fs::read_to_string(root.path().join("docs/use.md"))
+            .unwrap()
+            .contains("[[new]]")
+    );
+}
