@@ -193,6 +193,9 @@ safety: `src/git.rs` rustdoc.
   Overlay is read-only and substitutes proposed bytes; Ref reads/writes no disk
   parse cache and confines its scan to the checkout. All modes share the private
   scanner authority, so proposals and real post-write builds agree on membership.
+  With directory links enabled, proposals resolve by filesystem entry even when
+  only one spelling is admitted: a proposal can name it through an excluded
+  subtree. Scope, conditional exclusion and parsing must read the same bytes.
 - `BuildSession` reuses parsing and prepared patterns within one invocation.
   Overlay loads the disk parse cache once, checks actual-byte hashes and never
   persists proposals. Complete-outcome reuse is Ref-only, conditional on actual
@@ -208,6 +211,13 @@ safety: `src/git.rs` rustdoc.
   different projections. `ScopeMembership` / `IdentityParse` destructure fields
   exhaustively so additions require an explicit projection decision.
   Source: `src/parser/mod.rs`, `src/builder/scanner.rs`, `src/builder/mod.rs`.
+- Static admission and descent share `WalkPolicy`. Skip a directory only when
+  no descendant can be admitted: include literal prefixes bound reachability,
+  and compiled exclude regexes must prove the prefix covers every descendant.
+  A prefix compiled in isolation can change recursive wildcard semantics.
+  File-only exclusions do not prune directories. Diagnostics describe reached
+  entries, not skipped subtrees. See `builder/scanner.rs` and
+  `directory_pruning_bounds_the_walk_without_changing_documents`.
 - Hidden admission (`hidden_admitted`) asks each matching include glob whether
   replacing a segment's leading dot loses the match. Walk hints
   (`IncludeLead::may_hold_hidden`, `could_reach`) may walk wider, never narrower:
