@@ -219,13 +219,10 @@ pub struct BuildResult {
     /// `scope.follow_symlinks` is off. Nothing below them is graphed, so the
     /// boundary is stated instead of left to be discovered — reported for the
     /// same reason `conditionally_excluded` is. Like `dangling_paths`, this is
-    /// every link the walk reached rather than only those that could have held
-    /// an in-scope document: what lies below one is unknowable without
-    /// descending it, which is the cost the policy exists to avoid, so a link
-    /// under an `exclude`d tree is listed too. What the walk *does* keep away
-    /// from — a `prune_dirs` basename, a hidden segment — is absent here,
-    /// because that boundary is the project's own and holds for a real
-    /// directory just the same.
+    /// every link the walk reached. Subtrees unreachable by include prefixes
+    /// or wholly excluded by a `/**` rule are not visited, just as pruned and
+    /// hidden directories are not visited. File-only exclusions do not stop
+    /// descent and do not suppress this accounting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unfollowed_paths: Vec<String>,
     /// Names the scan holds a document under but does not use, each paired

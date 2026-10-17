@@ -321,7 +321,7 @@ exit: 0
             "type": "integer"
           },
           "unfollowed_paths": {
-            "description": "Directory symlinks the walk did not descend, because\n`scope.follow_symlinks` is off. Nothing below them is graphed, so the\nboundary is stated instead of left to be discovered — reported for the\nsame reason `conditionally_excluded` is. Like `dangling_paths`, this is\nevery link the walk reached rather than only those that could have held\nan in-scope document: what lies below one is unknowable without\ndescending it, which is the cost the policy exists to avoid, so a link\nunder an `exclude`d tree is listed too. What the walk *does* keep away\nfrom — a `prune_dirs` basename, a hidden segment — is absent here,\nbecause that boundary is the project's own and holds for a real\ndirectory just the same.",
+            "description": "Directory symlinks the walk did not descend, because\n`scope.follow_symlinks` is off. Nothing below them is graphed, so the\nboundary is stated instead of left to be discovered — reported for the\nsame reason `conditionally_excluded` is. Like `dangling_paths`, this is\nevery link the walk reached. Subtrees unreachable by include prefixes\nor wholly excluded by a `/**` rule are not visited, just as pruned and\nhidden directories are not visited. File-only exclusions do not stop\ndescent and do not suppress this accounting.",
             "items": {
               "type": "string"
             },
@@ -6502,7 +6502,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.54.2"
+    "version": "0.55.0"
   },
   "ok": true
 }

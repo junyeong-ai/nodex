@@ -333,10 +333,9 @@ fn build_inner(
     // later readable-and-empty file does not collide with it).
     //
     // Resolved by document, so the bytes this pass reads for a path are the
-    // bytes the scope pass judged it by — a scan that holds a document under
-    // more than one name would otherwise let the two passes of one build
-    // disagree about the same proposal.
-    let overlay_by_entry = scanner::overlay_by_entry(root, overlay, !aliases.is_empty());
+    // bytes the scope pass judged it by, including when the proposal names
+    // an entry through a spelling whose subtree the walk excluded.
+    let overlay_by_entry = scanner::overlay_by_entry(root, overlay, config.scope.follow_symlinks);
     let read_results: Vec<(
         std::path::PathBuf,
         std::result::Result<String, ParseFailure>,
@@ -1104,6 +1103,68 @@ mod tests {
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    #[cfg(unix)]
+    fn proposals_through_pruned_names_match_the_written_project() {
+        for exclude_real in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            std::fs::create_dir(root.join("real")).unwrap();
+            std::os::unix::fs::symlink("real", root.join("docs")).unwrap();
+            std::fs::write(root.join("real/a.md"), "---\nid: a\nstatus: active\n---\n").unwrap();
+            std::fs::write(root.join("real/plan.md"), "---\nid: plan\n---\n").unwrap();
+            let mut config = Config::default();
+            config.scope.follow_symlinks = true;
+            if exclude_real {
+                config.scope.exclude = vec!["real/**".into()];
+            } else {
+                config.scope.include = vec!["docs/**/*.md".into()];
+            }
+            config.scope.conditional_exclude = vec![crate::config::ConditionalExclude {
+                parent_glob: "docs/a.md".into(),
+                child_glob: "docs/plan.md".into(),
+                condition: "status_terminal".into(),
+                may_be_empty: false,
+            }];
+            let content = "---\nid: a\nstatus: archived\n---\n";
+            let overlay = vec![(
+                PathBuf::from("real/a.md"),
+                Proposed::Content(content.into()),
+            )];
+            let proposed = build_with_overlay(root, &config, &overlay).unwrap();
+            std::fs::write(root.join("real/a.md"), content).unwrap();
+            let written = build(root, &config, true).unwrap();
+            assert_eq!(
+                proposed.graph.node("a").unwrap().status.as_str(),
+                "archived"
+            );
+            assert!(proposed.graph.node("plan").is_none());
+            assert_eq!(
+                proposed.conditionally_excluded,
+                written.conditionally_excluded
+            );
+            assert_eq!(
+                serde_json::to_value(proposed.graph.nodes()).unwrap(),
+                serde_json::to_value(written.graph.nodes()).unwrap()
+            );
+
+            let removed = build_with_overlay(
+                root,
+                &config,
+                &[(PathBuf::from("real/a.md"), Proposed::Absent)],
+            )
+            .unwrap();
+            std::fs::remove_file(root.join("real/a.md")).unwrap();
+            let written = build(root, &config, true).unwrap();
+            assert!(removed.graph.node("a").is_none());
+            assert!(removed.graph.node("plan").is_some());
+            assert_eq!(
+                serde_json::to_value(removed.graph.nodes()).unwrap(),
+                serde_json::to_value(written.graph.nodes()).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn overlay_session_reuses_parsing_without_persisting_proposals() {

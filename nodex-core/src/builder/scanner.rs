@@ -408,7 +408,9 @@ fn scan(
 ) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
     let include = build_globset(&scan.scope.include, "scope.include")?;
-    let exclude = build_globset(&scan.effective_exclude_patterns(), "scope.exclude")?;
+    let exclude_patterns = scan.effective_exclude_patterns();
+    let exclude = build_globset(&exclude_patterns, "scope.exclude")?;
+    let excluded_subtrees = build_subtree_excludes(&exclude_patterns)?;
 
     // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
     // by default — the ripgrep / fd / git convention, since dot-prefixed
@@ -443,22 +445,14 @@ fn scan(
     let policy = WalkPolicy {
         include: &include,
         exclude: &exclude,
+        excluded_subtrees: &excluded_subtrees,
         leads: &leads,
         prune_dirs: scan.scope.prune_dirs,
         follow_symlinks: scan.scope.follow_symlinks,
         confine: confine.as_deref(),
         output: output.as_deref(),
     };
-    let mut found = WalkFindings {
-        paths: Vec::new(),
-        dangling: Vec::new(),
-        unfollowed: Vec::new(),
-        unfollowed_in_scope: Vec::new(),
-        undescended: Vec::new(),
-        escaping: Vec::new(),
-        dir_names: BTreeMap::new(),
-        aliased: false,
-    };
+    let mut found = WalkFindings::default();
     walk_dir(root, root, &policy, &mut found)?;
     let WalkFindings {
         mut paths,
@@ -495,7 +489,7 @@ fn scan(
                 }
             }
             Proposed::Absent => {
-                if aliased {
+                if policy.follow_symlinks {
                     let leaving = entry_of(root, rel_path);
                     paths.retain(|p| entry_of(root, p) != leaving);
                 } else {
@@ -514,7 +508,7 @@ fn scan(
         if scan.scope.conditional_exclude.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            apply_conditional_excludes(root, &mut paths, &scan, overlay, aliased)
+            apply_conditional_excludes(root, &mut paths, &scan, overlay, policy.follow_symlinks)
         };
 
     // Only now is there one document per entry. An entry any spelling excluded
@@ -565,6 +559,7 @@ fn scan(
 struct WalkPolicy<'a> {
     include: &'a GlobSet,
     exclude: &'a GlobSet,
+    excluded_subtrees: &'a GlobSet,
     leads: &'a [IncludeLead],
     prune_dirs: &'a [String],
     follow_symlinks: bool,
@@ -588,18 +583,12 @@ impl WalkPolicy<'_> {
             .is_some_and(|(output, real)| real.starts_with(output))
     }
 
-    /// Whether any `scope.include` pattern could match a path below `rel`.
-    ///
-    /// A pattern's literal prefix is the part every path it matches must
-    /// spell exactly, so a directory outside every prefix cannot hold a
-    /// document the scan would admit — which is what makes this a proof
-    /// rather than a guess. `scope.exclude` supports no such answer and is
-    /// deliberately not consulted: its patterns match files, so excluding a
-    /// directory's own path says nothing about what is under it.
-    fn could_admit_below(&self, rel: &Path) -> bool {
-        let rel_str = crate::path_guard::forward_string(rel);
-        let segments: Vec<&str> = rel_str.split('/').collect();
-        self.leads.iter().any(|lead| lead.could_reach(&segments))
+    /// A descent is unnecessary when no include's literal prefix can reach
+    /// it, or an exclude covers every descendant. Other file exclusions do
+    /// not constrain descent.
+    fn could_admit_below(&self, rel: &str, segments: &[&str]) -> bool {
+        self.leads.iter().any(|lead| lead.could_reach(segments))
+            && !self.excluded_subtrees.is_match(rel)
     }
 }
 
@@ -622,8 +611,8 @@ impl WalkPolicy<'_> {
     /// reads them, so both a directory the walk would descend and a file it
     /// would admit are settled by the same verdict. `include` / `exclude` are
     /// globs over a *document* path, so they only ever answer the file
-    /// reading — a directory is descended without consulting them, and the
-    /// documents beneath it are matched one by one.
+    /// reading. Directory descent additionally requires
+    /// [`Self::could_admit_below`]; documents are matched one by one.
     ///
     /// That split is what an entry resolving to neither can be judged by: its
     /// target is gone, so which reading applied is unknowable, and only the
@@ -655,6 +644,7 @@ impl WalkPolicy<'_> {
 }
 
 /// What one walk yielded: the documents, and every path it declined.
+#[derive(Default)]
 struct WalkFindings {
     paths: Vec<PathBuf>,
     dangling: Vec<PathBuf>,
@@ -662,7 +652,7 @@ struct WalkFindings {
     unfollowed: Vec<PathBuf>,
     /// The subset of `unfollowed` an `scope.include` pattern could reach below.
     ///
-    /// `unfollowed` is the whole accounting — every link the walk declined,
+    /// `unfollowed` is the whole accounting — every reached link the walk declined,
     /// reported so the boundary is auditable. This is the part that bounds the
     /// *document corpus*, which is what a validation run has to say out loud:
     /// a link no include pattern can reach below holds nothing the scan would
@@ -690,16 +680,9 @@ struct WalkFindings {
     dir_names: BTreeMap<PathBuf, Vec<PathBuf>>,
     /// Whether the walk reached one directory under more than one name.
     ///
-    /// A document's name is ambiguous only when the directory holding it is,
-    /// so this is the precondition for every step that resolves one name out
-    /// of several — the overlay's entry-space merge and the collapse to one
-    /// document per entry. Off, each is provably the identity: distinct paths
-    /// with the same file name have distinct parents, distinct parents that
-    /// were each reached once have distinct identities, so no two paths share
-    /// an entry. Establishing it costs the walk nothing it was not already
-    /// paying — a directory's identity is what bounds the descent — while
-    /// deciding it per document costs a `canonicalize` per document, on every
-    /// project, to answer "no".
+    /// Deduplication is needed only when a directory was reached under several
+    /// names. Proposals still resolve by entry whenever links are followed:
+    /// their submitted spelling may lie in a subtree the walk excluded.
     aliased: bool,
 }
 
@@ -724,15 +707,14 @@ pub(crate) fn proposed_for<'a>(
 /// proposal is replacing, so the overlay scan and the post-write scan reach
 /// different answers about the same document.
 ///
-/// `None` when the scan holds no document under a second name: there a name
-/// and an entry are the same thing, and resolving one would cost a
-/// `canonicalize` per document to be told what the walk already established.
+/// Needed whenever directory links are followed: a proposal may name a
+/// document through a spelling whose subtree the walk excluded.
 pub(crate) fn overlay_by_entry<'a>(
     root: &Path,
     overlay: &'a [(PathBuf, Proposed)],
-    aliased: bool,
+    follow_symlinks: bool,
 ) -> Option<BTreeMap<PathBuf, &'a Proposed>> {
-    (aliased && !overlay.is_empty()).then(|| {
+    (follow_symlinks && !overlay.is_empty()).then(|| {
         overlay
             .iter()
             .map(|(rel_path, proposed)| (entry_of(root, rel_path), proposed))
@@ -801,9 +783,9 @@ fn apply_conditional_excludes(
     paths: &mut Vec<PathBuf>,
     scan: &ScanConfig<'_>,
     overlay: &[(PathBuf, Proposed)],
-    aliased: bool,
+    follow_symlinks: bool,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let by_entry = overlay_by_entry(root, overlay, aliased);
+    let by_entry = overlay_by_entry(root, overlay, follow_symlinks);
     // A sub-artifact is dropped iff it sits under a terminal parent's
     // directory AND matches that rule's `child_glob`. The parent file
     // itself is always kept so it still parses into the graph.
@@ -1218,7 +1200,7 @@ fn walk_dir(
                 // `scope.prune_dirs` basenames (node_modules / target / …)
                 // are pruned at any depth regardless of include patterns;
                 // dot-prefixed trees are also caught by the hidden guard.
-                if !policy.walks(&segments) {
+                if !policy.walks(&segments) || !policy.could_admit_below(&rel_str, &segments) {
                     continue;
                 }
                 let target = resolve();
@@ -1240,7 +1222,7 @@ fn walk_dir(
                     // to nodex's own output directory holds none under any
                     // configuration, and one no include pattern can reach
                     // below holds none the scan would have admitted.
-                    if policy.could_admit_below(rel) && !policy.leads_to_output(target.as_deref()) {
+                    if !policy.leads_to_output(target.as_deref()) {
                         found.unfollowed_in_scope.push(rel.to_path_buf());
                     }
                     found.undescended.push(rel.to_path_buf());
@@ -1379,6 +1361,35 @@ pub(crate) fn build_globset(patterns: &[impl AsRef<str>], key: &str) -> Result<G
         .map_err(|e| Error::Config(format!("{key} globset build error: {e}")))
 }
 
+/// A valid glob followed by `/**` excludes every descendant of each path
+/// that glob matches only when compilation preserves that concatenation.
+/// Recursive wildcards can change meaning when compiled in isolation, so
+/// verify the factorisation against globset's whole-pattern regex.
+fn build_subtree_excludes(patterns: &[String]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    let universal = Glob::new("**").expect("valid recursive glob");
+    for pattern in patterns {
+        if let Some(prefix) = pattern.strip_suffix("/**")
+            && let Ok(glob) = Glob::new(prefix)
+        {
+            let whole =
+                Glob::new(pattern).expect("scope.exclude patterns are compiled before pruning");
+            if whole.regex() == universal.regex() {
+                builder.add(whole);
+            } else if glob
+                .regex()
+                .strip_suffix('$')
+                .is_some_and(|prefix| whole.regex() == format!("{prefix}/.*$"))
+            {
+                builder.add(glob);
+            }
+        }
+    }
+    builder
+        .build()
+        .map_err(|e| Error::Config(format!("scope.exclude subtree globset build error: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,6 +1511,11 @@ mod tests {
                 let segments: Vec<&str> = path.split('/').collect();
                 for depth in 1..segments.len() {
                     assert!(
+                        leads[0].could_reach(&segments[..depth]),
+                        "{pattern:?} admits {path:?} but cannot reach {:?}",
+                        &segments[..depth]
+                    );
+                    assert!(
                         leads[0].may_hold_hidden(&segments[..depth]),
                         "{pattern:?} admits {path:?} but the walk stops at {:?}",
                         &segments[..depth]
@@ -1610,6 +1626,116 @@ mod tests {
     }
 
     #[test]
+    fn subtree_exclusions_require_a_complete_prefix_and_recursive_suffix() {
+        for (pattern, directory, excluded) in [
+            ("_*/**", "_pages", true),
+            ("_*/**", "docs/_pages", false),
+            ("**/_*/**", "docs/_pages", true),
+            ("docs/private", "docs/private", false),
+            ("docs/private/*.md", "docs/private", false),
+            ("docs/private/**/draft.md", "docs/private", false),
+            ("docs/private/**", "docs/private", true),
+            ("docs/private/**", "docs/private-copy", false),
+            ("{docs,notes}/private/**", "notes/private", true),
+            ("[ab]rchive/**", "archive", true),
+            ("cache[*]/**", "cache*", true),
+            ("[a/]/**", "a", true),
+            ("{docs/private,notes}/**", "docs/private", true),
+            (r"literal\/**", "literal", false),
+            ("{docs/private/**,notes/**}", "docs/private", false),
+            ("**/**", "anywhere", true),
+            ("**//**", "a", false),
+            ("**/**//**", "a", false),
+        ] {
+            let subtrees = build_subtree_excludes(&[pattern.into()]).unwrap();
+            assert_eq!(subtrees.is_match(directory), excluded, "{pattern:?}");
+            if excluded {
+                let files = Glob::new(pattern).unwrap().compile_matcher();
+                for suffix in ["a.md", "a/b.md", ".hidden/a.txt", "한글/문서.md"] {
+                    assert!(
+                        files.is_match(format!("{directory}/{suffix}")),
+                        "{pattern:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn directory_pruning_bounds_the_walk_without_changing_documents() {
+        let dir = TempDir::new().unwrap();
+        for sub in ["docs/kept", "docs/private", "other", "_pages"] {
+            fs::create_dir_all(dir.path().join(sub)).unwrap();
+            fs::write(dir.path().join(sub).join("a.md"), "# A").unwrap();
+            for index in 0..8 {
+                fs::create_dir(dir.path().join(sub).join(index.to_string())).unwrap();
+            }
+        }
+        let include = build_globset(&["docs/**/*.md"], "scope.include").unwrap();
+        let exclude = build_globset(&["docs/private/**"], "scope.exclude").unwrap();
+        let excluded_subtrees = build_subtree_excludes(&["docs/private/**".into()]).unwrap();
+        let empty = GlobSet::empty();
+        let mut paths = Vec::new();
+        for (patterns, subtrees, expected) in [
+            (vec!["**"], &empty, 38),
+            (vec!["docs/**/*.md"], &excluded_subtrees, 11),
+        ] {
+            let leads = include_leads(&patterns);
+            let policy = WalkPolicy {
+                include: &include,
+                exclude: &exclude,
+                excluded_subtrees: subtrees,
+                leads: &leads,
+                prune_dirs: &[],
+                follow_symlinks: true,
+                confine: None,
+                output: None,
+            };
+            let mut found = WalkFindings::default();
+            walk_dir(dir.path(), dir.path(), &policy, &mut found).unwrap();
+            assert_eq!(found.dir_names.len(), expected);
+            paths.push(found.paths);
+        }
+        assert_eq!(paths[0], paths[1]);
+        assert_eq!(paths[1], vec![PathBuf::from("docs/kept/a.md")]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unreachable_subtrees_are_not_descended() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("_root.md"), "# Root").unwrap();
+        for sub in [
+            "docs/kept",
+            "docs/private/deep",
+            "other/deep",
+            "_pages/deep",
+        ] {
+            fs::create_dir_all(dir.path().join(sub)).unwrap();
+            std::os::unix::fs::symlink("absent", dir.path().join(sub).join("gone.md")).unwrap();
+            fs::write(dir.path().join(sub).join("a.md"), "# A").unwrap();
+        }
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".into()];
+        config.scope.exclude = vec!["docs/private/**".into()];
+        let scan = scan_scope(dir.path(), &config).unwrap();
+        assert_eq!(scan.paths, vec![PathBuf::from("docs/kept/a.md")]);
+        assert_eq!(scan.dangling, vec![PathBuf::from("docs/kept/gone.md")]);
+
+        config.scope.include = vec!["**/*.md".into()];
+        config.scope.exclude = vec!["_*/**".into()];
+        let scan = scan_scope(dir.path(), &config).unwrap();
+        assert_eq!(scan.paths.len(), 4);
+        assert_eq!(scan.dangling.len(), 3);
+        assert!(!scan.dangling.iter().any(|path| path.starts_with("_pages")));
+
+        config.scope.exclude = vec!["**//**".into()];
+        let scan = scan_scope(dir.path(), &config).unwrap();
+        assert_eq!(scan.paths.len(), 5);
+        assert_eq!(scan.dangling.len(), 4);
+    }
+
+    #[test]
     #[cfg(unix)]
     fn a_ref_scan_reads_current_entry_types_through_a_linked_project_root() {
         use std::os::unix::fs::symlink;
@@ -1661,13 +1787,9 @@ mod tests {
         assert_eq!(restored.dangling, original.dangling);
     }
 
-    /// An entry that resolves to neither a file nor a directory is recorded
-    /// unless the walk would have kept away from it whatever it was. `include`
-    /// / `exclude` cannot make that call: they are globs over a document path,
-    /// and a real directory is descended without consulting them — so an
-    /// `exclude` that names a directory spelling still lets its children in,
-    /// and suppressing the record on that basis would lose exactly the
-    /// documents the record exists to announce.
+    /// A reached entry of unknown type is recorded under the type-independent
+    /// policy. Excluding a directory's own spelling does not exclude its
+    /// descendants, so it cannot suppress missing-target accounting.
     #[test]
     #[cfg(unix)]
     fn a_dangling_entry_is_recorded_wherever_the_walk_would_have_gone() {
@@ -1748,7 +1870,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn only_a_link_an_include_could_reach_below_bounds_the_corpus() {
-        // The accounting names every link the walk declined. What a validation
+        // The accounting names every reachable link the walk declined. What a validation
         // run says out loud is the part that bounds the *documents*: a link no
         // include pattern can reach below holds nothing the scan would have
         // admitted, and nodex's own output directory holds none under any
@@ -1770,12 +1892,8 @@ mod tests {
 
         assert_eq!(
             scan.unfollowed,
-            vec![
-                PathBuf::from("docs/reachable"),
-                PathBuf::from("elsewhere"),
-                PathBuf::from("mirror")
-            ],
-            "the accounting names every link the walk declined"
+            vec![PathBuf::from("docs/reachable")],
+            "unreachable subtrees do not bound the corpus"
         );
         assert_eq!(
             scan.unfollowed_in_scope,

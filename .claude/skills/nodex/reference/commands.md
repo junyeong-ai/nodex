@@ -19,6 +19,8 @@ nodex build --full           # bypass cache, fresh parse
 - `escaping_paths` — ref builds only: paths resolving outside the checkout, which the ref does not record.
 - `parse_failures` — `{path, message, content_hash}` per in-scope document that failed to parse and has no node.
 
+Walk diagnostics describe reached entries; subtrees skipped by the [scope policy](config.md#scope) are not inventoried.
+
 A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping under a non-string key, an opened-but-unclosed `---` fence) never halts the build — the rest still indexes — but the drop is structural data the next `check` reds via `parse_failure`. A single wrong-typed built-in field (bad date, bad bool, non-string scalar) does **not** drop the document: the node stays, the field reads as absent, and `check` flags it via `field_parse`.
 
 ## status

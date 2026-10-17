@@ -349,7 +349,9 @@ Use `nodex retarget <old-id> <new-id> --supersede` to plan lifecycle and exact r
 
 Each `[[statuses.flow]]` declares one lifecycle over disjoint kinds; a wildcard flow cannot coexist with another flow. Global terminal vocabulary is shared. Flows enforce declared transitions, not human approval.
 
-For 0.54, convert `[statuses.flow]` to `[[statuses.flow]]`, replace opt-in currentness with default verified queries (`--allow-stale` for explicit snapshot reads), and rebuild with `nodex build --full`. Pin consumers to the supported minor version and regenerate response types from `export envelope-schema`.
+When upgrading from before 0.54, convert `[statuses.flow]` to `[[statuses.flow]]`, replace opt-in currentness with default verified queries (`--allow-stale` for explicit snapshot reads), and rebuild with `nodex build --full`. Pin consumers to the supported minor version and regenerate response types from `export envelope-schema`.
+
+For 0.55, scan diagnostics cover reached entries rather than skipped subtrees. Rebuild snapshots after upgrading; scoped document selection is preserved.
 
 ## How It Works
 
@@ -750,7 +752,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.54, <0.55"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.55, <0.56"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -804,6 +806,8 @@ The dependency direction is enforced: nodex emits, external tools (TypeScript li
 
 All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at startup and rejects inconsistent configs (e.g., a `terminal` status absent from `allowed`, or an `initial` status excluded by a `status` enum), so misconfigurations fail fast. Self-consistency that depends on the document being acted on — a `lifecycle` action never writing a status the project rejects — is enforced at that command's write seam instead, so a project is never forced to declare statuses for actions it doesn't use.
 
+The scan can skip directories outside every include's literal prefix and subtrees covered by recursive `/**` exclusions. For example, `exclude = ["_*/**"]` skips matching root subtrees; `exclude = ["docs/private"]` still permits documents beneath `docs/private`. Scan diagnostics describe entries the walk reaches, not an inventory of skipped subtrees.
+
 ```toml
 [scope]
 include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }, "README.md"]
@@ -811,7 +815,7 @@ exclude = ["docs/drafts/**"]
 # Directory basenames pruned from the walk at any depth (default below).
 # Tune for your stack — a Go repo has no `.venv`; a docs vault under a
 # dir named like one of these opts it back in by dropping it here.
-# An empty list prunes nothing.
+# An empty list disables basename pruning.
 # prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
 # Drop a terminal parent's sub-artifacts (only child_glob matches; the
 # dropped paths are reported on the build result, and the write that
@@ -1028,7 +1032,7 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 
 | Section | Controls |
 |---|---|
-| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). Dot-prefixed paths are skipped unless an include pattern literally names the dotted segment (e.g. `.claude/**/*.md`). A directory reached through a symlink is not descended unless `follow_symlinks = true` — the default matches `git` / `ripgrep` / `fd` / `find` and keeps every path-keyed rule with exactly one path to key on; each undescended link is named in the build's `unfollowed_paths`, and each extra name a followed link admits in `aliased_paths`. An `include` entry may be a table `{ glob, may_be_empty = true }` (so may an `identity` or `conditional_exclude` rule) saying that selecting nothing is expected — it silences only that declaration's own `scope_coverage` warning |
+| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). Dot-prefixed paths are skipped unless an include pattern requires the leading dot at each hidden segment (e.g. `.claude/**/*.md`). A directory reached through a symlink is not descended unless `follow_symlinks = true` — the default matches `git` / `ripgrep` / `fd` / `find` and keeps every path-keyed rule with exactly one path to key on; each undescended link the walk reaches is named in the build's `unfollowed_paths`, and each extra name a followed link admits in `aliased_paths`. An `include` entry may be a table `{ glob, may_be_empty = true }` (so may an `identity` or `conditional_exclude` rule) saying that selecting nothing is expected — it silences only that declaration's own `scope_coverage` warning |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
 | `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and a document declaring none receives, for kinds no flow governs; default: first allowed) + `flow` (see [Status flow](#status-flow)) |
 | `[scaffold.paths]` | Explicit per-kind creation path templates, or supply `--path` |
@@ -1152,7 +1156,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.54, <0.55" build
+nodex --check-version ">=0.55, <0.56" build
 ```
 
 ---
