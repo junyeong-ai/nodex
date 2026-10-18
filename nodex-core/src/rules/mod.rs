@@ -169,6 +169,7 @@ impl Violation {
 /// these into a single context lets the trait grow new inputs (file
 /// mtime cache, git history reader, …) without churning every
 /// implementor's signature.
+#[derive(Clone, Copy)]
 pub struct RuleContext<'a> {
     pub graph: &'a Graph,
     pub config: &'a Config,
@@ -585,7 +586,12 @@ pub trait Rule: Send + Sync {
 
     /// Apply project policy before either a read or a write interprets findings.
     fn evaluate(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let mut run = self.check(ctx);
+        let probe = crate::builder::file_probe::FileProbe::default();
+        let ctx = RuleContext {
+            files: ctx.files.with_probe(&probe),
+            ..*ctx
+        };
+        let mut run = self.check(&ctx);
         let severity = self.configured_severity(ctx.config);
         for finding in &mut run.violations {
             finding.severity = severity;
@@ -917,6 +923,8 @@ pub(crate) fn run_rules(
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
 ) -> CheckReport {
+    let probe = crate::builder::file_probe::FileProbe::default();
+    let files = files.with_probe(&probe);
     let ctx = RuleContext {
         graph,
         config,
@@ -1070,6 +1078,55 @@ pub fn introduced_violations(after: Vec<Violation>, before: &[Violation]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_evaluation_shares_observations_and_the_next_evaluation_refreshes_them() {
+        struct ObservingRule;
+        impl Rule for ObservingRule {
+            fn id(&self) -> &str {
+                "observing"
+            }
+            fn severity(&self) -> Severity {
+                Severity::Warning
+            }
+            fn description(&self) -> &str {
+                "Observe project files"
+            }
+            fn subject_unit(&self) -> SubjectUnit {
+                SubjectUnit::Files
+            }
+            fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
+                assert!(ctx.files.holds(Path::new("present.md"), false));
+                std::fs::write(ctx.files.root().join("added.md"), "content").unwrap();
+                RuleRun::new(
+                    usize::from(ctx.files.holds(Path::new("added.md"), false)),
+                    vec![],
+                )
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("present.md"), "content").unwrap();
+        let graph = Graph::new(
+            indexmap::IndexMap::new(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
+        let config = Config::default();
+        let ctx = RuleContext {
+            graph: &graph,
+            config: &config,
+            files: ProjectFiles::working_tree(root.path()),
+            history: &UNMEASURED,
+            since: None,
+            steps: None,
+            today: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        };
+        assert_eq!(ObservingRule.evaluate(&ctx).subjects, 0);
+        assert_eq!(ObservingRule.evaluate(&ctx).subjects, 1);
+    }
 
     /// Two identical reports cancel completely, at the size a real tangle
     /// reaches.
