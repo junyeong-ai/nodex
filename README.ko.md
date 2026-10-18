@@ -11,6 +11,12 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 
 ---
 
+## 0.58로 갱신
+
+`[trust]`와 `[[trust.overrides]]`를 제거합니다. 유지관리 관련 검사 결과는 `query issues`와 `check`로 확인합니다. 유사도 가중치는 `title`, `tags`, `linked`만 사용합니다. `query similar`의 `--kind`, `--status`, `--parent-dir`는 후보 필터이며 `--tags`는 `--title`과 함께 사용합니다. 실제 겹침이 있는 후보만 반환합니다. `report`는 `GRAPH.md`를 생성합니다. JSON은 `build`로 생성하고 `--format` 인자는 제거합니다.
+
+다른 종류의 결정·학습 문서도 찾으려면 `--kind`를 생략합니다. 갱신 후 `nodex build`를 실행하고 응답 스키마에서 생성한 클라이언트가 있다면 다시 생성합니다.
+
 ## 목차
 
 1. [문제 정의](#문제-정의)
@@ -107,6 +113,18 @@ created: 2025-01-10
 ---
 # REST API
 원래 API 설계.
+```
+
+현재 결정인 `docs/decisions/0002-graphql-api.md`:
+
+```markdown
+---
+title: GraphQL API
+status: active
+created: 2025-01-20
+---
+# GraphQL API
+현재 API 설계.
 ```
 
 …그리고 가이드는 본문 첫 줄에서 현재 결정으로 링크합니다(그래서 뒤의 백링크가
@@ -323,7 +341,7 @@ Markdown 목적지는 URI 경로·query·fragment를 분리한 뒤 경로만 디
 | `title` | string | yes (추론 가능) | 사람이 읽는 이름 (첫 H1, 없으면 파일명 stem 으로 폴백) |
 | `kind` | string | yes (추론 가능) | 문서 타입 — `[kinds].allowed` 에 있어야 함 |
 | `status` | string | yes (추론 가능) | lifecycle state — `[statuses].allowed` 에 있어야 함; status 없는 문서는 flow 가 그 kind 를 지배하면 `statuses.flow[].initial`, 아니면 `[statuses].initial`(없으면 첫 allowed 값)을 받음 |
-| `created` / `updated` / `reviewed` | date (ISO) | optional | 각각 작성 / 수정 / 마지막 리뷰 — `reviewed` 는 `stale_review`, trust 의 `freshness`, `git_drift` 가 기준으로 삼는 날짜 |
+| `created` / `updated` / `reviewed` | date (ISO) | optional | 각각 작성 / 수정 / 마지막 리뷰 — `reviewed` 는 `stale_review`, `git_drift` 가 기준으로 삼는 날짜 |
 | `owner` | string | optional | 소유자 식별자 |
 | `supersedes` | string \| array | optional | 대체된 문서 ID |
 | `superseded_by` | string | optional | 대체 문서 ID (스칼라) |
@@ -346,7 +364,7 @@ Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석한다. W
 
 `query node`는 내부 해시를 제외한다. `--with-body --body-lines START:END`로 양의 정수·양끝 포함 본문 범위를 읽으면 `body_range: {start, end, total}`도 제공한다. `query nodes --missing reviewed`는 리뷰 날짜 부재를 찾는다. `query stale`과 `query orphans`는 `subjects`·`unjudged`를 제공하며 리뷰 날짜 부재를 오래됨이나 최신 리뷰로 간주하지 않는다.
 
-`[rules] severity = { orphan = "error", unresolved_reference = "error" }`는 등록된 warning rule을 검사·export·쓰기 gate에서 일관되게 승격한다. 구조적 error는 약화할 수 없으며 미해결 정책 row는 자신의 severity를 사용한다. `init`은 정책 밖 미해결 참조도 error로 설정한다. 유사도·trust는 검토 후보를 정렬하며 정확성이나 생명주기 변경의 근거를 확정하지 않는다.
+`[rules] severity = { orphan = "error", unresolved_reference = "error" }`는 등록된 warning rule을 검사·export·쓰기 gate에서 일관되게 승격한다. 구조적 error는 약화할 수 없으며 미해결 정책 row는 자신의 severity를 사용한다. `init`은 정책 밖 미해결 참조도 error로 설정한다. 유사도는 비교 후보를 정렬하며 정확성이나 생명주기 변경의 근거를 확정하지 않는다.
 
 문서 대체에는 `nodex retarget <old-id> <new-id> --supersede`를 사용한다. 생명주기와 Markdown 경로를 포함한 참조 변경을 함께 판정하고 잠긴 역사적 인용은 보존·보고한다. 파일별 부분 실패를 보고하며 파일시스템 트랜잭션을 보장하지 않는다.
 
@@ -356,7 +374,7 @@ Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석한다. W
 
 0.55의 스캔 진단은 건너뛴 트리 대신 실제 도달한 항목을 보고합니다. 업그레이드 후 스냅샷을 재빌드하세요. 문서 선택 범위는 유지됩니다.
 
-0.56에서는 설정한 `rules.immutable_baseline`이 `--since`와 내용 제안에도 적용됩니다. `--since`는 잠금 기준을 바꾸지 않고 보고·이력 범위를 정합니다. 제안 대상의 기존 잠금 위반은 거절하고, 상태 전이는 새로 도입한 위반을 판정합니다. 브랜치 내부 수정을 허용하려면 `immutable_history = "snapshot"`, 공통 조상을 기준으로 삼으려면 `immutable_baseline_mode = "merge_base"`를 선택하세요.
+설정한 `rules.immutable_baseline`은 `--since`와 내용 제안에도 적용됩니다. `--since`는 잠금 기준을 바꾸지 않고 보고·이력 범위를 정합니다. 제안 대상의 기존 잠금 위반은 거절하고, 상태 전이는 새로 도입한 위반을 판정합니다. 브랜치 내부 수정을 허용하려면 `immutable_history = "snapshot"`, 공통 조상을 기준으로 삼으려면 `immutable_baseline_mode = "merge_base"`를 선택하세요.
 
 ## 동작 원리
 
@@ -395,7 +413,7 @@ flowchart LR
 ### 한 번 인덱스, 여러 번 조회
 
 - **빌드 아티팩트**: `graph.json` — Markdown 원본에서 파생한 스냅샷
-- **조회**: 재빌드 없이 `graph.json`을 읽는다. 기본 조회는 설정·범위·내용을 검증하며 변경 시 `GRAPH_OUTDATED`로 거부한다. `--allow-stale`는 경로·설정만 확인하는 스냅샷 조회를 명시적으로 허용하고 변경을 알린다. 없는 노드를 찾는 조회는 내용 검사로 확대한다. `query node --with-body`와 `query search --body`는 색인된 리비전과 일치하는 본문을 읽는다. `trust` / unresolved-edge 체크는 추가로 git / 파일시스템을 검사한다.
+- **조회**: 재빌드 없이 `graph.json`을 읽는다. 기본 조회는 설정·범위·내용을 검증하며 변경 시 `GRAPH_OUTDATED`로 거부한다. `--allow-stale`는 경로·설정만 확인하는 스냅샷 조회를 명시적으로 허용하고 변경을 알린다. 없는 노드를 찾는 조회는 내용 검사로 확대한다. `query node --with-body`와 `query search --body`는 색인된 리비전과 일치하는 본문을 읽는다. unresolved-edge 검사는 추가로 파일시스템을 검사한다.
 - **증분**: SHA256 per file. `--full` 로 강제 fresh build
 
 스냅샷 조회는 envelope `snapshot`에 검사 범위 `verification`
@@ -434,8 +452,7 @@ flowchart LR
 | `orphans` | external incoming 0 인 live 노드 | linear + 네 가지 예외 |
 | `stale` | `reviewed` 가 `stale_days` 일 이상 지난 active 문서 | linear + 날짜 필터 |
 | `recent` | 날짜 윈도우 내 문서 | linear + 날짜 필터 |
-| `similar` | 점수 정렬 후보 | token Jaccard + tag/kind/dir/neighbour overlap |
-| `trust <id>` | 유지관리 점수 + components | 측정된 컴포넌트의 가중 평균 (inapplicable 은 분모에서 drop, 중립값 대체 없음; 실행이 측정할 수 있는데 문서가 입력을 선언하지 않은 컴포넌트가 있으면 합성 없음) |
+| `similar` | 점수 정렬 후보 | 제목 토큰·태그·그래프 이웃의 Jaccard 겹침 |
 | `components` | 연결 컴포넌트 분할 | undirected BFS, 결정적 정렬 |
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) |
 | `dependents <id>` | 의존 사슬이 그 노드에 닿는 모든 노드 | incoming edge 역방향 BFS, `--depth` / `--relations` 로 제한 |
@@ -458,7 +475,7 @@ flowchart LR
 { "ok": true, "data": { /* ... */ }, "warnings": [{ "code": "...", "message": "..." }] }
 ```
 - 비어있으면 `warnings` 생략
-- list query 는 `data: { items: [...], total: N }` — 항상 두 필드. plain listing (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) 은 `total` 이 매칭 전체 수이고 `--limit` 컷은 `returned` 로 자기 선언 (그 외엔 생략) — capped 응답이 전체처럼 읽히는 일은 없음. selection query (`trust --top/--bottom`, `similar`, `recent`) 는 의도적으로 core 에서 선택하며 `total` 이 선택 자체의 크기
+- list query 는 `data: { items: [...], total: N }` — 항상 두 필드. plain listing (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`) 은 `total` 이 매칭 전체 수이고 `--limit` 컷은 `returned` 로 자기 선언 (그 외엔 생략) — capped 응답이 전체처럼 읽히는 일은 없음. selection query (`similar`, `recent`) 는 의도적으로 core 에서 선택하며 `total` 이 선택 자체의 크기
 
 **Error:**
 ```json
@@ -525,7 +542,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `-C DIR` | `git -C` 처럼 `DIR` 에서 시작한 것처럼 동작 |
 | `--pretty` | JSON pretty-print |
 | `--check-version <REQ>` | 바이너리 버전이 SemVer 요구사항을 만족하지 않으면 거부 (CI pin) |
-| `--today <YYYY-MM-DD>` | 날짜 기준 룰·쿼리(stale, orphan grace, recent 구간, trust freshness)와 nodex 가 쓰는 날짜를 DATE 를 오늘로 보고 계산 — 재현 가능한 실행 |
+| `--today <YYYY-MM-DD>` | 날짜 기준 룰·쿼리(stale, orphan grace, recent 구간)와 nodex 가 쓰는 날짜를 DATE 를 오늘로 보고 계산 — 재현 가능한 실행 |
 
 ### 명령 참조
 
@@ -537,7 +554,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex check [--severity error\|warning] [--since <ref>] [--staged] [--content <path>=<-\|FILE> ...]` | 검증 룰 실행; `--since` 는 보고서를 diff 가 책임지는 finding 으로 좁히고(어떤 finding 인지는 rule 이 답함 — *Diff-aware 검증* 참조) diff-aware 룰 활성; `--content <path>=<source>` (반복 가능) 는 제안된(미작성) 바이트를 한 빌드에 오버레이해 쓰기 — 또는 다중 파일 배치 — 를 게이트하며 `--since`, `--staged` 와 함께 쓸 수 없음; `--staged` 는 다음 커밋이 기록할 프로젝트를 판정(*커밋시점 검증* 참조); error 시 exit 1. `--severity` 는 정확-매치 **표시** 필터 — `--severity warning` 은 warning 만, `--severity error` 는 error 만 나열하지만 `has_errors`, 제안별 판정, exit code 는 검사한 위반 전체에 대해 답하고, 필터가 숨긴 개수는 `gate_suppression` 경고가 알림. content 모드에서는 봉투에 `standing` 이 추가로 실림: 제안된 노드가 제안된 상태에서 지니는 warning-severity 위반의 절대-뷰 — `violations` 는 도입 델타라 노드의 기존 housekeeping warning (`stale_review`, `git_drift`) 이 상쇄되므로, advisory 소비자는 두 번째 프로젝트-전역 check 없이 `standing` 에서 읽음 |
 | `nodex diff <ref-a> <ref-b>` | 두 git ref 간 구조 delta |
 | `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "이걸 머지하면 뭐가 깨지나?" — diff + 수정 노드의 transitive dependents + 제거 노드를 여전히 가리키는 직접 참조자(이제 dangling) + 이동 노드의 둘 다(지금 자리에서 여전히 의존하는 것, 이전 자리를 여전히 가리키는 것), 그리고 *after* 그래프가 없는 자리를 여전히 참조하는 제거·이동 노드의 `likely_breaking` 목록 |
-| `nodex report [--format md\|json\|all]` | `GRAPH.md` + `graph.json` 생성 (기본: all) |
+| `nodex report` | 현재 문서에서 `GRAPH.md` 보고서를 생성한다. JSON 스냅샷은 `build`로 생성한다. |
 | `nodex migrate [--apply]` | 레거시 문서에 frontmatter 주입 (기본 dry-run) |
 | `nodex rename <old> <new>` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 단 *tracked* 소스에만 적용; untracked 파일(scope 밖 또는 conditional exclude)은 게이트·id 앵커·재작성 없이 guarded plain move. 파일시스템이 tracked 문서로 alias 하는 철자(대소문자, 유니코드 정규화)는 정식 철자를 안내하며 거부. 본문이 immutability 락 상태인 참조 문서는 변조 대신 경고와 함께 skip — frozen 역사는 원래 철자를 유지. 이동이 할 말이 있는 참조는 각각 한 번씩 이름을 밝힘: 재지정을 포기한 것(끊어질 예정), 그리고 그대로 두었으나 이제 다른 문서를 가리키게 된 것 — 후자는 그래프가 유효한 채로 바뀌었을 때 나오는 유일한 보고 |
 | `nodex retarget <old-id> <new-id> [--supersede]` | 해석된 문서 identity를 기준으로 frontmatter 관계와 Markdown 경로·wikilink·설정된 본문 참조를 `<new-id>`로 재지정. successor 문서는 skip 되어 자기 자신을 가리키지 않으며, 남겨둔 선행 문서 참조를 보고 — 승계 기록인 `supersedes` 만 제외. reference-unsafe 한 successor id(트림 불안정 / wikilink 메타문자)는 선제 거부하고, `body_immutable` — 또는 관계 필드를 잠근 `frontmatter_immutable` — 락 문서는 재작성 대신 경고와 함께 skip. `--supersede`는 생명주기 변경을 같은 제안에 포함 |
@@ -551,10 +568,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query node <id> \| --path <file> [--with-body [--body-lines START:END]]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 색인된 리비전과 일치하는지 확인한 뒤 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | `covers:` 로 선언한 문서. 선언 값은 빌드와 같은 사다리로 읽으므로 `docs/x.md` 의 `covers: ["./src/a.rs"]` 는 `docs/src/a.rs` 를 가리킴; 인자로 주는 `<path>` 는 프레임이 없는 탐색어라 `./`, `..`, `\` 는 정규화됨 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules + rule_coverage 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화. 타입 리스팅과 violations 는 서로 다른 두 집합이 아니라 하나의 finding 집합에 대한 두 시선이다 — `orphans` 와 `stale` 은 각각 `violations` 안에 게이트 기록(`orphan`, `stale_review`)을 갖고, 게이트 기록이 있는 finding 은 그 violation 을 통해 **한 번만** 계상된다. 따라서 `summary.total` 은 보고서가 몇 번 언급했는지가 아니라 문제의 개수이고, `by_category` 는 계상된 finding 을 찾아낸 rule 로 키잉한다. 미해결 참조의 warning·error도 rule을 통해 집계하며 info는 policy row 이름으로 `total` 밖에 보고한다 |
-| `nodex query trust <id>` | 단일 노드 유지관리 점수 + 컴포넌트 breakdown. `status` 는 항상 포함; `freshness` / `drift` / `backlinks` 는 이번 run 이 측정하지 못했으면 JSON 에서 omit. 그 omit 뒤에는 성격이 다른 두 부재가 있고 `undeclared` 가 둘을 가름: 문서가 무엇을 써도 만들어낼 수 없는 컴포넌트(컴포넌트별로 언제인지는 [설정](#설정)의 `[trust]` 블록 참조)는 drop 되고 나머지로 renormalise; 반대로 run 이 측정할 수 있는데 문서가 입력을 선언하지 않은 컴포넌트는 `undeclared` 에 이름이 실리고 합성 점수 자체가 없음 — 여기서 renormalise 하면 빠진 컴포넌트에 나머지 컴포넌트가 낸 점수를 그대로 대입하는 것이기 때문. |
-| `nodex query trust --bottom N [--kind K] [--status S] [--below S]` | 유지관리 점수 하위 N개 (오름차순). `--kind` / `--status` 로 코퍼스 좁힘 (`--status active` 로 유지관리 큐에서 종료 문서 제외); `--below` 는 opt-in score cutoff (점수가 `S` 미만인 항목만 유지). `--top` / `<id>` 와 상호 배타. |
-| `nodex query trust --top N    [--kind K] [--status S] [--below S]` | 유지관리 점수 상위 N개 (내림차순). `--bottom` 과 동일한 필터. |
-| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --tags a,b --parent-dir D --status S --limit N --min-score S]` | Vector-free 유사도. `--limit` 는 후보 cap (기본 `similarity.default_limit`); `--min-score S` 는 opt-in cutoff (점수 ≥ `S` 만 유지). 다섯 컴포넌트 (`title` / `tags` / `kind` / `directory` / `linked`) 모두 조건부 — *타깃* 쪽이 순위를 매길 것을 갖고 있지 않으면 (빈 token / tag 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 나 이웃이 없는 `linked`) omit 되며, 이는 모든 후보에 똑같이 적용되므로 합성 점수는 질의가 실제로 가진 신호로만 renormalise. *후보* 쪽의 부재는 부재가 아니라 측정값 — 타깃이 가진 집합과 겹치는 게 없으면 `0.0`. |
+| `nodex query similar [--id <id> \| --title "<t>"] [--kind K --parent-dir D --status S --limit N --min-score S]` | 제목·태그·그래프 이웃이 실제로 겹치는 후보만 반환한다. `--kind`, `--status`, `--parent-dir`는 점수와 독립적인 후보 필터이며 parent-dir는 정확한 부모 경로다. 새 문서의 태그는 `--title`과 `--tags a,b`로 제공한다. 컴포넌트는 타깃에 비교할 집합이 없으면 생략하고 후보의 집합이 없으면 0으로 계산한다. 의미상 중복 여부는 읽고 판단한다. |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 큰 것부터) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected) |
@@ -566,7 +580,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex export rules` | 등록된 룰 매니페스트 — 현재 config 가 등록하는 모든 룰과 `id`, `severity`, `description`, `diff_aware` / `judges_steps`, per-rule `params` payload (등록된 룰도 실행 시 `skipped_rules` 로 빠질 수 있음) |
 | `nodex export envelope-schema [--inline-refs]` | 모든 CLI envelope shape 의 JSON Schema (draft 2020-12) — 타입드 다운스트림 consumer 의 codegen 컨트랙트; `--inline-refs` 는 per-command 스키마를 완전 자기 완결형 (`$ref`/`$defs` 없음) 으로 emit — `$ref` 를 못 따라가는 generator 용 |
 | `nodex export config` | 해석된 document-locating surface: scope, output, parser, scaffold 템플릿, 평가 순서의 identity rules + 코드 레벨 fallback (`fallback_kind`, `fallback_id_template`), 해석된 전역 `initial_status` (`[[statuses.flow]]` 가 지배하는 kind 는 그 flow 의 `initial` 에서 시작) |
-| `nodex export commands` | leaf 의 권위 목록: 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional(이름, 필수 여부), flag 로 선택되는 payload mode (예: `query.trust-list`); flag 자체는 `--help` 에 있음 |
+| `nodex export commands` | leaf 의 권위 목록: 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional(이름, 필수 여부), flag 로 선택되는 payload mode (예: `query.search-body`); flag 자체는 `--help` 에 있음 |
 | `nodex export diagnostics` | error-code / exit-code vocabulary — envelope `error.code` 닫힌 집합(각 `core`/`cli` origin 태그) + advisory `warnings[].code` + `0`/`1`/`2` exit-code 계약. 소비자가 prose 하드코딩 대신 exhaustive error enum 을 codegen |
 
 ### 문서 생성과 순위
@@ -584,12 +598,7 @@ adr = "docs/decisions/{stem}.md"
 spec = "specs/{slug}/spec.md"
 ```
 
-`query trust`는 문서 유지관리 신호의 순위이며 정확성·승인·권위를 판정하지
-않습니다. `basis`는 실제 측정되어 양의 가중치로 반영된 신호를 보여줍니다.
-비종료 상태의 상태 점수는 모두 같습니다. 현재 적용할 문서는 명시적 상태와
-승계 관계로 확인합니다. `query similar --status active`는 비교 후보의 상태를
-제한하며 기본 조회에서는 이력을 숨기지 않습니다. 순위 제외 경고의
-`details`에는 `count`와 `reason`이 포함됩니다.
+현재 적용할 문서는 명시적 상태와 승계 관계로 확인합니다. `query similar`는 비교 후보를 제공하며 의미상 중복을 확정하지 않습니다. 후보 필터는 이력과 타깃을 바꾸지 않습니다. 입력 신호가 없어 순위를 만들지 못한 경우 경고의 `details`에 `count`와 `reason`이 포함됩니다.
 
 ---
 
@@ -713,7 +722,7 @@ immutable_history = "snapshot"       # 기본: "steps", 각 커밋 단계도 검
 
 `frontmatter_immutable`의 `fields = ["*"]`와 `except = ["status", "superseded_by", "covers"]`는 예외를 제외한 모든 frontmatter 필드를 보호합니다. 나중에 추가한 사용자 필드의 추가·삭제·의미 값 변경도 포함하며 ID는 구조적으로 계속 보호합니다. 자세한 계약은 [설정 레퍼런스](.claude/skills/nodex/reference/config.md#diff-aware-rules)에 있습니다.
 
-두 패밀리는 같은 `trigger` 로 잠금 발동 시점을 고르고, 그것을 diff 의 *이전* frame 으로 읽으므로 잠금을 처음 무장시키는 단 한 번의 write 는 같은 편집에서 그 잠금이 덮는 것을 설정할 수 있다: `terminal` (기본) 은 `[statuses].terminal` 의 모든 status 에서, `status` 는 블록이 `statuses = [...]` 로 지정한 status 에서, `creation`은 비교하는 이전 스냅샷의 모든 status에서 무장한다. `[statuses].terminal` 로 status 를 옮겨 흉내내지 말고 `status` 를 쓸 것 — 그 단어는 `statuses.flow` 검증·`conditional_exclude`·trust 점수·`terminal` trigger·lifecycle seam·`git_drift`·orphan 과 stale 탐지·`superseded_reference`·`GRAPH.md` 보고가 함께 읽으므로, 그 단어로 잠금을 무장시키면 그 모두에게 그 기록이 끝났다고 선언하는 셈이고, 그 status 에서 나가는 이동을 선언한 flow 는 동작이 달라지는 대신 아예 로드되지 않는다. `[[statuses.flow]]` 가 그 블록이 잠그는 kind 를 지배하면 로드 시점에 무장에 대해 두 가지를 증명한다: 선언된 어떤 전이도 무장을 벗어나지 않으므로 status 편집으로 잠금을 풀 수 없고, 블록이 `status` 자체를 잠그는 경우 선언된 어떤 전이도 무장된 동안 문서를 움직이지 않으므로 잠금이 flow 가 합법이라 한 이동을 거부하는 일이 없다.
+두 패밀리는 같은 `trigger` 로 잠금 발동 시점을 고르고, 그것을 diff 의 *이전* frame 으로 읽으므로 잠금을 처음 무장시키는 단 한 번의 write 는 같은 편집에서 그 잠금이 덮는 것을 설정할 수 있다: `terminal` (기본) 은 `[statuses].terminal` 의 모든 status 에서, `status` 는 블록이 `statuses = [...]` 로 지정한 status 에서, `creation`은 비교하는 이전 스냅샷의 모든 status에서 무장한다. `[statuses].terminal` 로 status 를 옮겨 흉내내지 말고 `status` 를 쓸 것 — 그 단어는 `statuses.flow` 검증·`conditional_exclude`·`terminal` trigger·lifecycle seam·`git_drift`·orphan 과 stale 탐지·`superseded_reference`·`GRAPH.md` 보고가 함께 읽으므로, 그 단어로 잠금을 무장시키면 그 모두에게 그 기록이 끝났다고 선언하는 셈이고, 그 status 에서 나가는 이동을 선언한 flow 는 동작이 달라지는 대신 아예 로드되지 않는다. `[[statuses.flow]]` 가 그 블록이 잠그는 kind 를 지배하면 로드 시점에 무장에 대해 두 가지를 증명한다: 선언된 어떤 전이도 무장을 벗어나지 않으므로 status 편집으로 잠금을 풀 수 없고, 블록이 `status` 자체를 잠그는 경우 선언된 어떤 전이도 무장된 동안 문서를 움직이지 않으므로 잠금이 flow 가 합법이라 한 이동을 거부하는 일이 없다.
 
 diff 컨텍스트가 없으면 — `--since` 없음, `rules.immutable_baseline` 미해석, `check --content` 오버레이 아님 — 두 패밀리 모두 `skipped_rules` 에 reason 과 함께 자기 보고 (silent pass 금지). (`rules.immutable_baseline` 이 git ref 로 해석되면 `--since` 없이 plain `check` 에서도 활성화.)
 
@@ -754,11 +763,11 @@ exec nodex check --staged
 
 ### Kind 필터
 
-per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`) + `[[annotations]]` 모두 선택적 `kinds: ["..."]` 리스트 수용. 빈 리스트 = 제한 없음; 그렇지 않으면 `kind` 가 리스트에 있는 노드만 fire. 모든 엔트리는 `kinds.allowed` 에 있어야 하며 `Config::load` 가 typo 거부. `[[schema.overrides]]` / `[[trust.overrides]]` 의 `kinds` 는 다르다: override 가 적용될 kind 를 지목하며, 빈 목록은 load 에서 거부된다.
+per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]`) + `[[annotations]]` 모두 선택적 `kinds: ["..."]` 리스트 수용. 빈 리스트 = 제한 없음; 그렇지 않으면 `kind` 가 리스트에 있는 노드만 fire. 모든 엔트리는 `kinds.allowed` 에 있어야 하며 `Config::load` 가 typo 거부. `[[schema.overrides]]` 의 `kinds` 는 다르다: override 가 적용될 kind 를 지목하며, 빈 목록은 load 에서 거부된다.
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.57, <0.58"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.58, <0.59"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -985,43 +994,17 @@ god_node_display_limit = 10
 orphan_display_limit = 20
 stale_display_limit = 20
 
-[trust]
-# 합성 점수는 이번 run 이 *측정한* 컴포넌트로만 renormalise — 분모에서
-# drop 할 뿐, 중립값으로 대체하지 않음. 문서가 무엇을 써도 만들어낼 수
-# 없는 컴포넌트가 inapplicable:
-#   - `freshness` ⇔ `detection.stale_days` 미설정, 또는 terminal 문서
-#   - `drift`     ⇔ `git_drift_threshold` 미설정, terminal 문서, 해석 가능한
-#                   `git_drift_relations` 엣지 없음, 가진 엣지를 git 이 측정 불가
-#   - `backlinks` ⇔ 그래프 전체에 external incoming edge 가 하나도 없음
-# run 이 측정할 수 있는데 문서가 입력을 선언하지 않은 경우는 다른 문제다.
-# `freshness` / `drift` 는 둘 다 `reviewed:` 를 읽으므로, 그것이 없는 live
-# 문서는 `undeclared` 에 실리고 합성 점수를 갖지 않는다. 여기서
-# renormalise 하면 선언한 컴포넌트들이 낸 점수를 빠진 자리에 대입하는
-# 것이라, `reviewed:` 를 감추는 쪽이 순위에서 이득만 볼 수 있다. 프로젝트가
-# 그 축을 추적하지 않는다면 가중치를 0 으로 선언하면 된다 (전역, 또는
-# `[[trust.overrides]]` 로 kind 별).
-# 점수 cutoff 은 CLI opt-in 으로만 (`nodex query trust --bottom N --below S`),
-# config 기본값에 박지 않음 — corpus 의존적인 cutoff 은 프로젝트마다 표류함.
-weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
-
 [similarity]
-# 다섯 컴포넌트 (`title`, `tags`, `kind`, `directory`, `linked`) 모두
-# 조건부 — *타깃* 쪽이 순위를 매길 것을 갖고 있지 않으면 (빈 token / tag
-# 집합, `--kind` / `--parent-dir` 없는 pre-creation spec, graph id 나 이웃이
-# 없는 `linked`) JSON 에서 omit 되고, 이는 모든 후보에 똑같이 적용되므로
-# 합성 점수는 질의가 실제로 가진 신호로만 renormalise. *후보* 쪽의 부재는
-# 부재가 아님 — 타깃이 가진 집합과 겹치는 게 없으면 0.0 이라는 측정값이며,
-# 여기서 renormalise 하면 아무것도 선언하지 않은 후보가 더 잘 맞는 후보를
-# 제치게 된다.
-# `default_limit` 은 operator-capacity cap; score cutoff 은 CLI opt-in
-# (`nodex query similar --min-score S`), config 기본값 아님.
+# 제목 토큰·태그·그래프 이웃의 Jaccard 겹침으로 비교 후보를 정렬한다.
+# kind·status·parent-dir는 후보 필터이며 점수에 반영하지 않는다.
 default_limit = 10
-weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
+weights = { title = 0.4, tags = 0.2, linked = 0.2 }
+# 제목에서 제외할 토큰. 빈 배열은 모든 토큰을 유지한다.
 title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
 
 [search]
 # `nodex query search <keyword>` 랭킹. 측정 가능한 컴포넌트로 합성 점수를
-# renormalise 하는 trust/similarity 와 달리 search 는 ADDITIVE — 노드 점수는 키워드가
+# renormalise 하는 similarity 와 달리 search 는 ADDITIVE — 노드 점수는 키워드가
 # 매치한 필드들의 가중치 합이고, 아무것도 매치 못 한 노드는 제외. 각 필드는
 # exact 와 partial(substring) 두 티어를 가져 exact-vs-partial 선호가 숨은
 # 상수가 아니라 config. 각 `SearchEntry` 는 `components` breakdown (필드별
@@ -1043,7 +1026,6 @@ weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial =
 | `[detection]` | `stale_days` / `orphan_grace_days` (기본 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_relations` / `superseded_reference_ok_annotation` / 선택적 `git_drift_threshold` 와 `git_drift_relations` + unresolved reference 를 분류하는 순서 기반 `unresolved_policy` rows (`error` / `warning` / `info`) |
 | `[output]` | 빌드 아티팩트 위치 |
 | `[report]` | `GRAPH.md` 포맷 limit |
-| `[trust]` | 합성 점수 가중치 (per-kind override 지원) |
 | `[similarity]` | 기본 operator-capacity limit, 가중치, stop words |
 | `[search]` | `query search` 키워드 랭킹 가중치 (필드별 exact / partial 티어) |
 | `[meta]` | `nodex_version` SemVer pin — 불일치 바이너리에서 문서를 쓰는 명령은 거부 ([바이너리 버전 핀](#바이너리-버전-핀) 참조) |
@@ -1067,7 +1049,7 @@ nodex/
 | `model/` | 데이터 타입 — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge`, `Annotation`, `RawAnnotation`, `BodyLineMatch`, `RawBodyLineMatch` |
 | `parser/` | markdown → `(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>)`; YAML frontmatter, 본문 링크 (pulldown-cmark AST), `iter_body_lines` fence-aware iterator, identity 추론, 최소-diff `FrontmatterEditor` |
 | `builder/` | scan → cache → read → parse → resolve → validate → graph |
-| `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `trust` (`compute_trust`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
+| `query/` | read-only traversal: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
 | `diff.rs` | `compute_diff(before, after)` — 순수 구조 delta primitive |
 | `ancestry.rs` | 이력의 각 단계에서 기록이 어디 서 있었는지 — 커밋은 부모에 대해, 커밋되지 않은 변경은 `HEAD` 와 모든 `MERGE_HEAD` 에 대해 — 끝점이 아니라 status flow와 불변성 잠금 룰이 읽음 |
 | `git.rs` | 프로젝트가 추적되는 저장소를 프로젝트 자신의 위치에서 해석; 모든 `git` 호출이 만들어지는 단일 seam |
@@ -1145,7 +1127,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.57, <0.58" build
+nodex --check-version ">=0.58, <0.59" build
 ```
 
 ---

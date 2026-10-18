@@ -98,7 +98,7 @@ pub struct Envelope<T: Serialize> {
 /// the only place a result is truncated: their core query functions
 /// return complete deterministic results, and presentation capping
 /// (token economy) happens here. Selection-semantics commands (the
-/// `*Options` tier — trust top/bottom, similar, recent) deliberately
+/// `*Options` tier — similar, recent) deliberately
 /// select in core and wrap with `new`; their `total` is the size of
 /// the selection itself.
 #[derive(Serialize)]

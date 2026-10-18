@@ -1739,82 +1739,12 @@ impl Config {
         Ok(())
     }
 
-    /// `[trust]` and `[similarity]` weights: every component finite and
-    /// non-negative with a positive sum (so the renormalised composite
-    /// has a defined denominator), per-kind `trust.overrides` non-empty
-    /// and non-overlapping, and `similarity.default_limit >= 1`.
+    /// Ranking weights are finite, non-negative and have a positive sum.
     fn validate_scoring(&self) -> Result<()> {
-        let w = &self.trust.weights;
-        for (name, value) in [
-            ("status", w.status),
-            ("freshness", w.freshness),
-            ("drift", w.drift),
-            ("backlinks", w.backlinks),
-        ] {
-            if value < 0.0 || !value.is_finite() {
-                return Err(Error::Config(format!(
-                    "trust.weights.{name} must be a finite non-negative number; got {value}"
-                )));
-            }
-        }
-        let w_sum = w.status + w.freshness + w.drift + w.backlinks;
-        if !w_sum.is_finite() || w_sum <= 0.0 {
-            return Err(Error::Config(
-                "trust.weights must have at least one positive component \
-                 and a finite sum"
-                    .into(),
-            ));
-        }
-        // Trust weight overrides: reject duplicate kinds, validate
-        // weight values. Mirrors the schema.overrides overlap
-        // detection — first-match lookup means a kind in two
-        // overrides would silently ignore the second block.
-        let mut trust_kind_origin: BTreeMap<&str, usize> = BTreeMap::new();
-        for (idx, ov) in self.trust.overrides.iter().enumerate() {
-            let ctx = format!("trust.overrides[{idx}]");
-            if ov.kinds.is_empty() {
-                return Err(Error::Config(format!("{ctx}.kinds must not be empty")));
-            }
-            self.validate_kinds(&ctx, &ov.kinds)?;
-
-            for kind in &ov.kinds {
-                if let Some(prev) = trust_kind_origin.insert(kind.as_str(), idx) {
-                    return Err(Error::Config(format!(
-                        "trust.overrides[{idx}] declares kind {kind:?} which is \
-                         already covered by trust.overrides[{prev}]"
-                    )));
-                }
-            }
-
-            let tw = &ov.weights;
-            for (name, value) in [
-                ("status", tw.status),
-                ("freshness", tw.freshness),
-                ("drift", tw.drift),
-                ("backlinks", tw.backlinks),
-            ] {
-                if value < 0.0 || !value.is_finite() {
-                    return Err(Error::Config(format!(
-                        "{ctx}.weights.{name} must be a finite non-negative number; got {value}"
-                    )));
-                }
-            }
-            let tw_sum = tw.status + tw.freshness + tw.drift + tw.backlinks;
-            if !tw_sum.is_finite() || tw_sum <= 0.0 {
-                return Err(Error::Config(format!(
-                    "{ctx}.weights must have at least one positive component \
-                     and a finite sum"
-                )));
-            }
-        }
-
-        // Similarity: same shape as trust.
         let sw = &self.similarity.weights;
         for (name, value) in [
             ("title", sw.title),
             ("tags", sw.tags),
-            ("kind", sw.kind),
-            ("directory", sw.directory),
             ("linked", sw.linked),
         ] {
             if value < 0.0 || !value.is_finite() {
@@ -1823,7 +1753,7 @@ impl Config {
                 )));
             }
         }
-        let sw_sum = sw.title + sw.tags + sw.kind + sw.directory + sw.linked;
+        let sw_sum = sw.title + sw.tags + sw.linked;
         if !sw_sum.is_finite() || sw_sum <= 0.0 {
             return Err(Error::Config(
                 "similarity.weights must have at least one positive component \
@@ -1838,8 +1768,7 @@ impl Config {
             ));
         }
 
-        // Search: the third ranking surface. Same finite / non-negative /
-        // positive-sum discipline as trust and similarity — an all-zero
+        // An all-zero
         // weight set would rank every match identically, collapsing the
         // ordering the command exists to provide.
         let rw = &self.search.weights;
@@ -2066,7 +1995,7 @@ impl Config {
         for (idx, ov) in self.schema.overrides.iter().enumerate() {
             // `schema_override_for`'s membership lookup makes an empty
             // list silently inert — the cardinal rule: every filter
-            // must be non-empty (mirrors trust.overrides).
+            // must be non-empty.
             if ov.kinds.is_empty() {
                 return Err(Error::Config(format!(
                     "schema.overrides[{idx}].kinds must not be empty"

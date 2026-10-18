@@ -602,12 +602,12 @@ pub struct CommandsManifest {
 /// payload shapes, and its positional arity.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CommandManifestEntry {
-    /// Invocation tokens, e.g. `["query", "trust"]`.
+    /// Invocation tokens, e.g. `["query", "search"]`.
     pub path: Vec<String>,
     /// The leaf's `per_command` envelope-schema key (dotted `path`).
     pub schema: String,
-    /// Flag-selected alternate payload shapes (e.g. `query.trust-list`
-    /// behind `--bottom` / `--top`).
+    /// Flag-selected alternate payload shapes (e.g. `query.search-body`
+    /// behind `--body`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modes: Vec<CommandMode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1455,7 +1455,6 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::similar::SimilarityEntry;
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
-    use crate::query::trust::TrustEntry;
     use crate::scaffold::ScaffoldResult;
 
     let mut out: Map<String, Value> = Map::new();
@@ -1484,13 +1483,6 @@ fn per_command_schemas() -> Map<String, Value> {
         items_envelope::<CoveredByEntry>(),
     );
     out.insert("query.issues".into(), schema_of::<IssueReport>());
-    // The CLI emits two distinct shapes for `query trust`:
-    //   * `<id>` form               → single `TrustEntry`
-    //   * `--bottom/--top` listing  → `ItemsEnvelope<TrustEntry>`
-    // Both schemas are registered so typed codegen consumers can
-    // validate either response without re-deriving the list shape.
-    out.insert("query.trust".into(), schema_of::<TrustEntry>());
-    out.insert("query.trust-list".into(), items_envelope::<TrustEntry>());
     out.insert("query.similar".into(), items_envelope::<SimilarityEntry>());
     out.insert("query.recent".into(), items_envelope::<RecentEntry>());
     out.insert("query.components".into(), items_envelope::<Component>());
@@ -2271,60 +2263,6 @@ mod tests {
         // which command's data shape sits inside.
         let one_of = m.envelope.get("oneOf").and_then(Value::as_array).unwrap();
         assert_eq!(one_of.len(), 2);
-    }
-
-    #[test]
-    fn envelope_schema_trust_registers_both_single_and_list_shapes() {
-        // `query trust <id>` returns a single `TrustEntry`; `query
-        // trust --bottom/--top` returns an `ItemsEnvelope<TrustEntry>`.
-        // Typed consumers can't validate both responses unless both
-        // shapes are explicitly registered.
-        let m = envelope_manifest();
-        let single = m
-            .per_command
-            .get("query.trust")
-            .expect("query.trust must be registered");
-        let listing = m
-            .per_command
-            .get("query.trust-list")
-            .expect("query.trust-list must be registered for --bottom/--top mode");
-        // Single shape is the bare TrustEntry object — must not
-        // expose the items-envelope keys.
-        let single_props = single
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("TrustEntry must serialise as object");
-        assert!(
-            !single_props.contains_key("items"),
-            "query.trust (single) must not carry `items`; got {single_props:?}"
-        );
-        // List shape is the canonical items envelope: `items` +
-        // `total`.
-        let listing_props = listing
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("trust-list envelope must serialise as object");
-        assert!(
-            listing_props.contains_key("items"),
-            "query.trust-list must carry `items`; got {listing_props:?}"
-        );
-        assert!(
-            listing_props.contains_key("total"),
-            "query.trust-list must carry `total`; got {listing_props:?}"
-        );
-    }
-
-    #[test]
-    fn envelope_schema_per_command_excludes_retired_low_trust() {
-        // `query low-trust` was retired in v0.13 in favour of the
-        // generalised `query trust --bottom`. If anyone ever
-        // re-introduces `query.low-trust` here without re-introducing
-        // the CLI verb, this test fires.
-        let m = envelope_manifest();
-        assert!(
-            !m.per_command.contains_key("query.low-trust"),
-            "query.low-trust must not be registered — retired in v0.13"
-        );
     }
 
     #[test]

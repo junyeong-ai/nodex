@@ -1,6 +1,18 @@
 # nodex — `nodex.toml` reference
 
-Read this when authoring or debugging a config. `nodex init` writes an annotated starter, which documents `[trust]`, `[similarity]` and `[search]` key by key and lists `[report]`'s defaults; `reference/minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
+Read this when authoring or debugging a config. `nodex init` writes an annotated starter, which documents `[similarity]` and `[search]` key by key and lists `[report]`'s defaults; `reference/minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
+
+## Contents
+
+- [Load-time validation](#load-time-rejections)
+- [Identity](#identity) and [scope](#scope)
+- [Frontmatter relations](#frontmatter-relations) and [body links](#body-links)
+- [Schema rules](#schema-rules), [built-in rules](#built-in-rule-ids) and [vocabulary](#vocabulary-rules)
+- [Diff-aware rules and locks](#diff-aware-rules)
+- [Status flow](#status-flow)
+- [Rule severity](#rule-severity) and [unresolved references](#unresolved-reference-policy)
+- [Detection thresholds](#detection-thresholds) and [git measurement](#git-measurement)
+- [Creation paths](#creation-paths)
 
 ## Load-time rejections
 
@@ -206,7 +218,7 @@ statuses = ["active", "superseded", "archived"]
 kinds = ["adr"]
 ```
 
-Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `statuses.flow` validation, `conditional_exclude`, trust scoring, the `terminal` trigger, the lifecycle write seam, `git_drift`, orphan and stale detection, `superseded_reference`, and the `GRAPH.md` report, so arming a lock through it declares the record finished to every one of them. The first is not a behaviour change but a refusal — a flow declaring a move out of that status stops loading.
+Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `statuses.flow` validation, `conditional_exclude`, the `terminal` trigger, the lifecycle write seam, `git_drift`, orphan and stale detection, `superseded_reference`, and the `GRAPH.md` report, so arming a lock through it declares the record finished to every one of them. The first is not a behaviour change but a refusal — a flow declaring a move out of that status stops loading.
 
 Declare `[[statuses.flow]]` over the same kinds and load proves two things about the arming, both `CONFIG_ERROR`s naming the pair. No declared transition may leave the arming, or a status edit would disarm the lock. And where the block locks `status` itself, no declared transition may move a document while it is armed, or the lock would refuse a move the flow calls legal and no document could satisfy both — which is why locking `status` fits `terminal`, where a terminal status declares no move, and not `creation`, which arms everywhere. For a kind no flow governs there is nothing to prove against: a status edit can disarm the lock, and the project has declared no lifecycle that would say otherwise.
 
@@ -291,13 +303,13 @@ Declaring the table **replaces** the built-in default row `{name = "excluded_tar
 
 ## Detection thresholds
 
-`detection.stale_days` and `detection.git_drift_threshold` are omitted to disable; `0` is rejected at load as ambiguous. Omitting `stale_days` leaves `stale_review` unregistered, and `query stale` then answers empty with a `threshold_undeclared` warning while `GRAPH.md`'s Stale section says it is not tracked; `query issues` carries no warning, since its `rule_coverage` already lacks the rule. It also drops the trust composite's `freshness` component — freshness is measured against that horizon, and a project declaring no horizon has no scale to place a date on.
+`detection.stale_days` and `detection.git_drift_threshold` are omitted to disable; `0` is rejected at load as ambiguous. Omitting `stale_days` leaves `stale_review` unregistered, and `query stale` then answers empty with a `threshold_undeclared` warning while `GRAPH.md`'s Stale section says it is not tracked; `query issues` carries no warning, since its `rule_coverage` already lacks the rule.
 
 Setting `git_drift_threshold` requires `git` on PATH and a git work tree holding the project: without them every command that loads the config refuses with `CONFIG_ERROR`. With it set, a `check` of the working tree or the index keeps the git reading it took in `<output.dir>/history.json` — a cache like `cache.json`, which every other command only reads.
 
 `detection.git_drift_relations` selects which relations carry the measurement (default `["references", "implements", "covers"]`) and is validated at load — non-empty, no duplicates, every entry a known relation — whether or not the threshold is set. `detection.orphan_grace_days` is a plain duration, so `0` is valid and means "check immediately"; it exempts a document only when that document declares `created`, since an undated one has no age to place. `detection.orphan_ok_kinds` names kinds that are leaf-by-design. With the per-node `orphan_ok` flag and terminal status, those are the four exemptions that decide the `orphan` rule's population — the reach reports how much of the corpus is left. `detection.superseded_reference_ok_kinds` names kinds that cite superseded documents by design — an ADR index, a decision log — which `superseded_reference` does not ask to repoint. `detection.superseded_reference_ok_annotation` names an `[[annotations]]` block (refused at load if none declares it) whose markers make the same statement one document and one target at a time: a marker keyed by a target's id, anywhere in the citing document's body, takes that document's body citations of that target out of the question, while a frontmatter relation to it (`implements`, `related`) is a structural claim the marker does not speak for and stays asked. It is keyed by target rather than by line because a document's citations of one target through one relation are one edge wherever they sit; a marker inside a code block is not read.
 
-The detection plane reads terminal status one way throughout: `stale_review` does not review what the project retired, `git_drift` does not measure it against source, `orphan` does not ask it for references, `superseded_reference` does not ask it to repoint what it cites, and the trust composite places neither review-anchored component on it. Every remedy those surfaces name is a maintenance action.
+The detection plane reads terminal status one way throughout: `stale_review` does not review what the project retired, `git_drift` does not measure it against source, `orphan` does not ask it for references, `superseded_reference` does not ask it to repoint what it cites. Every remedy those surfaces name is a maintenance action.
 
 ## Git measurement
 

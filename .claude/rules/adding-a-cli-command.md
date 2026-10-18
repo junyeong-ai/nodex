@@ -35,7 +35,7 @@ paths:
    so the typed-codegen contract cannot drift from the command
    surface.
 6. A second flag-selected response shape (one leaf, two payload
-   schemas — e.g. `query trust --bottom/--top` → `query.trust-list`)
+   schemas — e.g. `query search --body` → `query.search-body`)
    must additionally be declared in `commands/export.rs::FLAG_MODES`:
    the table feeds both the published commands manifest and the
    bijection test, which verifies the declared flags exist on the

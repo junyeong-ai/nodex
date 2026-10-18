@@ -22,17 +22,8 @@ pub struct OrphanEntry {
 /// or not yet expected to be linked, so none of them is a document this
 /// asks anything of.
 ///
-/// Neither is a retired one. Every remedy for orphanhood is a
-/// maintenance action — link the document, declare it leaf, widen the
-/// exempt kinds — and a terminal document is one the project has
-/// stopped maintaining, often literally: a `body_immutable` block
-/// freezes it on terminal entry. The detection plane reads terminal
-/// status the same way throughout — `stale_review` does not review what
-/// the project retired, `git_drift` does not measure it against source,
-/// `superseded_reference` does not ask it to repoint what it cites,
-/// and the trust composite places neither review-anchored component on
-/// it — and orphan reading it differently is what made a project spend
-/// a whole `orphan_ok_kinds` entry to say so.
+/// Terminal records are outside maintenance populations, consistently with
+/// stale, drift and superseded-reference detection.
 ///
 /// A document is referenced when another document's record names it.
 /// Every authored pointer but one is an incoming edge; the one is
@@ -43,8 +34,7 @@ pub struct OrphanEntry {
 /// names it, and a reader at the predecessor follows it, so it is read
 /// here from the field itself. A successor whose predecessor does not
 /// point forward is not named by anything, and stays unreached however
-/// its own `supersedes` reads. `query backlinks` and the trust
-/// `backlinks` component read edges — citations, not succession — and
+/// its own `supersedes` reads. `query backlinks` reads edges — citations, not succession — and
 /// list nothing for such a successor; `query chain` is the traversal
 /// that follows the lineage from either end.
 ///

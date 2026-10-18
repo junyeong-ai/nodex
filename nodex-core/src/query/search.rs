@@ -6,13 +6,7 @@ use crate::model::Graph;
 
 use super::NodeRef;
 
-/// One ranked hit from [`search`]. Carries the standard `NodeRef`
-/// flattened so the JSON shape stays `{ id, title, kind, status, path,
-/// score, components }`, identical in spine to every other item-list
-/// query. `score` is the sum of the matched fields' weights; `components`
-/// breaks that sum down per field so a consumer can see *why* a node
-/// ranked — the same "surface the why" contract `trust` and `similar`
-/// expose.
+/// One keyword hit with the matched fields' contributions to its additive score.
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct SearchEntry {
     #[serde(flatten)]
@@ -21,13 +15,8 @@ pub struct SearchEntry {
     pub components: SearchComponents,
 }
 
-/// Per-field keyword-match breakdown. Each field is `Option<f64>`
-/// carrying the weight that field contributed, or `None` when the
-/// keyword did not match it — the honest-absence discipline `trust` and
-/// `similar` follow (a non-matching field is *absent*, never a
-/// fabricated `0.0`). An entry reaches the wire only when at least one
-/// component is `Some` (search ranks matches, not the whole corpus), so
-/// the breakdown is never all-`None`.
+/// A field is omitted when the keyword did not match it. At least one field
+/// contributes to every returned entry.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchComponents {
     /// Weight contributed by the id match — `id_exact` when the id
@@ -43,12 +32,8 @@ pub struct SearchComponents {
     pub tags: Option<f64>,
 }
 
-/// Search nodes by keyword (case-insensitive substring match on title,
-/// id, tags). Additive ranking: a node's score is the sum of the
-/// weights of the fields its keyword matched (`search.weights`); a node
-/// that matches nothing is excluded. This is deliberately *not* the
-/// renormalise-over-present model `trust` / `similar` use — those rank
-/// the whole corpus, search ranks only the matches.
+/// Search by literal case-insensitive substring on id, title and tags.
+/// Scores add the configured weights of matching fields. Unmatched nodes are excluded.
 ///
 /// `keyword` is taken as a literal substring: an empty keyword is a
 /// substring of every node and so matches the whole corpus. That is a

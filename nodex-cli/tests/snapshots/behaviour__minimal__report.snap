@@ -6,7 +6,6 @@ exit: 0
 {
   "data": {
     "generated": [
-      "graph.json",
       "GRAPH.md"
     ],
     "output_dir": "<staged>/_index"

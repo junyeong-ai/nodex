@@ -898,7 +898,7 @@ fn validate_rejects_cross_field_require_naming_an_inferred_builtin() {
 fn validate_rejects_schema_override_with_empty_kinds() {
     // `schema_override_for`'s membership lookup makes an empty
     // list silently inert — the cardinal rule, mirroring
-    // trust.overrides.
+    // Every override must select at least one kind.
     let mut config = Config::default();
     config.schema.overrides.push(SchemaOverride {
         kinds: vec![],
@@ -3256,93 +3256,6 @@ fn load_accepts_meta_omitted_entirely() {
 }
 
 #[test]
-fn validate_accepts_trust_overrides_with_valid_kinds() {
-    let mut config = Config::default();
-    config.kinds.allowed.push("adr".into());
-    config.trust.overrides = vec![TrustWeightOverride {
-        kinds: vec!["adr".into()],
-        weights: TrustWeights {
-            status: 0.2,
-            freshness: 0.2,
-            drift: 0.2,
-            backlinks: 0.4,
-        },
-    }];
-    config.validate().expect("valid trust override must load");
-}
-
-#[test]
-fn validate_rejects_trust_override_with_unknown_kind() {
-    let mut config = Config::default();
-    config.trust.overrides = vec![TrustWeightOverride {
-        kinds: vec!["bogus".into()],
-        weights: TrustWeights::default(),
-    }];
-    let err = config.validate().unwrap_err();
-    match err {
-        Error::Config(msg) => {
-            assert!(msg.contains("trust.overrides[0]"), "{msg}");
-            assert!(msg.contains("\"bogus\""), "{msg}");
-            assert!(msg.contains("kinds.allowed"), "{msg}");
-        }
-        _ => panic!("expected Config error"),
-    }
-}
-
-#[test]
-fn validate_rejects_trust_override_duplicate_kind() {
-    let mut config = Config::default();
-    config.kinds.allowed.push("adr".into());
-    config.trust.overrides = vec![
-        TrustWeightOverride {
-            kinds: vec!["adr".into()],
-            weights: TrustWeights::default(),
-        },
-        TrustWeightOverride {
-            kinds: vec!["adr".into()],
-            weights: TrustWeights {
-                status: 0.1,
-                freshness: 0.1,
-                drift: 0.1,
-                backlinks: 0.7,
-            },
-        },
-    ];
-    let err = config.validate().unwrap_err();
-    match err {
-        Error::Config(msg) => {
-            assert!(msg.contains("\"adr\""), "{msg}");
-            assert!(msg.contains("overrides[1]"), "{msg}");
-            assert!(msg.contains("overrides[0]"), "{msg}");
-        }
-        _ => panic!("expected Config error"),
-    }
-}
-
-#[test]
-fn validate_rejects_trust_override_negative_weight() {
-    let mut config = Config::default();
-    config.kinds.allowed.push("adr".into());
-    config.trust.overrides = vec![TrustWeightOverride {
-        kinds: vec!["adr".into()],
-        weights: TrustWeights {
-            status: -0.1,
-            freshness: 0.3,
-            drift: 0.2,
-            backlinks: 0.1,
-        },
-    }];
-    let err = config.validate().unwrap_err();
-    match err {
-        Error::Config(msg) => {
-            assert!(msg.contains("trust.overrides[0]"), "{msg}");
-            assert!(msg.contains("status"), "{msg}");
-        }
-        _ => panic!("expected Config error"),
-    }
-}
-
-#[test]
 fn validate_rejects_negative_search_weight() {
     let mut config = Config::default();
     config.search.weights.id_exact = -1.0;
@@ -3421,52 +3334,6 @@ fn validate_accepts_require_explicit_inferred_fields() {
     config
         .validate()
         .expect("id/title/kind/status are valid require_explicit entries");
-}
-
-#[test]
-fn validate_rejects_trust_override_all_zero_weights() {
-    let mut config = Config::default();
-    config.kinds.allowed.push("adr".into());
-    config.trust.overrides = vec![TrustWeightOverride {
-        kinds: vec!["adr".into()],
-        weights: TrustWeights {
-            status: 0.0,
-            freshness: 0.0,
-            drift: 0.0,
-            backlinks: 0.0,
-        },
-    }];
-    let err = config.validate().unwrap_err();
-    match err {
-        Error::Config(msg) => {
-            assert!(msg.contains("trust.overrides[0]"), "{msg}");
-            assert!(msg.contains("at least one positive"), "{msg}");
-        }
-        _ => panic!("expected Config error"),
-    }
-}
-
-#[test]
-fn trust_weights_for_returns_override_when_matched() {
-    let mut config = Config::default();
-    config.kinds.allowed.push("adr".into());
-    let override_weights = TrustWeights {
-        status: 0.1,
-        freshness: 0.1,
-        drift: 0.1,
-        backlinks: 0.7,
-    };
-    config.trust.overrides = vec![TrustWeightOverride {
-        kinds: vec!["adr".into()],
-        weights: override_weights,
-    }];
-    let resolved = config.trust_weights_for("adr");
-    assert_eq!(resolved.backlinks, 0.7);
-    assert_eq!(resolved.status, 0.1);
-    // Unmatched kind falls back to global.
-    let fallback = config.trust_weights_for("generic");
-    assert_eq!(fallback.status, config.trust.weights.status);
-    assert_eq!(fallback.backlinks, config.trust.weights.backlinks);
 }
 
 // ─── Phase 3: silent-no-op invariants ──────────────────────────────

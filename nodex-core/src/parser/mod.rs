@@ -97,7 +97,7 @@ impl<'a> IdentityParse<'a> {
 /// parse-affecting config option *cannot* be added without surfacing
 /// here — the compiler refuses to thread it through `parse_document`
 /// otherwise. Config that only steers validation or query ranking
-/// (`schema`, `trust`, `similarity`, `detection`, `scope`, `kinds`,
+/// (`schema`, `similarity`, `detection`, `scope`, `kinds`,
 /// naming rules) is deliberately absent: it never changes a cached parse
 /// result, so tuning it must not force a full reparse. Of `statuses`,
 /// parsing consumes *only* where a document starts (the default a

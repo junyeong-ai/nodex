@@ -15,10 +15,7 @@ use tempfile::TempDir;
 
 use nodex_core::{
     Config, builder,
-    query::{
-        similar::{self, SimilarityOptions, SimilarityTarget},
-        trust,
-    },
+    query::similar::{self, SimilarityOptions, SimilarityTarget},
 };
 
 fn build_corpus(root: &Path, doc_count: usize) {
@@ -110,40 +107,5 @@ fn bench_similar(c: &mut Criterion) {
     });
 }
 
-fn bench_trust_listing_at_scale(c: &mut Criterion) {
-    c.bench_function("compute_trust_ranking_bottom[nodes=10000]", |b| {
-        b.iter_with_setup(
-            || {
-                let tmp = TempDir::new().unwrap();
-                build_corpus(tmp.path(), 10_000);
-                let config = Config::load(tmp.path()).unwrap();
-                let result = builder::build(tmp.path(), &config, true).unwrap();
-                (tmp, config, result.graph)
-            },
-            |(tmp, config, graph)| {
-                let reports = trust::compute_trust_ranking(
-                    &graph,
-                    &config,
-                    tmp.path(),
-                    &trust::TrustListOptions {
-                        extreme: trust::TrustExtreme::Bottom,
-                        limit: 100,
-                        kind: None,
-                        status: None,
-                        below: None,
-                    },
-                    chrono::Local::now().date_naive(),
-                );
-                black_box(reports);
-            },
-        );
-    });
-}
-
-criterion_group!(
-    benches,
-    bench_build,
-    bench_similar,
-    bench_trust_listing_at_scale
-);
+criterion_group!(benches, bench_build, bench_similar,);
 criterion_main!(benches);

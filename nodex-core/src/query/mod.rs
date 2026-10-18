@@ -8,7 +8,6 @@ pub mod search;
 pub mod similar;
 pub mod structure;
 pub mod traverse;
-pub mod trust;
 
 use chrono::NaiveDate;
 use schemars::JsonSchema;
@@ -45,20 +44,7 @@ impl NodeRef {
 /// drift.
 pub const NODE_REF_FIELDS: &[&str] = &["id", "title", "kind", "status", "path"];
 
-/// A ranking's ordered selection plus its structural exclusions. A
-/// ranking is a total order over composite scores, so a node or
-/// candidate with no composite is not in the ranking's domain: it
-/// never occupies a top/bottom-N slot, never satisfies a score cutoff,
-/// and never sorts as an extreme. No composite has two causes — no
-/// positively-weighted signal present to rank by, or a
-/// positively-weighted component the run can measure that the document
-/// left undeclared (`trust`) — and both leave through here. The
-/// exclusion is never silent — `unscored` counts the excluded entries
-/// so the CLI can surface them as an envelope warning. A count rather
-/// than an id list: a trust ranking's node probes via the single-node
-/// form, and a similarity query carrying no signal excludes every
-/// candidate alike, so the count says what the ids would and the
-/// payload stays bounded.
+/// Ranked candidates and the count excluded because the target carries no weighted signal.
 #[derive(Debug, Clone)]
 pub struct RankingOutcome<T> {
     pub entries: Vec<T>,

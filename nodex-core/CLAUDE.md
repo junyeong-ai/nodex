@@ -163,7 +163,7 @@ safety: `src/git.rs` rustdoc.
 
 - `Config` owns vocabulary. Tool writers consume merged views (`required_for`,
   `types_for`, `enums_for`, `cross_field_for`, `forbidden_for`,
-  `declared_fields_for`, `trust_weights_for`), not raw overrides.
+  `declared_fields_for`), not raw overrides.
   Read identity/status with `parser::parse_document`, never the frontmatter line
   editor. Default rendering reparses the real node after each cross-field change
   to a fixpoint; a synthetic node is not an equivalent schema reading.
@@ -237,11 +237,12 @@ safety: `src/git.rs` rustdoc.
 
 ## Detection and rankings
 
-- Scores describe maintenance signals and comparison candidates, never document
-  correctness, approval or duplication. `TrustEntry::basis` records measured,
-  positively weighted components; compare it and the configured weights with
-  each score. Similarity's status option filters candidates before selection,
-  without changing the target or the graph's historical evidence.
+- Similarity ranks positive title-token, tag and graph-neighbour overlap, never
+  correctness or semantic duplication. Kind, status and directory filters precede
+  ranking and do not change the target or historical evidence. Normalize over
+  target-side signals only; a candidate lacking one measures zero. A target with
+  no weighted signal ranks nothing and reports the unscored population. Source:
+  `src/query/similar.rs`.
 - `stale_days` / `git_drift_threshold`: omitted = disabled; zero rejected. Init's
   visible config sets startup choices, not serde defaults that erase "disabled".
   `orphan_grace_days` is a duration and permits zero. Orphan also exempts terminal
@@ -258,20 +259,8 @@ safety: `src/git.rs` rustdoc.
   violation once, including warning and error unresolved references. Info rows
   stay outside total under their policy names. Coverage assertion:
   `every_listed_finding_is_counted_once_through_its_rule`.
-- Trust renormalizes over components the run can measure. Omitted stale horizon
-  drops freshness. A positively weighted measurable axis missing document input
-  makes score undefined (`TrustEntry::undeclared`, `RankingOutcome::unscored`);
-  zero weight asks for no declaration. Terminal subjects have no review-anchored
-  components. Similarity renormalizes over the target's available signals only;
-  a candidate lacking a target signal scores zero, and a no-signal target ranks
-  nothing. Source: `src/query/trust.rs`, `src/query/similar.rs`.
-- `git_drift::drift_targets` supplies one per-edge resolution to rule, narrowing
-  and trust. The rule requires reviewed before resolving; trust resolves first
-  so no offered target is inapplicable rather than an undeclared date. Unresolvable
-  targets are explicit (`GitDriftUnmeasurable`); `commits_since: None` is not zero.
-  All offered edges unmeasurable makes the rule's node unjudged, with a warning
-  naming targets; offering no edge is a judged answer. Trust drops unmeasurable
-  drift rather than fabricating clean evidence.
+- `git_drift::drift_targets` resolves measured edges within the project.
+  Unmeasurable targets remain explicit; `commits_since: None` is not zero.
 - `DriftHistory` lazily shares one indexed revision walk across passes. It counts
   commits introducing path changes (`--full-history`, combined merge diffs), and
   applies review-date bounds to indexed dates, independent of time of day.
@@ -348,7 +337,7 @@ Content before claiming NOT_FOUND; drift/read failure keeps its distinct remedy.
 `Snapshot::body` owns revision-checked canonical reads; body-search limits bound
 retained output, never the files whose revision must be checked.
 
-Queries never mutate but may measure git/stat (`find_unresolved_edges`, trust).
+Queries never mutate documents but may measure filesystem and history through detectors.
 Naming: `find_*` traversal/filter, `compute_*` values, `search` text scoring;
 `*Filter` pure narrowing, `*Options` ranking/selection/output-retention controls.
 Metadata listings return full core results for CLI presentation caps; body search

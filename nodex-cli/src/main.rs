@@ -13,7 +13,6 @@ use commands::lifecycle::LifecycleCommand;
 use commands::migrate::MigrateArgs;
 use commands::query::QueryCommand;
 use commands::rename::RenameArgs;
-use commands::report::ReportArgs;
 use commands::retarget::RetargetArgs;
 use commands::scaffold::ScaffoldArgs;
 use std::path::PathBuf;
@@ -41,7 +40,7 @@ pub(crate) struct Cli {
 
     /// Evaluate date-relative rules and queries as if today were DATE
     /// (`YYYY-MM-DD`), instead of reading the system clock. Staleness,
-    /// orphan grace, recency windows, trust freshness, and the dates
+    /// orphan grace, recency windows, and the dates
     /// written into scaffolded documents are all measured from it, so
     /// pinning it makes a run reproducible: the same graph and the same
     /// date give the same answer on any machine, on any day.
@@ -85,7 +84,7 @@ enum Command {
         sub: LifecycleCommand,
     },
     /// Generate reports
-    Report(ReportArgs),
+    Report,
     /// Inject missing frontmatter into legacy docs
     Migrate(MigrateArgs),
     /// Move file and update references
@@ -196,7 +195,7 @@ fn main() -> std::process::ExitCode {
             }
             Command::Check(args) => commands::check::run(&root, args, pretty, today),
             Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
-            Command::Report(args) => commands::report::run(&root, args, pretty, today),
+            Command::Report => commands::report::run(&root, pretty, today),
             Command::Migrate(args) => return commands::migrate::run(&root, args, pretty, today),
             Command::Rename(args) => return commands::rename::run(&root, args, pretty, today),
             Command::Retarget(args) => return commands::retarget::run(&root, args, pretty, today),

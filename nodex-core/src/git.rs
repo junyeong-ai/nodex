@@ -1084,9 +1084,7 @@ pub struct Range {
 ///
 /// `--diff-merges=<how>` is git 2.31, so a project measuring drift on an
 /// older git finds the walk refused. Nothing is mismeasured: the reading
-/// fails, every target reports unmeasurable, and the drift component
-/// leaves the trust composite — the same states an unreadable repository
-/// already produces.
+/// fails and its targets report unmeasurable.
 pub struct History {
     /// When each commit was made, in seconds since the epoch, by walk
     /// position: the zone-free reading a kept [`HistoryRecord`] stores.

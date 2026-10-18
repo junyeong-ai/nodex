@@ -125,7 +125,6 @@ exit: 0
                           },
                           "reason": {
                             "enum": [
-                              "incomplete_basis",
                               "target_without_signals"
                             ],
                             "type": "string"
@@ -412,7 +411,7 @@ exit: 0
             "oneOf": [
               {
                 "const": "terminal",
-                "description": "The lock engages once the document's *before-snapshot* status is\nterminal — `statuses.terminal`, the same word `conditional_exclude`,\ntrust scoring and the lifecycle seam read.",
+                "description": "The lock engages once the document's *before-snapshot* status is\nterminal — `statuses.terminal`, the same word `conditional_exclude`,\nthe lifecycle seam read.",
                 "type": "string"
               },
               {
@@ -422,7 +421,7 @@ exit: 0
               },
               {
                 "const": "status",
-                "description": "The lock engages once the before-snapshot status is one the block\nnames in its own `statuses` — the acceptance boundary, for a record\nthat is editable while it is a draft and fixed once the project has\nadopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and the lifecycle seam, while\nthis set is the block's own and moves only when the block does. A\nblock arming at `active` cannot say so as `terminal` without\ndeclaring `active` terminal to all of them.",
+                "description": "The lock engages once the before-snapshot status is one the block\nnames in its own `statuses` — the acceptance boundary, for a record\nthat is editable while it is a draft and fixed once the project has\nadopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, the lifecycle seam, while\nthis set is the block's own and moves only when the block does. A\nblock arming at `active` cannot say so as `terminal` without\ndeclaring `active` terminal to all of them.",
                 "type": "string"
               }
             ]
@@ -1703,14 +1702,14 @@ exit: 0
             "description": "One CLI leaf: its invocation tokens, its `per_command` envelope-\nschema key (the dotted join of `path`), any flag-selected alternate\npayload shapes, and its positional arity.",
             "properties": {
               "modes": {
-                "description": "Flag-selected alternate payload shapes (e.g. `query.trust-list`\nbehind `--bottom` / `--top`).",
+                "description": "Flag-selected alternate payload shapes (e.g. `query.search-body`\nbehind `--body`).",
                 "items": {
                   "$ref": "#/$defs/CommandMode"
                 },
                 "type": "array"
               },
               "path": {
-                "description": "Invocation tokens, e.g. `[\"query\", \"trust\"]`.",
+                "description": "Invocation tokens, e.g. `[\"query\", \"search\"]`.",
                 "items": {
                   "type": "string"
                 },
@@ -3626,7 +3625,7 @@ exit: 0
             "oneOf": [
               {
                 "const": "terminal",
-                "description": "The lock engages once the document's *before-snapshot* status is\nterminal — `statuses.terminal`, the same word `conditional_exclude`,\ntrust scoring and the lifecycle seam read.",
+                "description": "The lock engages once the document's *before-snapshot* status is\nterminal — `statuses.terminal`, the same word `conditional_exclude`,\nthe lifecycle seam read.",
                 "type": "string"
               },
               {
@@ -3636,7 +3635,7 @@ exit: 0
               },
               {
                 "const": "status",
-                "description": "The lock engages once the before-snapshot status is one the block\nnames in its own `statuses` — the acceptance boundary, for a record\nthat is editable while it is a draft and fixed once the project has\nadopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, trust scoring and the lifecycle seam, while\nthis set is the block's own and moves only when the block does. A\nblock arming at `active` cannot say so as `terminal` without\ndeclaring `active` terminal to all of them.",
+                "description": "The lock engages once the before-snapshot status is one the block\nnames in its own `statuses` — the acceptance boundary, for a record\nthat is editable while it is a draft and fixed once the project has\nadopted it.\n\nDistinct from [`Self::Terminal`] in where the set comes from, which\nis what makes it worth spelling separately: `terminal` names a\nsymbol that moves with the project's taxonomy, in step with\n`conditional_exclude`, the lifecycle seam, while\nthis set is the block's own and moves only when the block does. A\nblock arming at `active` cannot say so as `terminal` without\ndeclaring `active` terminal to all of them.",
                 "type": "string"
               }
             ]
@@ -5402,7 +5401,7 @@ exit: 0
       "query.search": {
         "$defs": {
           "SearchComponents": {
-            "description": "Per-field keyword-match breakdown. Each field is `Option<f64>`\ncarrying the weight that field contributed, or `None` when the\nkeyword did not match it — the honest-absence discipline `trust` and\n`similar` follow (a non-matching field is *absent*, never a\nfabricated `0.0`). An entry reaches the wire only when at least one\ncomponent is `Some` (search ranks matches, not the whole corpus), so\nthe breakdown is never all-`None`.",
+            "description": "A field is omitted when the keyword did not match it. At least one field\ncontributes to every returned entry.",
             "properties": {
               "id": {
                 "description": "Weight contributed by the id match — `id_exact` when the id\nequals the keyword, else `id_partial` for a substring match.",
@@ -5432,7 +5431,7 @@ exit: 0
             "type": "object"
           },
           "SearchEntry": {
-            "description": "One ranked hit from [`search`]. Carries the standard `NodeRef`\nflattened so the JSON shape stays `{ id, title, kind, status, path,\nscore, components }`, identical in spine to every other item-list\nquery. `score` is the sum of the matched fields' weights; `components`\nbreaks that sum down per field so a consumer can see *why* a node\nranked — the same \"surface the why\" contract `trust` and `similar`\nexpose.",
+            "description": "One keyword hit with the matched fields' contributions to its additive score.",
             "properties": {
               "components": {
                 "$ref": "#/$defs/SearchComponents"
@@ -5605,26 +5604,9 @@ exit: 0
       "query.similar": {
         "$defs": {
           "SimilarityComponents": {
-            "description": "Per-signal breakdown. Every field is `Option<f64>` so callers can\ndistinguish \"we measured 0.0\" from \"no signal to measure\". When a\ncomponent is `None`, its weight is excluded from the composite\ndenominator — see `compose`.",
+            "description": "Jaccard overlaps. Omitted fields have no target-side set to compare.",
             "properties": {
-              "directory": {
-                "description": "`None` when the target has no parent directory to compare\nagainst — a pre-creation spec without `--parent-dir`. A node\nalways has one: a document at the project root sits in `\"\"`.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "kind": {
-                "description": "`None` when the target is a pre-creation spec without an\nexplicit kind. Comparing \"no kind\" to a real kind would\nfabricate a 0.0 from absence.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
               "linked": {
-                "description": "`None` when the target is a pre-creation spec (no graph id, so\nthe neighbour set is undefined), or when the target node has no\nneighbours to compare a candidate's against.",
                 "format": "double",
                 "type": [
                   "number",
@@ -5632,7 +5614,6 @@ exit: 0
                 ]
               },
               "tags": {
-                "description": "`None` when the *target* carries no tags, for the reason\n`title` does. A tagless candidate scores `Some(0.0)` against a\ntagged target.",
                 "format": "double",
                 "type": [
                   "number",
@@ -5640,7 +5621,6 @@ exit: 0
                 ]
               },
               "title": {
-                "description": "`None` when the *target's* title tokenises to an empty set\nafter stopword + min-char filtering — the query carries no\ntitle signal, so no candidate can be ranked on one. A candidate\nwhose own tokens are empty scores `Some(0.0)`: zero overlap\nagainst a token set that exists is a measurement.",
                 "format": "double",
                 "type": [
                   "number",
@@ -5666,7 +5646,7 @@ exit: 0
                 "type": "string"
               },
               "score": {
-                "description": "Composite in `[0, 1]`. Always present: an entry exists only for\na scored candidate — one with no composite never reaches the\nwire (it is excluded from the ranking and counted in\n[`RankingOutcome::unscored`]). Named `score`, identical in spine\nto every other item-list ranking entry ([`super::trust::TrustEntry`],\n[`super::search::SearchEntry`]).",
+                "description": "Weighted overlap in `(0, 1]`, comparable within this query.",
                 "format": "double",
                 "type": "number"
               },
@@ -5801,248 +5781,6 @@ exit: 0
           "unjudged"
         ],
         "title": "DetectionListing",
-        "type": "object"
-      },
-      "query.trust": {
-        "$defs": {
-          "TrustComponent": {
-            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`crate::config::TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
-            "enum": [
-              "status",
-              "freshness",
-              "drift",
-              "backlinks"
-            ],
-            "type": "string"
-          },
-          "TrustComponents": {
-            "description": "Per-component breakdown. A component is present exactly when this\nrun measured it; an absent one is omitted from the JSON rather than\nreported as `null` or `0.0`, and [`TrustEntry::undeclared`] tells\nthe two kinds of absence apart.",
-            "properties": {
-              "backlinks": {
-                "description": "Absent when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, and a `1.0` here\nwould be fabricated from absence.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "drift": {
-                "description": "Absent when `detection.git_drift_threshold` is unset, no\nrepository can be measured, the node is terminal, it has no\nresolvable edge in a `detection.git_drift_relations` relation,\ngit cannot measure the edges it has, or it declares no\n`reviewed` anchor to count commits from.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "freshness": {
-                "description": "Absent when `detection.stale_days` is unset — freshness places\na review date on the staleness horizon, and a project declaring\nno horizon has no scale to place one on — when the node is\nterminal, or when it declares no `reviewed` date.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "status": {
-                "description": "Always measured — every node carries a status.",
-                "format": "double",
-                "type": "number"
-              }
-            },
-            "required": [
-              "status"
-            ],
-            "type": "object"
-          }
-        },
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
-        "properties": {
-          "basis": {
-            "description": "Positively weighted, measured components contributing to the score.\nCompare scores only with their basis and project weights in view.",
-            "items": {
-              "$ref": "#/$defs/TrustComponent"
-            },
-            "type": "array"
-          },
-          "components": {
-            "$ref": "#/$defs/TrustComponents"
-          },
-          "id": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "score": {
-            "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when the\nbasis is incomplete: a positively-weighted component is\n`undeclared`, or no positively-weighted component is present at\nall. Ranking listings always carry it (a node with no composite\nis excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "status": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "undeclared": {
-            "description": "The positively-weighted components this run can measure and\nthis document declares no input for — non-empty exactly when\nthat is why `score` is absent. The entry names them rather than\nonly reporting the absence, because a document is repaired by a\nspecific declaration and a bare \"unscored\" names none.",
-            "items": {
-              "$ref": "#/$defs/TrustComponent"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "title",
-          "kind",
-          "status",
-          "path",
-          "components",
-          "basis"
-        ],
-        "title": "TrustEntry",
-        "type": "object"
-      },
-      "query.trust-list": {
-        "$defs": {
-          "TrustComponent": {
-            "description": "The four component names — the vocabulary [`TrustComponents`],\n[`crate::config::TrustWeights`] and [`TrustEntry::undeclared`] share, kept beside\nthe struct so the three cannot drift. Only `Freshness` and `Drift`\never reach `undeclared`: `Status` and `Backlinks` are derived from\nthe graph, and nothing a document declares produces them.",
-            "enum": [
-              "status",
-              "freshness",
-              "drift",
-              "backlinks"
-            ],
-            "type": "string"
-          },
-          "TrustComponents": {
-            "description": "Per-component breakdown. A component is present exactly when this\nrun measured it; an absent one is omitted from the JSON rather than\nreported as `null` or `0.0`, and [`TrustEntry::undeclared`] tells\nthe two kinds of absence apart.",
-            "properties": {
-              "backlinks": {
-                "description": "Absent when the graph carries no external incoming edges on any\nnode — there is no signal to compare against, and a `1.0` here\nwould be fabricated from absence.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "drift": {
-                "description": "Absent when `detection.git_drift_threshold` is unset, no\nrepository can be measured, the node is terminal, it has no\nresolvable edge in a `detection.git_drift_relations` relation,\ngit cannot measure the edges it has, or it declares no\n`reviewed` anchor to count commits from.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "freshness": {
-                "description": "Absent when `detection.stale_days` is unset — freshness places\na review date on the staleness horizon, and a project declaring\nno horizon has no scale to place one on — when the node is\nterminal, or when it declares no `reviewed` date.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "status": {
-                "description": "Always measured — every node carries a status.",
-                "format": "double",
-                "type": "number"
-              }
-            },
-            "required": [
-              "status"
-            ],
-            "type": "object"
-          },
-          "TrustEntry": {
-            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
-            "properties": {
-              "basis": {
-                "description": "Positively weighted, measured components contributing to the score.\nCompare scores only with their basis and project weights in view.",
-                "items": {
-                  "$ref": "#/$defs/TrustComponent"
-                },
-                "type": "array"
-              },
-              "components": {
-                "$ref": "#/$defs/TrustComponents"
-              },
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "path": {
-                "type": "string"
-              },
-              "score": {
-                "description": "Composite in `[0, 1]`. `None` — omitted on the wire, the same\nhonest-absence convention as the components — exactly when the\nbasis is incomplete: a positively-weighted component is\n`undeclared`, or no positively-weighted component is present at\nall. Ranking listings always carry it (a node with no composite\nis excluded from the ranking's domain and counted in\n[`RankingOutcome::unscored`]); only the single-node form can\nomit it.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "status": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              },
-              "undeclared": {
-                "description": "The positively-weighted components this run can measure and\nthis document declares no input for — non-empty exactly when\nthat is why `score` is absent. The entry names them rather than\nonly reporting the absence, because a document is repaired by a\nspecific declaration and a bare \"unscored\" names none.",
-                "items": {
-                  "$ref": "#/$defs/TrustComponent"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "id",
-              "title",
-              "kind",
-              "status",
-              "path",
-              "components",
-              "basis"
-            ],
-            "type": "object"
-          }
-        },
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/$defs/TrustEntry"
-            },
-            "type": "array"
-          },
-          "returned": {
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "total": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "items",
-          "total"
-        ],
-        "title": "ItemsEnvelopeShape",
         "type": "object"
       },
       "rename": {
@@ -6203,7 +5941,7 @@ exit: 0
       },
       "report": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "`report` result. Lists the artefacts the run produced (e.g.\n`[\"graph.json\", \"GRAPH.md\"]`) and the directory they were written\ninto.",
+        "description": "The generated Markdown report and its output directory.",
         "properties": {
           "generated": {
             "items": {
@@ -6295,26 +6033,9 @@ exit: 0
       "scaffold": {
         "$defs": {
           "SimilarityComponents": {
-            "description": "Per-signal breakdown. Every field is `Option<f64>` so callers can\ndistinguish \"we measured 0.0\" from \"no signal to measure\". When a\ncomponent is `None`, its weight is excluded from the composite\ndenominator — see `compose`.",
+            "description": "Jaccard overlaps. Omitted fields have no target-side set to compare.",
             "properties": {
-              "directory": {
-                "description": "`None` when the target has no parent directory to compare\nagainst — a pre-creation spec without `--parent-dir`. A node\nalways has one: a document at the project root sits in `\"\"`.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "kind": {
-                "description": "`None` when the target is a pre-creation spec without an\nexplicit kind. Comparing \"no kind\" to a real kind would\nfabricate a 0.0 from absence.",
-                "format": "double",
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
               "linked": {
-                "description": "`None` when the target is a pre-creation spec (no graph id, so\nthe neighbour set is undefined), or when the target node has no\nneighbours to compare a candidate's against.",
                 "format": "double",
                 "type": [
                   "number",
@@ -6322,7 +6043,6 @@ exit: 0
                 ]
               },
               "tags": {
-                "description": "`None` when the *target* carries no tags, for the reason\n`title` does. A tagless candidate scores `Some(0.0)` against a\ntagged target.",
                 "format": "double",
                 "type": [
                   "number",
@@ -6330,7 +6050,6 @@ exit: 0
                 ]
               },
               "title": {
-                "description": "`None` when the *target's* title tokenises to an empty set\nafter stopword + min-char filtering — the query carries no\ntitle signal, so no candidate can be ranked on one. A candidate\nwhose own tokens are empty scores `Some(0.0)`: zero overlap\nagainst a token set that exists is a measurement.",
                 "format": "double",
                 "type": [
                   "number",
@@ -6356,7 +6075,7 @@ exit: 0
                 "type": "string"
               },
               "score": {
-                "description": "Composite in `[0, 1]`. Always present: an entry exists only for\na scored candidate — one with no composite never reaches the\nwire (it is excluded from the ranking and counted in\n[`RankingOutcome::unscored`]). Named `score`, identical in spine\nto every other item-list ranking entry ([`super::trust::TrustEntry`],\n[`super::search::SearchEntry`]).",
+                "description": "Weighted overlap in `(0, 1]`, comparable within this query.",
                 "format": "double",
                 "type": "number"
               },
@@ -6548,7 +6267,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.57.0"
+    "version": "0.58.0"
   },
   "ok": true
 }

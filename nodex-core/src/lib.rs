@@ -28,7 +28,7 @@ pub(crate) mod yaml_text;
 // Consumers should address the symbols below rather than the internal
 // module paths, so the canonical surface stays stable when modules are
 // reorganised. Less-common items remain reachable via their module
-// path (e.g. `nodex_core::query::trust::compute_trust`).
+// path (e.g. `nodex_core::query::similar::compute_similarity`).
 
 pub use ancestry::{Ancestry, Lines, Position, Positions, Priors, Step};
 pub use command_result::{
@@ -88,10 +88,6 @@ pub use query::structure::{
 pub use query::traverse::{
     BacklinkEntry, ChainEntry, CoveredByEntry, IncomingEdgeRef, NodeEntry, OutgoingEdgeRef,
     find_backlinks, find_chain, find_covered_by, find_node_entry,
-};
-pub use query::trust::{
-    TrustComponent, TrustComponents, TrustEntry, TrustExtreme, TrustListOptions, compute_trust,
-    compute_trust_ranking,
 };
 pub use query::{DetectionOutcome, NodeRef, RankingOutcome};
 pub use rules::{

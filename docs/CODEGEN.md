@@ -255,7 +255,7 @@ checked-in sample envelope (or a captured live response) against the
 extracted per-command schema, so a shape guess fails at test time
 instead of in production. The classic trap is reading a report-shaped
 payload as an `{items, total}` list: `query node`, `query issues`,
-`query trust <id>`, `query neighborhood`, and `query dependents` return
+`query neighborhood`, and `query dependents` return
 objects, not item lists — `export envelope-schema` is the authority,
 never the shape of a neighbouring command. Pin the baseline against the
 release asset (`nodex-envelope-schema-v<ver>.json`) when the consumer
@@ -279,5 +279,5 @@ before any envelope hits the consumer, so the codegen-generated
 client never sees output it wasn't generated for.
 
 ```bash
-nodex --check-version ">=0.57, <0.58" query annotations ...
+nodex --check-version ">=0.58, <0.59" query annotations ...
 ```

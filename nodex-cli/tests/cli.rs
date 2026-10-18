@@ -948,272 +948,6 @@ fn query_orphans_returns_items_total_shape() {
 }
 
 #[test]
-fn query_trust_bottom_lists_lowest_first() {
-    // Two docs: a fresh active one (composite ≈ 1.0) and an archived
-    // one (status = 0 → composite well below 1.0). `--bottom 5` must
-    // rank the archived doc ahead of the fresh one.
-    let tmp = scratch();
-    init_project(tmp.path());
-    let today = chrono::Local::now().date_naive();
-    write_doc(
-        tmp.path(),
-        "docs/fresh.md",
-        &format!(
-            "---\nid: doc-fresh\ntitle: Fresh\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Fresh\n"
-        ),
-    );
-    write_doc(
-        tmp.path(),
-        "docs/dead.md",
-        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5"]));
-    let ids: Vec<&str> = data
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .expect("items")
-        .iter()
-        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
-        .collect();
-    let dead_pos = ids
-        .iter()
-        .position(|i| *i == "doc-dead")
-        .expect("archived doc must surface");
-    let fresh_pos = ids
-        .iter()
-        .position(|i| *i == "doc-fresh")
-        .expect("fresh doc must appear without a cutoff");
-    assert!(
-        dead_pos < fresh_pos,
-        "archived doc must outrank fresh in --bottom listing; got {ids:?}"
-    );
-}
-
-#[test]
-fn query_trust_top_lists_highest_first() {
-    let tmp = scratch();
-    init_project(tmp.path());
-    let today = chrono::Local::now().date_naive();
-    write_doc(
-        tmp.path(),
-        "docs/fresh.md",
-        &format!(
-            "---\nid: doc-fresh\ntitle: Fresh\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Fresh\n"
-        ),
-    );
-    write_doc(
-        tmp.path(),
-        "docs/dead.md",
-        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "trust", "--top", "5"]));
-    let ids: Vec<&str> = data
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .expect("items")
-        .iter()
-        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
-        .collect();
-    let fresh_pos = ids.iter().position(|i| *i == "doc-fresh").expect("fresh");
-    let dead_pos = ids.iter().position(|i| *i == "doc-dead").expect("dead");
-    assert!(
-        fresh_pos < dead_pos,
-        "fresh doc must outrank archived in --top listing; got {ids:?}"
-    );
-}
-
-#[test]
-fn query_trust_bottom_below_filters_by_score() {
-    // Archived doc (status=0) surfaces below 1.0. Fresh doc lands at
-    // 1.0 and the strict `< 1.0` cutoff drops it.
-    let tmp = scratch();
-    init_project(tmp.path());
-    let today = chrono::Local::now().date_naive();
-    write_doc(
-        tmp.path(),
-        "docs/fresh.md",
-        &format!(
-            "---\nid: doc-fresh\ntitle: Fresh\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Fresh\n"
-        ),
-    );
-    write_doc(
-        tmp.path(),
-        "docs/dead.md",
-        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data =
-        run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5", "--below", "1.0"]));
-    let ids: Vec<&str> = data
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .expect("items")
-        .iter()
-        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
-        .collect();
-    assert!(
-        ids.contains(&"doc-dead"),
-        "archived doc must remain under cutoff; got {ids:?}"
-    );
-    assert!(
-        !ids.contains(&"doc-fresh"),
-        "fresh doc must be dropped by strict --below 1.0; got {ids:?}"
-    );
-}
-
-#[test]
-fn query_trust_bottom_status_restricts_to_review_queue() {
-    // The review-queue read: terminal docs legitimately score near zero
-    // and dominate an unfiltered bottom-K — `--status active` keeps the
-    // listing to nodes a review can act on.
-    let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/stale.md",
-        "---\nid: doc-stale\ntitle: Stale\nkind: generic\nstatus: active\nreviewed: 2020-01-01\n---\n# Stale\n",
-    );
-    write_doc(
-        tmp.path(),
-        "docs/dead.md",
-        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data =
-        run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5", "--status", "active"]));
-    let ids: Vec<&str> = data
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .expect("items")
-        .iter()
-        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
-        .collect();
-    assert_eq!(
-        ids,
-        vec!["doc-stale"],
-        "--status active must exclude the terminal doc"
-    );
-}
-
-#[test]
-fn query_trust_status_rejects_unknown_vocabulary() {
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let out = nodex(tmp.path())
-        .args(["query", "trust", "--bottom", "5", "--status", "nonsense"])
-        .assert()
-        .failure()
-        .code(2);
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR"),
-        "an unknown status must be a loud config error, never an empty listing"
-    );
-}
-
-#[test]
-fn query_trust_bottom_entries_always_carry_components() {
-    // Every entry returned by `query trust --bottom N` must include
-    // the per-component breakdown for components that have a signal —
-    // freshness, drift, and backlinks are omitted when their source
-    // signal is absent (honest absence, never fabricated). Only
-    // `status` is guaranteed because it is derived from the node's
-    // own frontmatter and the config's `statuses.terminal` set, both
-    // of which exist for every node.
-    let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5"]));
-    let items = data.get("items").and_then(Value::as_array).expect("items");
-    assert!(!items.is_empty(), "fixture must produce at least one entry");
-    for item in items {
-        assert!(
-            item.pointer("/components/status").is_some(),
-            "components.status missing on {item}"
-        );
-    }
-}
-
-#[test]
-fn query_trust_single_id_still_returns_one_report() {
-    // The `<id>` form is the regression anchor: it shares a clap
-    // group with `--bottom` / `--top` so a refactor mistake could
-    // accidentally break the single-node case.
-    let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data = run_json(nodex(tmp.path()).args(["query", "trust", "doc-a"]));
-    assert_eq!(
-        data.get("id").and_then(Value::as_str),
-        Some("doc-a"),
-        "single-node form must return the report inline; got {data}"
-    );
-    assert!(
-        data.pointer("/components/status").is_some(),
-        "single-node form must carry components/status"
-    );
-}
-
-#[test]
-fn query_trust_rejects_id_with_bottom() {
-    // clap's ArgGroup must reject the combination at parse time —
-    // the listing form and the single-node form are not composable.
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let output = nodex(tmp.path())
-        .args(["query", "trust", "doc-a", "--bottom", "5"])
-        .output()
-        .expect("ran");
-    assert!(
-        !output.status.success(),
-        "<id> and --bottom must be mutually exclusive"
-    );
-}
-
-#[test]
-fn query_trust_bottom_kind_filter_restricts_listing() {
-    let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/a.md",
-        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n",
-    );
-    write_doc(
-        tmp.path(),
-        "docs/b.md",
-        "---\nid: doc-b\ntitle: B\nkind: guide\nstatus: archived\n---\n# B\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let data =
-        run_json(nodex(tmp.path()).args(["query", "trust", "--bottom", "5", "--kind", "generic"]));
-    let ids: Vec<&str> = data
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .expect("items")
-        .iter()
-        .filter_map(|i| i.get("id").and_then(serde_json::Value::as_str))
-        .collect();
-    assert_eq!(ids, vec!["doc-a"]);
-}
-
-#[test]
 fn detection_orphan_ok_kinds_excludes_listed_kinds() {
     let tmp = scratch();
     fs::write(
@@ -9722,7 +9456,6 @@ fn a_lookup_missed_against_a_stale_snapshot_is_not_absence() {
     );
     for args in [
         vec!["query", "node", "generic-new"],
-        vec!["query", "trust", "generic-new"],
         vec!["query", "dependents", "generic-new"],
         vec!["query", "node", "--path", "docs/new.md"],
     ] {
@@ -12614,129 +12347,6 @@ fn build_cache_prunes_entries_for_deleted_files() {
 }
 
 #[test]
-fn query_trust_listing_rejects_unknown_kind() {
-    // Symmetric with `query similar --kind`, `query nodes --kind`,
-    // `query recent --kind`: typo → CONFIG_ERROR, never a silent
-    // empty list.
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let output = nodex(tmp.path())
-        .args(["query", "trust", "--bottom", "5", "--kind", "ghost-kind"])
-        .output()
-        .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
-    );
-}
-
-#[test]
-fn query_trust_bottom_zero_rejected() {
-    // Symmetric with `query nodes --limit 0`: a zero cap silently
-    // empties the result, which the operator never asked for. Fail
-    // fast at the CLI with CONFIG_ERROR.
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let output = nodex(tmp.path())
-        .args(["query", "trust", "--bottom", "0"])
-        .output()
-        .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
-    );
-    let msg = env
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        msg.contains("--bottom"),
-        "error message must name the offending flag; got {msg:?}"
-    );
-}
-
-#[test]
-fn query_trust_top_zero_rejected() {
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let output = nodex(tmp.path())
-        .args(["query", "trust", "--top", "0"])
-        .output()
-        .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
-    );
-    let msg = env
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        msg.contains("--top"),
-        "error message must name the offending flag; got {msg:?}"
-    );
-}
-
-#[test]
-fn query_trust_below_nan_rejected() {
-    // `f64::parse` accepts "NaN" / "inf"; the CLI must reject
-    // non-finite cutoffs because NaN filters everything and Infinity
-    // produces all-or-none cutoffs — never what the operator meant.
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let output = nodex(tmp.path())
-        .args(["query", "trust", "--bottom", "5", "--below", "NaN"])
-        .output()
-        .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
-    );
-    let msg = env
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        msg.contains("--below") && msg.contains("finite"),
-        "error message must explain the finite-number requirement; got {msg:?}"
-    );
-}
-
-#[test]
-fn query_trust_below_infinity_rejected() {
-    let tmp = scratch();
-    init_project(tmp.path());
-    nodex(tmp.path()).arg("build").assert().success();
-    let output = nodex(tmp.path())
-        .args(["query", "trust", "--bottom", "5", "--below", "inf"])
-        .output()
-        .expect("ran");
-    assert_eq!(output.status.code(), Some(2));
-    let env: Value =
-        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
-    assert_eq!(
-        env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
-    );
-}
-
-#[test]
 fn query_similar_limit_zero_rejected() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -13138,7 +12748,7 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ("check", vec!["check"]),
         ("diff", vec!["diff", "HEAD~1", "HEAD"]),
         ("impact", vec!["impact", "HEAD~1", "HEAD"]),
-        ("report", vec!["report", "--format", "json"]),
+        ("report", vec!["report"]),
         ("migrate", vec!["migrate"]),
         (
             "scaffold",
@@ -13179,8 +12789,6 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ),
         ("query.dependents", vec!["query", "dependents", "spec"]),
         ("query.similar", vec!["query", "similar", "--id", "spec"]),
-        ("query.trust", vec!["query", "trust", "spec"]),
-        ("query.trust-list", vec!["query", "trust", "--top", "3"]),
         (
             "query.search-body",
             vec!["query", "search", "Spec", "--body"],
@@ -13249,7 +12857,7 @@ fn report_markdown_sanitizes_newlines_in_every_field_and_section() {
     // `report --format md` WRITES GRAPH.md to `output_dir`; the envelope
     // only carries `{generated, output_dir}`. Read the actual artifact —
     // checking the envelope would be vacuous.
-    let env = run_envelope(nodex(root).args(["report", "--format", "md"]));
+    let env = run_envelope(nodex(root).args(["report"]));
     let out_dir = env
         .pointer("/data/output_dir")
         .and_then(Value::as_str)
@@ -13315,17 +12923,17 @@ fn report_god_nodes_exclude_self_loops_matching_query_backlinks() {
     let bl = run_envelope(nodex(root).args(["query", "backlinks", "selfonly"]));
     assert_eq!(bl.pointer("/data/total").and_then(Value::as_i64), Some(0));
 
-    let env = run_envelope(nodex(root).args(["report", "--format", "md"]));
+    let env = run_envelope(nodex(root).args(["report"]));
     let out_dir = env
         .pointer("/data/output_dir")
         .and_then(Value::as_str)
         .expect("output_dir");
     let md = fs::read_to_string(std::path::Path::new(out_dir).join("GRAPH.md")).expect("GRAPH.md");
     let god = md
-        .split("## God Nodes")
+        .split("## Most Referenced Documents")
         .nth(1)
         .and_then(|s| s.split("\n## ").next())
-        .expect("God Nodes section");
+        .expect("Most Referenced Documents section");
     assert!(
         !god.contains("selfonly"),
         "a self-loop-only node must not appear as a god node:\n{god}"
@@ -13337,11 +12945,7 @@ fn report_god_nodes_exclude_self_loops_matching_query_backlinks() {
 }
 
 #[test]
-fn report_supersession_chains_render_every_branch_once() {
-    // The GRAPH.md "Supersession Chains" section must render the WHOLE
-    // lineage of a consolidation (`x supersedes [a, b]`) on one line, with
-    // no branch omitted and no component duplicated — the report consumes
-    // the same component-wide `find_chain` as `query chain`.
+fn report_supersession_preserves_branch_links() {
     let tmp = scratch();
     let root = tmp.path();
     fs::write(
@@ -13368,22 +12972,19 @@ fn report_supersession_chains_render_every_branch_once() {
     );
     nodex(root).arg("build").assert().success();
 
-    let env = run_envelope(nodex(root).args(["report", "--format", "md"]));
+    let env = run_envelope(nodex(root).args(["report"]));
     let out_dir = env
         .pointer("/data/output_dir")
         .and_then(Value::as_str)
         .expect("output_dir");
     let md = fs::read_to_string(std::path::Path::new(out_dir).join("GRAPH.md")).expect("GRAPH.md");
     let section = md
-        .split("## Supersession Chains")
+        .split("## Supersession Links")
         .nth(1)
         .and_then(|s| s.split("\n## ").next())
-        .expect("Supersession Chains section");
+        .expect("Supersession Links section");
     let bullets: Vec<&str> = section.lines().filter(|l| l.starts_with("- ")).collect();
-    assert_eq!(bullets.len(), 1, "exactly one component bullet: {section}");
-    for id in ["a", "b", "x"] {
-        assert!(bullets[0].contains(id), "member {id} missing: {section}");
-    }
+    assert_eq!(bullets, ["- ~~a~~ → **x**", "- ~~b~~ → **x**"]);
 }
 
 #[test]
@@ -15135,7 +14736,7 @@ fn staleness_asked_without_a_horizon_says_it_is_not_tracked() {
             untracked,
             "config {config:?}: {envelope}"
         );
-        run_envelope(nodex(root).args(["--today", "2026-01-01", "report", "--format", "md"]));
+        run_envelope(nodex(root).args(["--today", "2026-01-01", "report"]));
         assert_eq!(stale_section(), section, "config {config:?}");
     }
 }
@@ -15547,216 +15148,6 @@ fn covers_emits_edges_and_reverse_lookup_works() {
 }
 
 #[test]
-fn trust_returns_score_with_components() {
-    // Fixture must surface all three optional component signals so
-    // we can assert their presence:
-    //   - `reviewed` date on doc-active → freshness present
-    //   - doc-archived links to doc-active → max_in > 0 so
-    //     backlinks is present on every node (honest signal, not
-    //     fabrication)
-    // Drift stays absent (no `git_drift_threshold` in default
-    // config) — that's the intended omission case and is asserted
-    // elsewhere.
-    let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(
-        tmp.path(),
-        "docs/active.md",
-        "---\nid: doc-active\ntitle: Active\nkind: generic\nstatus: active\nreviewed: 2026-05-01\n---\n# Active\n",
-    );
-    write_doc(
-        tmp.path(),
-        "docs/archived.md",
-        "---\nid: doc-archived\ntitle: Archived\nkind: generic\nstatus: archived\n---\n# Archived\n\nSee [active](active.md).\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-
-    let active = run_json(nodex(tmp.path()).args(["query", "trust", "doc-active"]));
-    let archived = run_json(nodex(tmp.path()).args(["query", "trust", "doc-archived"]));
-
-    let active_score = active.get("score").and_then(Value::as_f64).unwrap();
-    let archived_score = archived.get("score").and_then(Value::as_f64).unwrap();
-    assert!(
-        active_score > archived_score,
-        "active ({active_score}) must outrank archived ({archived_score})"
-    );
-    assert!(active.pointer("/components/status").is_some());
-    assert!(active.pointer("/components/freshness").is_some());
-    assert!(active.pointer("/components/backlinks").is_some());
-    assert_eq!(
-        active["basis"],
-        serde_json::json!(["status", "freshness", "backlinks"])
-    );
-    assert_eq!(
-        archived["basis"],
-        serde_json::json!(["status", "backlinks"])
-    );
-}
-
-/// A project where exactly one node is unrankable. `doc-no-signal`
-/// carries backlinks-only weights over a graph with no incoming edges,
-/// so its single positively-weighted component is absent. The other two
-/// stay in the ranking's domain on purpose — `doc-dead` is terminal, so
-/// the review-date components do not apply to it, and `doc-live`
-/// declares the date the project's own `stale_days` horizon asks for.
-fn init_backlinks_only_trust_project(root: &std::path::Path) {
-    init_project(root);
-    let today = chrono::Local::now().date_naive();
-    let path = root.join("nodex.toml");
-    let mut content = fs::read_to_string(&path).expect("nodex.toml");
-    content.push_str(
-        "\n[[trust.overrides]]\nkinds = [\"guide\"]\n\
-         weights = { status = 0.0, freshness = 0.0, drift = 0.0, backlinks = 1.0 }\n",
-    );
-    fs::write(&path, content).expect("nodex.toml writable");
-    write_doc(
-        root,
-        "docs/no-signal.md",
-        "---\nid: doc-no-signal\ntitle: No Signal\nkind: guide\nstatus: active\n---\n# No Signal\n",
-    );
-    write_doc(
-        root,
-        "docs/dead.md",
-        "---\nid: doc-dead\ntitle: Dead\nkind: generic\nstatus: archived\n---\n# Dead\n",
-    );
-    write_doc(
-        root,
-        "docs/live.md",
-        &format!(
-            "---\nid: doc-live\ntitle: Live\nkind: generic\nstatus: active\nreviewed: {today}\n---\n# Live\n"
-        ),
-    );
-    nodex(root).arg("build").assert().success();
-}
-
-#[test]
-fn query_trust_single_node_omits_score_key_when_no_signal() {
-    // A node with no positively-weighted present component has no
-    // composite: the single-node form still succeeds (exit 0) and
-    // returns the components, but the `score` key is absent from the
-    // wire — the same honest-absence convention the components follow,
-    // never `null` or a fabricated `0.0`.
-    let tmp = scratch();
-    init_backlinks_only_trust_project(tmp.path());
-
-    let data = run_json(nodex(tmp.path()).args(["query", "trust", "doc-no-signal"]));
-    let obj = data.as_object().expect("trust entry object");
-    assert!(
-        !obj.contains_key("score"),
-        "score must be omitted when no signal is present; got {data}"
-    );
-    assert!(
-        obj.contains_key("components"),
-        "components stay present so the absence is inspectable; got {data}"
-    );
-}
-
-#[test]
-fn query_trust_ranking_excludes_unscored_node_and_warns() {
-    // An unrankable node is not in the ranking's domain: excluded from
-    // `items` and `total` (it can never occupy a bottom-N slot or
-    // satisfy `--below`), and the exclusion is announced through the
-    // envelope warnings — never silent.
-    let tmp = scratch();
-    init_backlinks_only_trust_project(tmp.path());
-
-    let env = run_envelope(nodex(tmp.path()).args(["query", "trust", "--bottom", "5"]));
-    let items = env
-        .pointer("/data/items")
-        .and_then(Value::as_array)
-        .expect("items array");
-    let ids: Vec<&str> = items
-        .iter()
-        .filter_map(|i| i.get("id").and_then(Value::as_str))
-        .collect();
-    assert_eq!(
-        ids,
-        vec!["doc-dead", "doc-live"],
-        "scored entries rank ascending; the unscored node never occupies a slot"
-    );
-    assert_eq!(
-        env.pointer("/data/total").and_then(Value::as_u64),
-        Some(2),
-        "total counts the ranking's domain only"
-    );
-    let warnings = env
-        .get("warnings")
-        .and_then(Value::as_array)
-        .expect("exclusion must surface as an envelope warning");
-    let warning = warnings
-        .iter()
-        .find(|warning| warning["code"] == "ranking_unscored")
-        .unwrap();
-    assert_eq!(
-        warning["details"],
-        serde_json::json!({"type": "ranking_unscored", "count": 1, "reason": "incomplete_basis"})
-    );
-}
-
-#[test]
-fn export_trust_schemas_mark_score_optional_with_gate_descriptions() {
-    // The typed-codegen contract for the scoring leaves: `score` is
-    // present in properties but outside the required set (absence is
-    // single-node-form-only — ranking entries always carry it), and
-    // the TrustComponents descriptions enumerate every verified gate
-    // so typed clients read the complete absence conditions.
-    let tmp = scratch();
-    let data = run_json(nodex(tmp.path()).args(["export", "envelope-schema"]));
-    let per_command = data["per_command"].as_object().expect("per_command object");
-
-    let trust = &per_command["query.trust"];
-    let required: Vec<&str> = trust["required"]
-        .as_array()
-        .expect("required array")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    assert!(
-        !required.contains(&"score"),
-        "score must not be required on query.trust: {required:?}"
-    );
-    assert!(required.contains(&"components"));
-    assert!(
-        trust.pointer("/properties/score").is_some(),
-        "score stays a declared property"
-    );
-
-    let entry_required: Vec<&str> = per_command["query.trust-list"]
-        .pointer("/$defs/TrustEntry/required")
-        .and_then(Value::as_array)
-        .expect("TrustEntry required array")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    assert!(
-        !entry_required.contains(&"score"),
-        "score must not be required on query.trust-list entries: {entry_required:?}"
-    );
-
-    let components = trust
-        .pointer("/$defs/TrustComponents/properties")
-        .expect("TrustComponents def");
-    let freshness = components
-        .pointer("/freshness/description")
-        .and_then(Value::as_str)
-        .expect("freshness description");
-    assert!(
-        freshness.contains("stale_days") && freshness.contains("reviewed"),
-        "freshness description must name both gates: {freshness}"
-    );
-    let drift = components
-        .pointer("/drift/description")
-        .and_then(Value::as_str)
-        .expect("drift description");
-    assert!(
-        drift.contains("git_drift_threshold")
-            && drift.contains("reviewed")
-            && drift.contains("cannot measure"),
-        "drift description must name all three gates: {drift}"
-    );
-}
-
-#[test]
 fn similar_finds_existing_doc_with_token_overlap() {
     let tmp = scratch();
     init_project(tmp.path());
@@ -15770,11 +15161,6 @@ fn similar_finds_existing_doc_with_token_overlap() {
         "docs/b.md",
         "---\nid: doc-b\ntitle: Auth Retry Policy v2\nkind: generic\nstatus: active\n---\n# Auth v2\n",
     );
-    // doc-c is orthogonal on every signal — different kind AND
-    // different parent directory — so its composite is dominated by
-    // the title-overlap zero. Without a built-in score cutoff every
-    // candidate enters the listing, so this test asserts the
-    // *ranking* contract: doc-b must outrank doc-c.
     write_doc(
         tmp.path(),
         "other/c.md",
@@ -15788,17 +15174,7 @@ fn similar_finds_existing_doc_with_token_overlap() {
         .iter()
         .filter_map(|i| i.get("id").and_then(Value::as_str))
         .collect();
-    let b_pos = ids
-        .iter()
-        .position(|i| *i == "doc-b")
-        .expect("shared title tokens must surface");
-    let c_pos = ids
-        .iter()
-        .position(|i| *i == "doc-c")
-        .expect("c appears without a cutoff");
-    assert!(b_pos < c_pos, "related must outrank unrelated; got {ids:?}");
-    // The composite field is `score`, identical in spine to trust/search —
-    // not the old `similarity` name.
+    assert_eq!(ids, ["doc-b"]);
     let top = &items[0];
     assert!(
         top.get("score").and_then(Value::as_f64).is_some(),
@@ -20629,12 +20005,6 @@ fn export_commands_emits_grammar_without_a_project() {
     let data = run_json(nodex(tmp.path()).args(["export", "commands"]));
     let commands = data["commands"].as_array().expect("commands array");
     assert!(!commands.is_empty());
-    let trust = commands
-        .iter()
-        .find(|c| c["schema"] == "query.trust")
-        .expect("query.trust leaf");
-    assert_eq!(trust["path"], serde_json::json!(["query", "trust"]));
-    assert_eq!(trust["modes"][0]["schema"], "query.trust-list");
     let backlinks = commands
         .iter()
         .find(|c| c["schema"] == "query.backlinks")
@@ -25807,7 +25177,7 @@ fn ai_similarity_compares_tag_case_consistently_with_listings() {
     write_doc(
         root,
         "nodex.toml",
-        "[scope]\ninclude = [\"**/*.md\"]\n[similarity.weights]\ntitle=0.0\ntags=1.0\nkind=0.0\ndirectory=0.0\nlinked=0.0\n",
+        "[scope]\ninclude = [\"**/*.md\"]\n[similarity.weights]\ntitle=0.0\ntags=1.0\nlinked=0.0\n",
     );
     write_doc(root, "a.md", "---\nid: a\ntags: [Auth]\n---\n# Policy\n");
     nodex(root).arg("build").assert().success();
@@ -26680,5 +26050,168 @@ fn configured_step_locks_keep_history_when_the_report_ref_predates_the_project()
             .iter()
             .any(|v| v["rule_id"] == "body_immutable/sealed" && v["details"]["commit"].is_string()),
         "{envelope}"
+    );
+}
+
+#[test]
+fn similarity_filters_candidates_before_selection_without_metadata_boosts() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"**/*.md\"]\n[kinds]\nallowed = [\"generic\", \"adr\", \"guide\"]\n",
+    )
+    .unwrap();
+    for (path, id, kind, status, title) in [
+        ("docs/target.md", "target", "adr", "active", "Shared policy"),
+        ("docs/ended.md", "ended", "adr", "archived", "Shared policy"),
+        (
+            "guides/guide.md",
+            "guide",
+            "guide",
+            "active",
+            "Shared policy",
+        ),
+        (
+            "docs/deep/nested.md",
+            "nested",
+            "adr",
+            "active",
+            "Shared policy",
+        ),
+        ("root.md", "root", "generic", "active", "Shared policy"),
+        (
+            "docs/unrelated.md",
+            "unrelated",
+            "adr",
+            "active",
+            "Salmon migration",
+        ),
+    ] {
+        write_doc(
+            root,
+            path,
+            &format!("---\nid: {id}\nkind: {kind}\nstatus: {status}\ntitle: {title}\n---\n"),
+        );
+    }
+    nodex(root).arg("build").assert().success();
+    let result = run_json(nodex(root).args([
+        "query",
+        "similar",
+        "--title",
+        "Shared policy",
+        "--kind",
+        "adr",
+        "--status",
+        "active",
+        "--parent-dir",
+        "./docs/deep/..",
+        "--limit",
+        "1",
+    ]));
+    assert_eq!(result["total"], 1);
+    assert_eq!(result["items"][0]["id"], "target");
+    assert_eq!(result["items"][0]["score"], 1.0);
+    assert_eq!(
+        result["items"][0]["components"],
+        serde_json::json!({"title":1.0})
+    );
+    let cross_kind =
+        run_json(nodex(root).args(["query", "similar", "--id", "target", "--kind", "guide"]));
+    assert_eq!(cross_kind["total"], 1);
+    assert_eq!(cross_kind["items"][0]["id"], "guide");
+    assert_eq!(cross_kind["items"][0]["score"], 1.0);
+    let at_root =
+        run_json(nodex(root).args(["query", "similar", "--id", "target", "--parent-dir", "."]));
+    assert_eq!(at_root["items"][0]["id"], "root");
+    let no_overlap = run_json(nodex(root).args([
+        "query",
+        "similar",
+        "--title",
+        "Ocean currents",
+        "--kind",
+        "adr",
+        "--parent-dir",
+        "docs",
+        "--min-score",
+        "0",
+    ]));
+    assert_eq!(no_overlap["total"], 0);
+    let excluded = nodex(root)
+        .args([
+            "query",
+            "similar",
+            "--id",
+            "target",
+            "--parent-dir",
+            "../outside",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(excluded.status.code(), Some(2));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&excluded.stdout).unwrap()["error"]["code"],
+        "PATH_ESCAPES_ROOT"
+    );
+}
+
+#[test]
+fn similarity_rejects_unused_target_tags_and_discloses_unrankable_queries() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\nkind: generic\ntitle: Policy\n---\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\nkind: adr\ntitle: Policy\n---\n",
+    );
+    nodex(root).arg("build").assert().success();
+    let unused = nodex(root)
+        .args(["query", "similar", "--id", "a", "--tags", "auth"])
+        .output()
+        .unwrap();
+    assert_eq!(unused.status.code(), Some(2));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&unused.stdout).unwrap()["error"]["code"],
+        "INVALID_ARGUMENT"
+    );
+    let absent =
+        run_envelope(nodex(root).args(["query", "similar", "--title", "the and", "--kind", "adr"]));
+    assert_eq!(absent["data"]["total"], 0);
+    assert_eq!(
+        absent["warnings"][0]["details"],
+        serde_json::json!({"type":"ranking_unscored", "count":1, "reason":"target_without_signals"})
+    );
+}
+
+#[test]
+fn report_generates_markdown_without_replacing_query_snapshots() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(root, "docs/a.md", "---\nid: a\ntitle: First\n---\n");
+    let report = run_json(nodex(root).arg("report"));
+    assert_eq!(report["generated"], serde_json::json!(["GRAPH.md"]));
+    assert!(!root.join("_index/graph.json").exists());
+    nodex(root).arg("build").assert().success();
+    let snapshot = fs::read(root.join("_index/graph.json")).unwrap();
+    write_doc(root, "docs/b.md", "---\nid: b\ntitle: Second\n---\n");
+    run_json(nodex(root).arg("report"));
+    assert!(
+        fs::read_to_string(root.join("_index/GRAPH.md"))
+            .unwrap()
+            .contains("**2 nodes**")
+    );
+    assert_eq!(fs::read(root.join("_index/graph.json")).unwrap(), snapshot);
+    let query = nodex(root).args(["query", "nodes"]).output().unwrap();
+    assert_eq!(query.status.code(), Some(2));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&query.stdout).unwrap()["error"]["code"],
+        "GRAPH_OUTDATED"
     );
 }

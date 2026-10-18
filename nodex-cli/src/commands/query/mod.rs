@@ -77,17 +77,6 @@ pub enum QueryCommand {
     CoveredBy { path: String },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
     Issues,
-    /// Document-maintenance score (not approval or correctness): single-node lookup, or top-K /
-    /// bottom-K listing of the whole graph. Exactly one of `<id>`,
-    /// `--bottom`, or `--top` is required. `--kind` / `--status` /
-    /// `--below` are listing-only filters.
-    #[command(group(
-        clap::ArgGroup::new("trust_target")
-            .required(true)
-            .multiple(false)
-            .args(["id", "bottom", "top"])
-    ))]
-    Trust(TrustArgs),
     /// Find documents similar to an existing node or a prospective one
     Similar(SimilarityArgs),
     /// List documents whose configured date field falls inside a recent window
@@ -201,41 +190,6 @@ pub struct NodesArgs {
     pub missing: Vec<String>,
 }
 
-/// Args for `query trust` — the single-node lookup positional plus the
-/// listing selectors and filters. The `trust_target` group on the
-/// `Trust` variant enforces exactly one of `<id>` / `--bottom` / `--top`.
-#[derive(Args)]
-pub struct TrustArgs {
-    /// Node id for the single-node lookup. Mutually exclusive
-    /// with `--bottom` / `--top`.
-    #[arg(value_name = "ID")]
-    pub id: Option<String>,
-    /// Return the N lowest-trust nodes, ascending (most-needs-
-    /// review-first). Mutually exclusive with `<id>` / `--top`.
-    #[arg(long, conflicts_with_all = ["id", "top"])]
-    pub bottom: Option<usize>,
-    /// Return the N highest-trust nodes, descending. Mutually
-    /// exclusive with `<id>` / `--bottom`.
-    #[arg(long, conflicts_with_all = ["id", "bottom"])]
-    pub top: Option<usize>,
-    /// Restrict the listing to a single kind. Only valid with
-    /// `--bottom` or `--top` (incompatible with the single-node
-    /// form).
-    #[arg(long, conflicts_with = "id", requires = "trust_target")]
-    pub kind: Option<String>,
-    /// Restrict the listing to a single lifecycle status (e.g.
-    /// `active`) — the review-queue read, where terminal nodes
-    /// legitimately score near zero and would drown the signal.
-    /// Only valid with `--bottom` or `--top`.
-    #[arg(long, conflicts_with = "id", requires = "trust_target")]
-    pub status: Option<String>,
-    /// Opt-in score cutoff: keep only entries whose composite is
-    /// strictly below this value. Only valid with `--bottom` or
-    /// `--top`. Omit for no cutoff.
-    #[arg(long, conflicts_with = "id", requires = "trust_target")]
-    pub below: Option<f64>,
-}
-
 /// Args for `query similar`. Exactly one of `--id` (existing node) or
 /// `--title` (pre-creation probe) is required; clap rejects both and
 /// rejects neither via the `similar_target` group.
@@ -258,13 +212,13 @@ pub struct SimilarityArgs {
     /// with `--id` (pick exactly one).
     #[arg(long)]
     pub title: Option<String>,
-    /// Kind for the prospective document (with `--title`).
+    /// Restrict comparison candidates to this kind.
     #[arg(long)]
     pub kind: Option<String>,
     /// Tags for the prospective document (comma-separated).
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',', requires = "title", conflicts_with = "id")]
     pub tags: Vec<String>,
-    /// Parent directory for the prospective document.
+    /// Restrict candidates to this exact project-relative parent directory.
     #[arg(long)]
     pub parent_dir: Option<PathBuf>,
     /// Maximum candidates returned. Defaults to
@@ -273,7 +227,7 @@ pub struct SimilarityArgs {
     pub limit: Option<usize>,
     /// Opt-in score cutoff: keep only candidates whose composite
     /// similarity is at least this value. Defaults to no cutoff
-    /// (every candidate up to `--limit` is returned).
+    /// (positive-overlap candidates up to `--limit` are returned).
     #[arg(long)]
     pub min_score: Option<f64>,
 }
@@ -387,7 +341,6 @@ pub fn run(
         ),
         QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
         QueryCommand::Issues => detect::run_issues(root, pretty, today),
-        QueryCommand::Trust(args) => score::run_trust(root, args, pretty, today),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
         QueryCommand::Recent(args) => filter::run_recent(root, args, pretty, today),
         QueryCommand::Components { limit } => traverse::run_components(root, limit, pretty),
