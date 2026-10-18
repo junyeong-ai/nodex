@@ -2,6 +2,19 @@
 
 Per-leaf flags and payload semantics. The authoritative list of leaves and their positionals is `nodex export commands` (flags are in `--help`); the authoritative payload shapes are `nodex export envelope-schema`. This file carries what neither of those states: what a flag *means* and where a result is easy to misread.
 
+## Contents
+
+- [Build](#build) and [snapshot status](#status)
+- [Queries](#query): search, node detail, relations, similarity and annotations
+- [Check and proposed content](#check)
+- [Range checks](#check---since) and [staged checks](#check---staged)
+- [Diff and impact](#diff--impact)
+- [Scaffold](#scaffold)
+- [Rename and retarget](#rename--retarget)
+- [Lifecycle](#lifecycle)
+- [Migrate, report and init](#migrate--report--init)
+- [Exports](#export)
+
 ## build
 
 ```bash
@@ -27,7 +40,7 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 `data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`.
 
-`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[[statuses.flow]]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on trust / similarity / detection tuning.
+`outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[[statuses.flow]]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on similarity / detection tuning.
 
 `unbuildable_paths` lists the snapshot's recorded parse failures. They are covered by the digest the failed parse consumed, so unchanged broken bytes are never staleness — fix the document, `check` reds it. One exception: a path the build could not read at all had no bytes to digest, so the probe can never confirm it and the state stays `outdated` (naming that path in `changed_paths`) until the file is readable; a rebuild will not clear it.
 
@@ -108,33 +121,20 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 Both listings are the typed half of a rule: `orphan` and `stale_review` read the same predicates, so `query orphans` and the `orphan` violations are one pass seen twice, and `rule_coverage` answers for the population either way. A finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`. Unresolved warning and error findings follow the same counting. Info rows are reported under their own name outside `total`.
 
 ```bash
-nodex query trust <id>
-```
-Single-node composite in `[0,1]` plus a per-component breakdown, using per-kind weights when a `[[trust.overrides]]` block matches. `freshness` / `drift` / `backlinks` are **omitted** from the JSON whenever the run did not measure them, and two different absences hide behind that omission.
-
-A component **nothing the document could write would produce** is dropped and the composite renormalises over the rest, never substituting a neutral value: `freshness` when `detection.stale_days` is unset or the document is terminal; `drift` when `detection.git_drift_threshold` is unset, the document is terminal, it has no resolvable edge in a `detection.git_drift_relations` relation, or git cannot measure one it has; `backlinks` when no node in the graph has an external incoming edge.
-
-A component the run **can** measure that the document supplies no input for is different: `freshness` and `drift` both read `reviewed:`, so a live document without one is named in `undeclared` and carries **no composite at all** (`score` omitted). Renormalising there would impute, for the missing component, exactly the score the present ones produced — so withholding `reviewed:` could only raise a rank. A project that does not track an axis sets its weight to `0` (globally or per kind); a zero-weighted component carries no evidence either way, so it neither suppresses a composite nor asks for a declaration. A project that wants every document to declare `reviewed:` lists it in `schema.required` (or a per-kind override) — `check` then names each document that does not, which is the listing the ranking's count does not carry.
-
-`score` is also omitted when no positively-weighted component is present at all. Either way `components` and `undeclared` stay inspectable, and the node is excluded from `--top` / `--bottom` and counted in the `ranking_unscored` warning.
-
-```bash
-nodex query trust --bottom N [--kind K] [--status S] [--below S]
-nodex query trust --top    N [--kind K] [--status S] [--below S]
-```
-Ranked listings; each item carries `score` + `components`. `--status active` is the review-queue read — filtering keeps retired documents out of the maintenance queue. `--below S` is an opt-in cutoff (strictly below). Mutually exclusive with each other and with the single-node form. A node with no composite is **not in the ranking's domain**: excluded from `items` and `total`, never a bottom-N slot, never satisfying `--below`. The exclusion rides the envelope warnings; `details` carries `{type: ranking_unscored, count, reason: incomplete_basis}`. `basis` names the measured, positively weighted components. Scores are maintenance signals, not correctness or approval; non-terminal statuses share one status value.
-
-```bash
-nodex query similar --id <id> [--status S] [--limit N] [--min-score S]
+nodex query similar --id <id> [--kind K] [--parent-dir D] [--status S] [--limit N] [--min-score S]
 nodex query similar --title "<t>" [--kind <k>] [--tags a,b] [--parent-dir <dir>] [--status S] [--limit N] [--min-score S]
 ```
-`query similar --status <status>` filters candidate documents before ranking; it
-never changes the target. Without `--status`, candidates include every status.
-Unscored similarity warnings carry `details.reason: target_without_signals`.
+`--kind`, `--status` and `--parent-dir` filter candidates before ranking, for both
+forms. Parent directory is an exact project-relative match; `.` selects the project
+root. No filter changes the target or removes historical graph evidence.
 
-`--limit` defaults to `similarity.default_limit`; `--min-score` is an opt-in cutoff (≥ S). The `--title` form probes before scaffolding: `--kind` is optional and validated against `kinds.allowed` when given, `--tags` / `--parent-dir` supply the tag and directory signals for the prospective doc.
-
-A component is omitted when the **target** carries nothing to rank on — an empty token or tag set, a spec field you did not pass, no graph id or no neighbours for `linked` — which holds for every candidate alike, so the composite renormalises over what the query does carry. What a **candidate** lacks is measured, not omitted: no overlap with a set the target has is `0.0`. So supplying fewer flags widens the field rather than penalising the documents that filled the field in. A query carrying no positively-weighted signal at all ranks nothing: every candidate is excluded rather than listed at a fabricated `0.00` (so `--min-score` cannot be gamed by absence), and the count is announced via `ranking_unscored`.
+Title-token, tag and graph-neighbour Jaccard overlaps form the score. Only positive
+weighted overlap is returned. `--limit` defaults to `similarity.default_limit`;
+`--min-score` optionally narrows it further. `--tags` requires `--title`.
+A component absent from the target is omitted uniformly; an absent candidate set
+measures zero. A target without weighted signals returns no candidates and warns
+with `details.reason: target_without_signals`. These candidates do not establish
+semantic duplication.
 
 ```bash
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
@@ -150,6 +150,46 @@ nodex query annotations [--name <block>] [--with-frontmatter f1,f2] [--min-count
 `--name` exact-matches a declared `[[annotations]]` block name (not a glob); an unknown name is `CONFIG_ERROR`. Results group by annotation `name`, then by capture `key`: `items[{name, entries[{key, count, sources}]}]`. `--with-frontmatter` enriches each source with selected node frontmatter (built-in or project-declared; unknown names rejected). `--min-count N` drops entries below the count and removes emptied groups — the natural primitive for promotion candidates and repeated topics.
 
 Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. The block `detection.superseded_reference_ok_annotation` names is the exception in what it holds: its key is the id of a target a document cites as history, which `superseded_reference` compares without resolving. A block declaring `[PROMOTES: <id>]` is queried as `nodex query annotations --name promotes`.
+
+## check
+
+```bash
+nodex check
+nodex check --severity error
+nodex check --content docs/a.md=- --content docs/b.md=b.md
+```
+
+`CheckResult` contains `violations`, `skipped_rules`, `rule_coverage`, `total` and
+`has_errors`. Branch on violation `details.type` and structured fields.
+`--severity` filters the displayed list, never the verdict or exit code;
+`gate_suppression` discloses findings the envelope stops carrying.
+
+`skipped_rules` and `rule_coverage` partition the registry. Coverage entries are
+`{rule_id, unit, subjects, unjudged}`, measured before report narrowing. Zero
+subjects means nothing was guarded; inspect scope and kind filters. Unjudged
+records lack the evidence that rule needs: a baseline lock commonly counts new
+documents, while git drift can lack measurable targets and step rules can lack
+history. Read the rule's evidence before deciding whether a gap needs repair.
+
+`--content PATH=SOURCE` validates proposed bytes before writing. SOURCE is `-`
+(stdin) or a path relative to the invoking directory, never `-C`. At most one
+source is stdin; target paths must be distinct. Every proposal overlays one
+combined graph, so cross-proposal references resolve. Excludes `--since` and
+`--staged`; no cache is written.
+
+Ordinary rules judge introduced errors; targeted locks judge absolute drift
+against the configured baseline, or the working tree without one. Step rules
+judge the move the proposal would commit. Unrelated standing errors do not block
+a proposal. `proposals` reports `{path, in_scope, has_path_errors}` and `standing`
+reports the proposed nodes' warning findings; top-level `has_errors` gates the
+whole batch. A warning retained in `standing` is not suppressed by `--severity`.
+
+An in-project path outside scope validates nothing and warns; a path escaping the
+root is refused. Inferred id, title, kind and status do not prove those keys were
+authored: configure `schema.require_explicit` when explicit declarations matter.
+Restore lock drift before retrying a refused edit; replace a changed decision
+through supersession. A configured `append_section` permits
+corrections under its final body heading without rewriting the frozen prefix.
 
 ## check --since
 
@@ -226,6 +266,12 @@ references stay unchanged, and the result reports `completion: partial` and `fai
 inspect the destination before rebuilding or retrying. Each file replacement is guarded;
 the move and rewrites are not one filesystem transaction and no rollback is promised.
 
+Bare Markdown receives no invented frontmatter. If its path-derived id changes,
+`bare_no_frontmatter` means identity-scoped locks no longer pair it with the old
+record. Anchor its id or run `migrate --apply` before moving it when identity must
+survive. Write paths require the filesystem's exact case and normalization;
+an alternate spelling is refused with the name to use.
+
 `rename` also names every reference it leaves something to say about, once each. Two kinds: one it had a replacement for and **declined to write** (no spelling the move could accept — it goes on naming what it named, and the next build reports the unresolved edge, which `check` and `query issues` report according to configured severity — a project whose `[[detection.unresolved_policy]]` calls that cause an error is one whose write gate refuses the move outright, leaving no warning to read), and one it left standing that **now names somebody else** (the move took the rung out from under it, or carried the referring document to where the same spelling means something different). The second is the one nothing downstream would mention: the graph it produces is valid, so only the command that made it can say so.
 
 ```bash
@@ -261,8 +307,7 @@ Terminal statuses block further transitions except `review`; `set` can never un-
 ```bash
 nodex migrate                # plan-only (default)
 nodex migrate --apply        # inject frontmatter into bare markdown
-nodex report                 # writes graph.json + GRAPH.md (default = all)
-nodex report --format md|json
+nodex report                 # writes GRAPH.md; build writes the JSON snapshot
 nodex init                   # writes an annotated nodex.toml
 ```
 
@@ -285,7 +330,7 @@ External lints consume these instead of re-parsing `nodex.toml`. `envelope-schem
 
 `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
-`export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.trust-list` behind `--bottom` / `--top`).
+`export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.search-body` behind `--body`).
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one; `judges_steps` reads git's history a commit at a time. A lock can require both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 

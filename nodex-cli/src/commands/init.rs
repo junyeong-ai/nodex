@@ -299,7 +299,7 @@ orphan_grace_days = 14
 # citations out of the question. The block must be declared.
 # superseded_reference_ok_annotation = "superseded-ok"
 
-# Git-aware drift signal (opt-in). When set, `query trust` and `check`
+# Git-aware drift signal (opt-in). When set, `check`
 # look at how many commits touched a node's referenced files since its
 # `reviewed` date and surface high counts as maintenance signals / warnings.
 # Requires `git` on PATH and a git work tree holding the project;
@@ -356,56 +356,12 @@ god_node_display_limit = 10
 orphan_display_limit = 20
 stale_display_limit = 20
 
-# Trust and similarity scoring (opt-in — defaults apply if these
-# blocks are omitted). Both surfaces are pure-CLI; no external
-# services.
-#
-# Note: score cutoffs are not part of these config blocks. The
-# project-wide tuning knobs here are weights (composite-shape) and
-# the default operator-capacity cap (`similarity.default_limit`).
-# Threshold-style filters are opt-in at the call site:
-#   `nodex query trust --bottom N --below S`
-#   `nodex query similar --id <id> --min-score S`
-# Corpus-dependent cutoffs are not stable across projects, so they
-# stay at the CLI layer rather than baked into config defaults.
-
-# [trust]
-# # Document-maintenance score weights; these do not measure approval or correctness. Each component is in [0, 1].
-# # A component the run could not measure comes in two kinds, and they
-# # are scored differently. *Inapplicable* — nothing the document could
-# # write would produce it — `freshness` when `detection.stale_days` is
-# # unset; `drift` when `detection.git_drift_threshold` is unset, the
-# # document has no resolvable `git_drift_relations` edge, or git cannot
-# # measure one it has; either one on a terminal document; `backlinks`
-# # when no node in the graph is referenced. It is dropped and the
-# # composite renormalises over the rest. *Undeclared* — the run
-# # can measure the component and this document supplied no input for it
-# # (a positively-weighted `freshness` with no `reviewed` date). There is
-# # no composite: `score` is omitted and the component is named in
-# # `undeclared`, because renormalising would hand it the score its
-# # other components earned and pay it for declaring nothing. Weight a
-# # component zero to say the project does not track that axis.
-# weights = { status = 0.4, freshness = 0.3, drift = 0.2, backlinks = 0.1 }
-#
-# # Per-kind weight overrides — replace global weights entirely for
-# # the listed kinds. Useful when e.g. ADRs care more about backlinks
-# # than freshness.
-# [[trust.overrides]]
-# kinds = ["adr"]
-# weights = { status = 0.2, freshness = 0.2, drift = 0.2, backlinks = 0.4 }
-
 # [similarity]
-# # Vector-free similarity scoring (token Jaccard + tag overlap +
-# # kind/directory match + graph-neighbour overlap). A component is
-# # present when the *target* carries the signal to rank by, and absent
-# # for every candidate alike when it does not — an untagged target
-# # asks nothing about tags, while a tagged one scores an untagged
-# # candidate 0.0 rather than excusing it. The composite renormalises
-# # over what the target carries, never over what a candidate lacks.
-# # Default item count for `query similar` when `--limit` is omitted.
+# # Compare title-token, tag and graph-neighbour Jaccard overlap.
+# # Only positive-overlap candidates are returned; readers decide meaning.
 # default_limit = 10
-# weights = { title = 0.4, tags = 0.2, kind = 0.1, directory = 0.1, linked = 0.2 }
-# # Drop these tokens when comparing titles. Tune for non-English projects.
+# weights = { title = 0.4, tags = 0.2, linked = 0.2 }
+# # Tokens excluded from titles; an empty list keeps every token.
 # title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
 
 # [search]

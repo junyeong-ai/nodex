@@ -64,8 +64,6 @@ pub struct Config {
     #[serde(default)]
     pub report: ReportConfig,
     #[serde(default)]
-    pub trust: TrustConfig,
-    #[serde(default)]
     pub similarity: SimilarityConfig,
     #[serde(default)]
     pub search: SearchConfig,
@@ -865,7 +863,7 @@ pub struct BodyImmutableRuleConfig {
 pub enum ImmutableTrigger {
     /// The lock engages once the document's *before-snapshot* status is
     /// terminal — `statuses.terminal`, the same word `conditional_exclude`,
-    /// trust scoring and the lifecycle seam read.
+    /// the lifecycle seam read.
     #[default]
     Terminal,
     /// The lock engages as soon as a prior committed snapshot exists,
@@ -882,7 +880,7 @@ pub enum ImmutableTrigger {
     /// Distinct from [`Self::Terminal`] in where the set comes from, which
     /// is what makes it worth spelling separately: `terminal` names a
     /// symbol that moves with the project's taxonomy, in step with
-    /// `conditional_exclude`, trust scoring and the lifecycle seam, while
+    /// `conditional_exclude`, the lifecycle seam, while
     /// this set is the block's own and moves only when the block does. A
     /// block arming at `active` cannot say so as `terminal` without
     /// declaring `active` terminal to all of them.
@@ -1430,68 +1428,6 @@ fn default_display_limit() -> usize {
     20
 }
 
-/// Composite trust score weights. Each component score is in `[0, 1]`;
-/// the final composite is the weighted average normalised by the sum
-/// of *active* weights — when a component is unavailable (e.g.
-/// `drift` without `git_drift_threshold`) its weight is excluded so
-/// the result stays in `[0, 1]`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TrustConfig {
-    #[serde(default = "default_trust_weights")]
-    pub weights: TrustWeights,
-    /// Per-kind weight overrides. Each entry *replaces* the global
-    /// `weights` entirely for nodes whose kind is listed in the entry's
-    /// `kinds` vec — a weight vector is only meaningful whole, so unlike
-    /// `[[schema.overrides]]` (which merges field-by-field) there is no
-    /// partial merge here. Lookup matches `[[schema.overrides]]`: first
-    /// match wins, overlap rejected at load.
-    #[serde(default)]
-    pub overrides: Vec<TrustWeightOverride>,
-}
-
-impl Default for TrustConfig {
-    fn default() -> Self {
-        Self {
-            weights: default_trust_weights(),
-            overrides: Vec::new(),
-        }
-    }
-}
-
-/// Per-kind trust weight override. Replaces the global `TrustWeights`
-/// entirely for nodes whose kind appears in `kinds`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TrustWeightOverride {
-    pub kinds: Vec<String>,
-    pub weights: TrustWeights,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TrustWeights {
-    pub status: f64,
-    pub freshness: f64,
-    pub drift: f64,
-    pub backlinks: f64,
-}
-
-impl Default for TrustWeights {
-    fn default() -> Self {
-        Self {
-            status: 0.4,
-            freshness: 0.3,
-            drift: 0.2,
-            backlinks: 0.1,
-        }
-    }
-}
-
-fn default_trust_weights() -> TrustWeights {
-    TrustWeights::default()
-}
-
 /// Vector-free similarity scoring. Each component is in `[0, 1]`;
 /// the composite is a weighted average normalised by the sum of all
 /// declared weights so users can tune relative importance without
@@ -1526,8 +1462,6 @@ impl Default for SimilarityConfig {
 pub struct SimilarityWeights {
     pub title: f64,
     pub tags: f64,
-    pub kind: f64,
-    pub directory: f64,
     pub linked: f64,
 }
 
@@ -1536,8 +1470,6 @@ impl Default for SimilarityWeights {
         Self {
             title: 0.4,
             tags: 0.2,
-            kind: 0.1,
-            directory: 0.1,
             linked: 0.2,
         }
     }
@@ -1561,9 +1493,7 @@ fn default_title_stop_words() -> Vec<String> {
     .collect()
 }
 
-/// `[search]` — keyword ranking for `nodex query search`. The third
-/// ranking surface alongside `[trust]` and `[similarity]`; like them it
-/// exposes its weights so a project tunes relevance without a recompile.
+/// Keyword ranking weights for `nodex query search`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchConfig {
@@ -1571,7 +1501,7 @@ pub struct SearchConfig {
     pub weights: SearchWeights,
 }
 
-/// Per-field keyword-match weights. Unlike `[trust]` / `[similarity]`,
+/// Per-field keyword-match weights. Unlike `[similarity]`,
 /// which renormalise a composite over the whole corpus, search is an
 /// *additive* ranking: a node's score is the sum of the weights of the
 /// fields its keyword matched, and a node that matches nothing is

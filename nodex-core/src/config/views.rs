@@ -244,24 +244,6 @@ impl Config {
             .find(|ov| ov.kinds.iter().any(|k| k == kind))
     }
 
-    /// Find the trust weight override that applies to a given kind.
-    pub fn trust_weight_override_for(&self, kind: &str) -> Option<&TrustWeightOverride> {
-        self.trust
-            .overrides
-            .iter()
-            .find(|ov| ov.kinds.iter().any(|k| k == kind))
-    }
-
-    /// Merged trust weights for a kind — override replaces global
-    /// entirely when matched. Parallels `required_for` / `types_for`
-    /// / `enums_for` in taking a kind and returning the effective view.
-    pub fn trust_weights_for(&self, kind: &str) -> TrustWeights {
-        match self.trust_weight_override_for(kind) {
-            Some(ov) => ov.weights,
-            None => self.trust.weights,
-        }
-    }
-
     /// Every relation a *resolved* edge in this project can carry —
     /// [`crate::model::BUILTIN_EDGE_RELATIONS`] plus every
     /// body-pattern and frontmatter relation the operator declared.

@@ -1,35 +1,15 @@
-//! Vector-free similarity / duplicate detection.
+//! Lexical and graph-overlap candidates for comparison by a reader.
 //!
-//! AI agents call this before scaffolding new memory to ask "have we
-//! already discussed this?" — duplicate ADRs, redundant runbooks, and
-//! near-restatements are surfaced as candidates with a per-component
-//! breakdown so the agent can decide whether to supersede an existing
-//! doc instead of creating noise.
-//!
-//! No embeddings — similarity is the weighted average of five
-//! surface-level signals: title token Jaccard, tag overlap, kind
-//! match, parent-directory match, and graph-neighbour overlap.
-//!
-//! Each component is `Option<f64>`: `None` means the *target* carries
-//! nothing to rank on — an empty token or tag set, a spec field the
-//! caller omitted, a pre-creation target with no graph id — so the
-//! component is absent for every candidate alike and `compose`
-//! renormalises over the signals the query does carry, instead of
-//! conflating "nothing to compare" with "definitely dissimilar" (which
-//! a hardcoded `0.0` would do). What the *candidate* lacks is never an
-//! absence: no overlap with a set the target has is `0.0`, a
-//! measurement. Renormalising there would rescale the composite for
-//! precisely the candidates carrying the least evidence, and rank one
-//! above a better match for declaring nothing. Presence being the
-//! target's, so is the composite's: a query carrying no
-//! positively-weighted signal gives no candidate a composite at all —
-//! every candidate is outside the ranking's domain and counted in
-//! [`RankingOutcome::unscored`], never ranked at a fabricated score.
+//! Kind, status and directory constrain the candidate set. Scores combine
+//! title-token, tag and graph-neighbour Jaccard overlap; they do not establish
+//! semantic equivalence. Only candidates with positive weighted overlap enter
+//! the result. A signal absent from the target is omitted uniformly, while a
+//! candidate lacking that signal measures zero.
 
 use schemars::JsonSchema;
 use serde::Serialize;
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeSet, BinaryHeap};
+use std::path::PathBuf;
 
 use crate::config::{Config, SimilarityWeights};
 use crate::error::Result;
@@ -41,429 +21,206 @@ use super::{NodeRef, RankingOutcome};
 pub struct SimilarityEntry {
     #[serde(flatten)]
     pub node: NodeRef,
-    /// Composite in `[0, 1]`. Always present: an entry exists only for
-    /// a scored candidate — one with no composite never reaches the
-    /// wire (it is excluded from the ranking and counted in
-    /// [`RankingOutcome::unscored`]). Named `score`, identical in spine
-    /// to every other item-list ranking entry ([`super::trust::TrustEntry`],
-    /// [`super::search::SearchEntry`]).
+    /// Weighted overlap in `(0, 1]`, comparable within this query.
     pub score: f64,
     pub components: SimilarityComponents,
 }
 
-/// Per-signal breakdown. Every field is `Option<f64>` so callers can
-/// distinguish "we measured 0.0" from "no signal to measure". When a
-/// component is `None`, its weight is excluded from the composite
-/// denominator — see `compose`.
+/// Jaccard overlaps. Omitted fields have no target-side set to compare.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SimilarityComponents {
-    /// `None` when the *target's* title tokenises to an empty set
-    /// after stopword + min-char filtering — the query carries no
-    /// title signal, so no candidate can be ranked on one. A candidate
-    /// whose own tokens are empty scores `Some(0.0)`: zero overlap
-    /// against a token set that exists is a measurement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<f64>,
-    /// `None` when the *target* carries no tags, for the reason
-    /// `title` does. A tagless candidate scores `Some(0.0)` against a
-    /// tagged target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<f64>,
-    /// `None` when the target is a pre-creation spec without an
-    /// explicit kind. Comparing "no kind" to a real kind would
-    /// fabricate a 0.0 from absence.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<f64>,
-    /// `None` when the target has no parent directory to compare
-    /// against — a pre-creation spec without `--parent-dir`. A node
-    /// always has one: a document at the project root sits in `""`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub directory: Option<f64>,
-    /// `None` when the target is a pre-creation spec (no graph id, so
-    /// the neighbour set is undefined), or when the target node has no
-    /// neighbours to compare a candidate's against.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked: Option<f64>,
 }
 
-/// What we are comparing against. `Node` looks up an existing graph
-/// node; `Spec` lets agents probe similarity *before* the document
-/// they're about to scaffold exists.
 pub enum SimilarityTarget<'a> {
     Node(&'a str),
-    Spec {
-        title: &'a str,
-        kind: Option<&'a str>,
-        tags: &'a [String],
-        parent_dir: Option<&'a Path>,
-    },
+    Spec { title: &'a str, tags: &'a [String] },
 }
 
 #[derive(Debug, Clone)]
 pub struct SimilarityOptions {
     pub limit: usize,
-    /// Optional candidate status; the target remains unchanged.
+    pub kind: Option<String>,
     pub status: Option<String>,
+    /// Exact project-relative parent directory; the CLI normalizes authored paths.
+    pub parent_dir: Option<PathBuf>,
 }
 
 impl SimilarityOptions {
-    /// Default cap sourced from `[similarity].default_limit`. Score
-    /// cutoffs are not part of the ranking primitive — callers that
-    /// want them attach the filter at the CLI / consumer layer.
     pub fn from_config(config: &Config) -> Self {
         Self {
             limit: config.similarity.default_limit,
+            kind: None,
             status: None,
+            parent_dir: None,
         }
     }
 }
 
-/// Rank every candidate against `target` by composite similarity, sort
-/// descending with id tie-break, truncate to `opts.limit`. No
-/// threshold gate — the operator decides what enters the ranking via
-/// `limit`, and any score-cutoff filter is applied by the caller.
-///
-/// Presence is the target's, so a query carrying no positively-weighted
-/// signal gives no candidate a composite: each is skipped before the
-/// heap push and counted in [`RankingOutcome::unscored`]. The prune
-/// cannot mask the exclusion — it fires only once the heap holds a
-/// scored candidate, which such a query never produces.
-///
-/// The cheap-signals upper-bound prune is still in play: we maintain a
-/// min-heap of size `limit` and skip candidates whose optimistic
-/// composite cannot enter the top-K. This keeps the worst case linear
-/// in node count without a hardcoded cutoff to drift against.
+/// Select positive-overlap candidates, descending by score and then by id.
+/// Filters precede ranking, so excluded documents never consume a result slot.
 pub fn compute_similarity(
     graph: &Graph,
     config: &Config,
     target: &SimilarityTarget<'_>,
     opts: &SimilarityOptions,
 ) -> Result<RankingOutcome<SimilarityEntry>> {
-    let target_view = TargetView::extract(graph, target)?;
-    let stop_words: BTreeSet<&str> = config
+    let (title, tags, exclude_id) = match target {
+        SimilarityTarget::Node(id) => {
+            let node = graph.require_node(id)?;
+            (node.title.as_str(), node.tags.as_slice(), Some(*id))
+        }
+        SimilarityTarget::Spec { title, tags } => (*title, *tags, None),
+    };
+    let stop_words = config
         .similarity
         .title_stop_words
         .iter()
         .map(String::as_str)
         .collect();
-    let target_title_tokens = tokenize_title(target_view.title, &stop_words);
-    let target_tag_set: BTreeSet<String> = target_view
-        .tags
-        .iter()
-        .map(|tag| tag.to_lowercase())
-        .collect();
-    // Pre-creation specs have no graph id → neighbour set is
-    // undefined, not "empty". Track the distinction so the `linked`
-    // component reports `None` instead of fabricating a 0.0.
-    let target_in_graph = target_view.exclude_id.is_some();
-    let target_neighbours = neighbour_set(graph, target_view.exclude_id);
-    let weights = config.similarity.weights;
+    let title_tokens = tokenize_title(title, &stop_words);
+    let tag_set = tags.iter().map(|tag| tag.to_lowercase()).collect();
+    let neighbours = neighbour_set(graph, exclude_id);
+    let weights = &config.similarity.weights;
+    let linked_bound = (!neighbours.is_empty()).then_some(1.0);
+    let mut top: BinaryHeap<HeapEntry> = BinaryHeap::new();
+    let mut unscored = 0;
 
-    // Top-K min-heap: smallest composite at the top, so we can cheaply
-    // ask "is this candidate worth computing in full?". A composite
-    // whose optimistic upper bound is below the current K-th score
-    // can never enter the heap.
-    let mut top: std::collections::BinaryHeap<HeapEntry> =
-        std::collections::BinaryHeap::with_capacity(opts.limit.saturating_add(1));
-    let mut unscored = 0usize;
-
-    for n in graph
-        .nodes()
-        .values()
-        .filter(|n| target_view.exclude_id.is_none_or(|id| n.id != id))
-        .filter(|n| {
-            opts.status
+    for node in graph.nodes().values().filter(|node| {
+        exclude_id.is_none_or(|id| node.id != id)
+            && opts
+                .kind
                 .as_deref()
-                .is_none_or(|status| n.status.as_str() == status)
-        })
-    {
-        let title = jaccard(&target_title_tokens, &tokenize_title(&n.title, &stop_words));
+                .is_none_or(|kind| node.kind.as_str() == kind)
+            && opts
+                .status
+                .as_deref()
+                .is_none_or(|status| node.status.as_str() == status)
+            && opts
+                .parent_dir
+                .as_deref()
+                .is_none_or(|dir| node.path.parent() == Some(dir))
+    }) {
+        let title = jaccard(&title_tokens, &tokenize_title(&node.title, &stop_words));
         let tags = jaccard(
-            &target_tag_set,
-            &n.tags
-                .iter()
-                .map(|tag| tag.to_lowercase())
-                .collect::<BTreeSet<_>>(),
+            &tag_set,
+            &node.tags.iter().map(|tag| tag.to_lowercase()).collect(),
         );
-        let kind = kind_match(target_view.kind, n.kind.as_str());
-        let directory = directory_match(target_view.parent_dir, n.path.as_path());
-
-        // Stage 1: cheap signals. Establish the optimistic upper bound
-        // on the final composite using only the components computed
-        // so far. `linked` and any absent component contribute 1.0 to
-        // both numerator and denominator, so the bound is always
-        // `>= compose(...)`. Skip the candidate when the heap is
-        // already full and the bound cannot break in.
-        if opts.limit == 0 {
-            break;
-        }
-        if top.len() >= opts.limit {
-            let upper_bound = compose_upper_bound(&weights, title, tags, kind, directory);
-            let kth = top.peek().expect("heap non-empty when len >= limit").score;
-            if upper_bound < kth {
-                continue;
-            }
-        }
-
-        // Stage 2: linked Jaccard. Only meaningful when the target
-        // has a graph id; otherwise the neighbour set is undefined,
-        // not "empty".
-        let linked = if target_in_graph {
-            jaccard(&target_neighbours, &neighbour_set(graph, Some(&n.id)))
-        } else {
-            None
-        };
-        let components = SimilarityComponents {
-            title,
-            tags,
-            kind,
-            directory,
-            linked,
-        };
-        // The target carries no positively-weighted signal → no
-        // composite for any candidate. Each is outside the ranking's
-        // domain; counted, not ranked at a fabricated minimum.
-        let Some(score) = compose(&weights, &components) else {
+        // Only graph overlap remains unmeasured. Assuming full overlap gives
+        // an upper bound with the same target-side denominator as the score.
+        let upper = compose(
+            weights,
+            &SimilarityComponents {
+                title,
+                tags,
+                linked: linked_bound,
+            },
+        );
+        let Some(upper) = upper else {
             unscored += 1;
             continue;
         };
-        top.push(HeapEntry {
+        if opts.limit == 0 || upper <= 0.0 {
+            continue;
+        }
+        if top.len() == opts.limit && upper < top.peek().expect("non-empty heap").0.score {
+            continue;
+        }
+        let components = SimilarityComponents {
+            title,
+            tags,
+            linked: jaccard(&neighbours, &neighbour_set(graph, Some(&node.id))),
+        };
+        let score = compose(weights, &components).expect("target-side signals are unchanged");
+        if score <= 0.0 {
+            continue;
+        }
+        top.push(HeapEntry(SimilarityEntry {
+            node: NodeRef::from_node(node),
             score,
-            entry: SimilarityEntry {
-                node: NodeRef::from_node(n),
-                score,
-                components,
-            },
-        });
+            components,
+        }));
         if top.len() > opts.limit {
             top.pop();
         }
     }
-
-    let mut entries: Vec<SimilarityEntry> = top.into_iter().map(|h| h.entry).collect();
+    let mut entries: Vec<_> = top.into_iter().map(|entry| entry.0).collect();
     entries.sort_by(|a, b| {
         b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.score)
             .then_with(|| a.node.id.cmp(&b.node.id))
     });
     Ok(RankingOutcome { entries, unscored })
 }
 
-/// Heap entry that orders so [`std::collections::BinaryHeap`] (a
-/// max-heap) behaves as a min-heap over the composite score, with id
-/// tie-break inverted to match the final descending sort. NaN scores
-/// fold to `Ordering::Equal` so the heap never panics.
-struct HeapEntry {
-    score: f64,
-    entry: SimilarityEntry,
-}
+struct HeapEntry(SimilarityEntry);
 
 impl PartialEq for HeapEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.score == other.score && self.entry.node.id == other.entry.node.id
+        self.cmp(other) == std::cmp::Ordering::Equal
     }
 }
-
 impl Eq for HeapEntry {}
-
 impl PartialOrd for HeapEntry {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-
 impl Ord for HeapEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse the score comparison so the smallest score sits at
-        // the heap's top; on ties, the *higher* id sits at the top so
-        // popping during overflow drops the would-be-last entry from
-        // the final descending order. The final sort orders equal
-        // scores by ascending id (lower id wins), so the heap must
-        // evict the higher id on a tie — `BinaryHeap::pop` returns
-        // the `Ord::Greater` element, so this entry compares
-        // `Greater` when its id is larger.
         other
+            .0
             .score
-            .partial_cmp(&self.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| self.entry.node.id.cmp(&other.entry.node.id))
-    }
-}
-
-struct TargetView<'a> {
-    title: &'a str,
-    kind: Option<&'a str>,
-    tags: Vec<String>,
-    parent_dir: Option<&'a Path>,
-    exclude_id: Option<&'a str>,
-}
-
-impl<'a> TargetView<'a> {
-    fn extract(graph: &'a Graph, target: &SimilarityTarget<'a>) -> Result<Self> {
-        match target {
-            SimilarityTarget::Node(id) => {
-                let n = graph.require_node(id)?;
-                Ok(Self {
-                    title: &n.title,
-                    kind: Some(n.kind.as_str()),
-                    tags: n.tags.clone(),
-                    parent_dir: n.path.parent(),
-                    exclude_id: Some(id),
-                })
-            }
-            SimilarityTarget::Spec {
-                title,
-                kind,
-                tags,
-                parent_dir,
-            } => Ok(Self {
-                title,
-                kind: *kind,
-                tags: tags.to_vec(),
-                parent_dir: *parent_dir,
-                exclude_id: None,
-            }),
-        }
+            .total_cmp(&self.0.score)
+            .then_with(|| self.0.node.id.cmp(&other.0.node.id))
     }
 }
 
 fn neighbour_set<'a>(graph: &'a Graph, id: Option<&str>) -> BTreeSet<&'a str> {
-    // The undirected one-hop set, through the shared reachability
-    // primitive — the same "one hop from a node" definition `find_chain`
-    // and the structural walks use. `linked` similarity is the Jaccard
-    // overlap of two nodes' neighbour sets.
-    match id {
-        Some(id) => super::structure::adjacent_undirected(graph, id, None)
+    id.map(|id| {
+        super::structure::adjacent_undirected(graph, id, None)
             .into_iter()
-            .collect(),
-        None => BTreeSet::new(),
-    }
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 fn tokenize_title(title: &str, stop_words: &BTreeSet<&str>) -> BTreeSet<String> {
-    // Char count, not byte length: a single Korean syllable is 3 bytes
-    // but one character — applying a byte-length cutoff would treat
-    // ASCII and CJK alphanumerics inconsistently.
     title
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.chars().count() >= 2 && !stop_words.contains(*t))
+        .filter(|token| !token.is_empty() && !stop_words.contains(*token))
         .map(String::from)
         .collect()
 }
 
-/// Overlap of a candidate's set with the *target's*. `None` when the
-/// target carries no such set: the query has nothing to rank by, so
-/// the component is absent for every candidate alike — the same
-/// uniform absence `kind_match` and `directory_match` report when the
-/// target side is missing. A target that does carry one measures every
-/// candidate, the empty ones included: no overlap with a set that
-/// exists is `0.0`, a measurement rather than an absence.
-///
-/// Asymmetric on purpose. The comparison is one target against many
-/// candidates, so which side is empty decides what the emptiness is
-/// about. Read symmetrically, a candidate was absent when it happened
-/// to share the target's emptiness and measured `0.0` when it did not,
-/// which renormalised the composite for exactly the candidates
-/// carrying the least — ranking a candidate above a better-matching
-/// one for declaring nothing.
 fn jaccard<T: Ord>(target: &BTreeSet<T>, candidate: &BTreeSet<T>) -> Option<f64> {
     if target.is_empty() {
-        return None;
-    }
-    let intersection = target.intersection(candidate).count();
-    let union = target.union(candidate).count();
-    Some(intersection as f64 / union as f64)
-}
-
-fn kind_match(target_kind: Option<&str>, candidate_kind: &str) -> Option<f64> {
-    let t = target_kind?;
-    Some(if t == candidate_kind { 1.0 } else { 0.0 })
-}
-
-fn directory_match(target_dir: Option<&Path>, candidate_path: &Path) -> Option<f64> {
-    let t = target_dir?;
-    let candidate_dir = candidate_path.parent()?;
-    Some(if t == candidate_dir { 1.0 } else { 0.0 })
-}
-
-/// Weighted average over the *present* components. `None` exactly when
-/// the weight sum over present components is zero (weights are
-/// load-validated finite and non-negative): the candidate shares no
-/// positively-weighted signal with the target, so no composite exists
-/// — the same honest-absence rule the components themselves follow.
-fn compose(w: &SimilarityWeights, c: &SimilarityComponents) -> Option<f64> {
-    let mut weighted = 0.0;
-    let mut weight_sum = 0.0;
-    if let Some(v) = c.title {
-        weighted += v * w.title;
-        weight_sum += w.title;
-    }
-    if let Some(v) = c.tags {
-        weighted += v * w.tags;
-        weight_sum += w.tags;
-    }
-    if let Some(v) = c.kind {
-        weighted += v * w.kind;
-        weight_sum += w.kind;
-    }
-    if let Some(v) = c.directory {
-        weighted += v * w.directory;
-        weight_sum += w.directory;
-    }
-    if let Some(v) = c.linked {
-        weighted += v * w.linked;
-        weight_sum += w.linked;
-    }
-    if weight_sum <= 0.0 {
         None
     } else {
-        Some((weighted / weight_sum).clamp(0.0, 1.0))
+        Some(target.intersection(candidate).count() as f64 / target.union(candidate).count() as f64)
     }
 }
 
-/// Upper bound on the final composite score using only the cheap
-/// components. Each absent component is treated as the most
-/// optimistic case (a future 1.0 contribution to both numerator and
-/// denominator); each present component contributes its measured
-/// value. The result is always `>= compose(...)`, so a candidate
-/// pruned by the heap's top-K gate can never have entered the top-K.
-fn compose_upper_bound(
-    w: &SimilarityWeights,
-    title: Option<f64>,
-    tags: Option<f64>,
-    kind: Option<f64>,
-    directory: Option<f64>,
-) -> f64 {
-    // Numerator: known values get their measured score; unknown
-    // values (including the not-yet-computed `linked`) get the
-    // optimistic 1.0.
-    let mut numerator = 0.0;
-    let mut denominator = 0.0;
-    for (val, weight) in [
-        (title, w.title),
-        (tags, w.tags),
-        (kind, w.kind),
-        (directory, w.directory),
+fn compose(weights: &SimilarityWeights, components: &SimilarityComponents) -> Option<f64> {
+    let mut weighted = 0.0;
+    let mut sum = 0.0;
+    for (value, weight) in [
+        (components.title, weights.title),
+        (components.tags, weights.tags),
+        (components.linked, weights.linked),
     ] {
-        // Even when val is None we add the weight on both sides to
-        // model the "this might still come back as 1.0" case. (For
-        // title/tags/kind/directory `None` is final — but assuming
-        // 1.0 only inflates the upper bound, which is safe for
-        // pruning.)
-        let assumed = val.unwrap_or(1.0);
-        numerator += assumed * weight;
-        denominator += weight;
+        if let Some(value) = value {
+            weighted += value * weight;
+            sum += weight;
+        }
     }
-    // `linked` is not yet computed → assume 1.0.
-    numerator += 1.0 * w.linked;
-    denominator += w.linked;
-    if denominator <= 0.0 {
-        0.0
-    } else {
-        (numerator / denominator).clamp(0.0, 1.0)
-    }
+    (sum > 0.0).then(|| (weighted / sum).clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -536,7 +293,6 @@ mod tests {
         assert!(!entries.is_empty(), "should find similar via shared tokens");
         assert_eq!(entries[0].node.id, "b");
         assert!(entries[0].components.title.unwrap() > 0.5);
-        assert_eq!(entries[0].components.kind, Some(1.0));
     }
 
     #[test]
@@ -553,22 +309,17 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
         .entries;
-        // 'the' is dropped, 'auth' and 'payment' remain — different
-        // tokens → title similarity = 0.
-        let b_entry = entries.iter().find(|e| e.node.id == "b").unwrap();
-        assert_eq!(b_entry.components.title, Some(0.0));
+        assert!(entries.is_empty());
     }
 
     #[test]
-    fn unrelated_docs_rank_below_related_ones() {
-        // With no threshold gate every candidate enters the ranking;
-        // the contract is that the more-similar doc outranks the
-        // less-similar one. A consumer that wants to drop low-scoring
-        // tail entries applies its own `--min-score` filter.
+    fn unrelated_documents_are_excluded() {
         let g = graph_with(vec![
             node("a", "auth retry", "adr", vec![], "docs/a.md"),
             node("close", "auth retry tweaks", "adr", vec![], "docs/close.md"),
@@ -590,15 +341,7 @@ mod tests {
         .unwrap()
         .entries;
         let ids: Vec<&str> = entries.iter().map(|e| e.node.id.as_str()).collect();
-        let close_pos = ids
-            .iter()
-            .position(|i| *i == "close")
-            .expect("close present");
-        let far_pos = ids.iter().position(|i| *i == "far").expect("far present");
-        assert!(
-            close_pos < far_pos,
-            "related doc must outrank unrelated; got {ids:?}"
-        );
+        assert_eq!(ids, ["close"]);
     }
 
     #[test]
@@ -613,9 +356,7 @@ mod tests {
         let cfg = Config::default();
         let target = SimilarityTarget::Spec {
             title: "Auth retry policy v2",
-            kind: Some("adr"),
             tags: &["auth".to_string()],
-            parent_dir: Some(Path::new("docs")),
         };
         let entries = compute_similarity(
             &g,
@@ -624,6 +365,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -646,6 +389,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -668,17 +413,15 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_title_uses_char_count_for_unicode() {
-        // ASCII single chars are dropped; CJK single syllables (3
-        // bytes, 1 char) must also be dropped. A byte-length filter
-        // would keep CJK and treat Latin / CJK inconsistently —
-        // tokenisation goes through char count for parity.
-        let stop: BTreeSet<&str> = BTreeSet::new();
-        let tokens = tokenize_title("a 가 ab 가나", &stop);
-        assert!(!tokens.contains("a"), "ASCII 1-char must drop");
-        assert!(!tokens.contains("가"), "CJK 1-char must drop too");
-        assert!(tokens.contains("ab"));
-        assert!(tokens.contains("가나"));
+    fn title_tokens_preserve_short_latin_and_korean_terms() {
+        let tokens = tokenize_title("R 가 ab 가나", &BTreeSet::new());
+        assert_eq!(
+            tokens,
+            ["r", "가", "ab", "가나"]
+                .map(String::from)
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]
@@ -698,37 +441,24 @@ mod tests {
 
     // ---- Honest absence regression tests --------------------------------
 
-    /// A target whose title tokenises to an empty set (only stop words
-    /// / single chars) carries no title signal — the composite must
-    /// rely on kind/directory alone, not be dragged down by a
-    /// fabricated 0.0.
     #[test]
-    fn title_absent_when_the_target_tokenises_empty() {
-        let g = graph_with(vec![
-            // After tokenisation (drop 1-char, drop 'a'/'i'/etc. if
-            // configured as stop words), titles are empty — but the
-            // defaults don't include 'a'/'i', so use truly single-char
-            // titles to guarantee empty token sets.
-            node("a", "x", "adr", vec![], "docs/a.md"),
-            node("b", "y", "adr", vec![], "docs/b.md"),
+    fn an_absent_title_does_not_dilute_matching_tags() {
+        let graph = graph_with(vec![
+            node("a", "the", "adr", vec!["auth"], "docs/a.md"),
+            node("b", "and", "guide", vec!["auth"], "other/b.md"),
         ]);
-        let cfg = Config::default();
-        let entries = compute_similarity(
-            &g,
-            &cfg,
+        let config = Config::default();
+        let result = compute_similarity(
+            &graph,
+            &config,
             &SimilarityTarget::Node("a"),
-            &SimilarityOptions {
-                limit: 10,
-                status: None,
-            },
+            &SimilarityOptions::from_config(&config),
         )
-        .unwrap()
-        .entries;
-        let b_entry = entries.iter().find(|e| e.node.id == "b").unwrap();
-        assert_eq!(
-            b_entry.components.title, None,
-            "a target that tokenises empty carries no title signal for any candidate"
-        );
+        .unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].components.title, None);
+        assert_eq!(result.entries[0].components.tags, Some(1.0));
+        assert_eq!(result.entries[0].score, 1.0);
     }
 
     /// A target carrying no tags cannot be compared on tags, and the
@@ -758,6 +488,8 @@ mod tests {
                 &SimilarityOptions {
                     limit: 10,
                     status: None,
+                    kind: None,
+                    parent_dir: None,
                 },
             )
             .unwrap()
@@ -780,80 +512,6 @@ mod tests {
         );
     }
 
-    /// Spec target without an explicit kind has no kind signal — the
-    /// component must be `None` so the composite renormalises over
-    /// the remaining four signals.
-    #[test]
-    fn kind_absent_for_spec_target_without_kind() {
-        let g = graph_with(vec![node(
-            "existing",
-            "auth retry policy",
-            "adr",
-            vec![],
-            "docs/existing.md",
-        )]);
-        let cfg = Config::default();
-        let target = SimilarityTarget::Spec {
-            title: "Auth retry policy",
-            kind: None, // <- missing
-            tags: &[],
-            parent_dir: Some(Path::new("docs")),
-        };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                limit: 10,
-                status: None,
-            },
-        )
-        .unwrap()
-        .entries;
-        let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
-        assert_eq!(
-            e.components.kind, None,
-            "spec target without kind must report kind=None"
-        );
-    }
-
-    /// Spec target without `parent_dir` has no directory signal. The
-    /// `linked` component is also absent because there's no graph id
-    /// to anchor the neighbour set.
-    #[test]
-    fn directory_absent_for_pre_creation_spec() {
-        let g = graph_with(vec![node(
-            "existing",
-            "auth retry policy",
-            "adr",
-            vec![],
-            "docs/existing.md",
-        )]);
-        let cfg = Config::default();
-        let target = SimilarityTarget::Spec {
-            title: "Auth retry policy",
-            kind: Some("adr"),
-            tags: &[],
-            parent_dir: None, // <- missing
-        };
-        let entries = compute_similarity(
-            &g,
-            &cfg,
-            &target,
-            &SimilarityOptions {
-                limit: 10,
-                status: None,
-            },
-        )
-        .unwrap()
-        .entries;
-        let e = entries.iter().find(|e| e.node.id == "existing").unwrap();
-        assert_eq!(
-            e.components.directory, None,
-            "spec target without parent_dir must report directory=None"
-        );
-    }
-
     /// Spec target has no graph id, so the neighbour set is undefined
     /// — `linked` must be `None`, not "Jaccard against an empty set".
     #[test]
@@ -868,9 +526,7 @@ mod tests {
         let cfg = Config::default();
         let target = SimilarityTarget::Spec {
             title: "Auth retry policy",
-            kind: Some("adr"),
             tags: &[],
-            parent_dir: Some(Path::new("docs")),
         };
         let entries = compute_similarity(
             &g,
@@ -879,6 +535,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -896,7 +554,7 @@ mod tests {
     /// down by absent components being counted as 0.0.
     #[test]
     fn composite_renormalises_over_present_signals_only() {
-        // Both docs: same title tokens, same kind, same directory.
+        // Every measured overlap is identical.
         // No tags on either side → tags = None.
         // No edges → both neighbour sets empty → linked = None.
         let g = graph_with(vec![
@@ -911,6 +569,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -918,8 +578,6 @@ mod tests {
         let b = entries.iter().find(|e| e.node.id == "b").unwrap();
         assert_eq!(b.components.title, Some(1.0));
         assert_eq!(b.components.tags, None);
-        assert_eq!(b.components.kind, Some(1.0));
-        assert_eq!(b.components.directory, Some(1.0));
         assert_eq!(b.components.linked, None);
         assert!(
             (b.score - 1.0).abs() < 1e-9,
@@ -944,6 +602,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -1006,6 +666,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -1018,41 +680,8 @@ mod tests {
         );
     }
 
-    /// `directory_match`'s candidate-side `candidate_path.parent()?`
-    /// branch reads as if a candidate without a parent directory is a
-    /// real state to handle, but no real document graph can reach it.
-    /// Nodex paths are project-relative `PathBuf` values constructed
-    /// by the scanner from globbed files under the project root.
-    /// `PathBuf::from("root.md").parent()` returns `Some("")` (empty
-    /// path, not `None`) and any deeper path returns `Some("docs")`
-    /// or similar. `Path::parent()` only returns `None` for the empty
-    /// path or the filesystem root, neither of which the scanner can
-    /// produce. The branch stays defensive but is unreachable from
-    /// graph input — documented here in lieu of an unreachable test.
-    #[test]
-    fn directory_match_candidate_parent_is_structurally_always_some() {
-        use std::path::PathBuf;
-        // Anchors the structural invariant the comment above relies
-        // on. If a future Rust release changes `Path::parent`
-        // semantics, this test fails and the comment must be
-        // re-examined.
-        assert_eq!(
-            PathBuf::from("root.md").parent(),
-            Some(Path::new("")),
-            "root-level docs report parent = empty path, never None"
-        );
-        assert_eq!(PathBuf::from("docs/a.md").parent(), Some(Path::new("docs")));
-    }
-
     #[test]
     fn json_omits_absent_similarity_components() {
-        // Wire-contract anchor (mirrors `trust::json_omits_absent_components`):
-        // an absent component must be omitted from the JSON entirely,
-        // never serialised as `null` or `0.0`. Partial-absence fixture:
-        // both docs share title tokens / kind / directory (present) but
-        // neither carries tags or edges (tags / linked absent) — a
-        // scored candidate whose absent components must vanish from the
-        // wire while the present ones survive.
         let g = graph_with(vec![
             node("a", "auth retry policy", "adr", vec![], "docs/a.md"),
             node("b", "auth retry policy", "adr", vec![], "docs/b.md"),
@@ -1065,6 +694,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -1085,12 +716,7 @@ mod tests {
                 "{key} must be omitted when absent; got {obj:?}"
             );
         }
-        for key in ["title", "kind", "directory"] {
-            assert!(
-                obj.contains_key(key),
-                "{key} is present and must serialize; got {obj:?}"
-            );
-        }
+        assert!(obj.contains_key("title"), "{obj:?}");
     }
 
     /// A query carrying no signal at all ranks nothing: every candidate
@@ -1108,10 +734,8 @@ mod tests {
         )]);
         let cfg = Config::default();
         let target = SimilarityTarget::Spec {
-            title: "a",       // single ASCII char → tokenises empty → title None
-            kind: None,       // → kind component None
-            tags: &[],        // → tags None
-            parent_dir: None, // → directory None; spec → linked None
+            title: "a", // single ASCII char → tokenises empty → title None
+            tags: &[],  // → tags None
         };
         let outcome = compute_similarity(
             &g,
@@ -1120,6 +744,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap();
@@ -1153,13 +779,13 @@ mod tests {
             &cfg,
             &SimilarityTarget::Spec {
                 title: "auth retry policy",
-                kind: Some("adr"),
                 tags: &[],
-                parent_dir: Some(Path::new("docs")),
             },
             &SimilarityOptions {
                 limit: 1,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap();
@@ -1174,13 +800,13 @@ mod tests {
             &cfg,
             &SimilarityTarget::Spec {
                 title: "a", // tokenises empty
-                kind: None,
                 tags: &[],
-                parent_dir: None,
             },
             &SimilarityOptions {
                 limit: 1,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap();
@@ -1219,13 +845,13 @@ mod tests {
             &cfg,
             &SimilarityTarget::Spec {
                 title: "auth retry policy",
-                kind: Some("adr"),
                 tags: &[],
-                parent_dir: Some(Path::new("docs")),
             },
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap();
@@ -1264,9 +890,7 @@ mod tests {
         // values across the board → identical composite scores.
         let target = SimilarityTarget::Spec {
             title: "auth retry policy",
-            kind: Some("adr"),
             tags: &[],
-            parent_dir: Some(Path::new("docs")),
         };
         let entries = compute_similarity(
             &g,
@@ -1275,6 +899,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 2,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -1308,6 +934,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 0,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -1342,6 +970,8 @@ mod tests {
             &SimilarityOptions {
                 limit: 10,
                 status: None,
+                kind: None,
+                parent_dir: None,
             },
         )
         .unwrap()
@@ -1350,5 +980,91 @@ mod tests {
             entries.is_empty(),
             "single-node graph with target excluded must return empty; got {entries:?}",
         );
+    }
+    #[test]
+    fn bounded_ranking_matches_complete_ranking_across_overlap_signals() {
+        use crate::model::{Edge, ResolvedTarget};
+        let nodes = (0..32)
+            .map(|index| {
+                node(
+                    &format!("n-{index:02}"),
+                    &format!(
+                        "{} {}",
+                        if index % 2 == 0 { "policy" } else { "ledger" },
+                        index % 3
+                    ),
+                    "adr",
+                    if index % 4 == 0 { vec!["auth"] } else { vec![] },
+                    &format!("docs/{index}.md"),
+                )
+            })
+            .collect();
+        let mut graph = graph_with(nodes);
+        let edges = (0..24)
+            .map(|index| Edge {
+                reference: None,
+                source: format!("n-{index:02}"),
+                target: ResolvedTarget::resolved(format!("n-{:02}", 24 + index % 4)),
+                relation: "references".into(),
+                location: "L1".into(),
+            })
+            .collect();
+        graph = Graph::new(
+            graph.nodes().clone(),
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
+        for weights in [
+            SimilarityWeights::default(),
+            SimilarityWeights {
+                title: 0.0,
+                tags: 1.0,
+                linked: 0.0,
+            },
+            SimilarityWeights {
+                title: 0.0,
+                tags: 0.0,
+                linked: 1.0,
+            },
+        ] {
+            let mut config = Config::default();
+            config.similarity.weights = weights;
+            let full = compute_similarity(
+                &graph,
+                &config,
+                &SimilarityTarget::Node("n-00"),
+                &SimilarityOptions {
+                    limit: usize::MAX,
+                    ..SimilarityOptions::from_config(&config)
+                },
+            )
+            .unwrap();
+            for limit in [1, 2, 7] {
+                let bounded = compute_similarity(
+                    &graph,
+                    &config,
+                    &SimilarityTarget::Node("n-00"),
+                    &SimilarityOptions {
+                        limit,
+                        ..SimilarityOptions::from_config(&config)
+                    },
+                )
+                .unwrap();
+                let ids = |entries: &[SimilarityEntry]| {
+                    entries
+                        .iter()
+                        .map(|entry| (entry.node.id.clone(), entry.score))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    ids(&bounded.entries),
+                    ids(&full.entries[..full.entries.len().min(limit)])
+                );
+                assert_eq!(bounded.unscored, full.unscored);
+            }
+        }
     }
 }

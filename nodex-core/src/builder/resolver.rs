@@ -486,7 +486,7 @@ pub(crate) fn sought_names(
 /// scanner's own read semantics — symlink containment is not this
 /// probe's charge). One disk probe for every consumer of the ladder:
 /// the unresolved-cause classifier (`query::issues`) and the git-drift
-/// target probes (`rules::git_drift`, `query::trust`) all answer "does
+/// target probes (`rules::git_drift`) all answer "does
 /// this link name real on-disk content" through this single
 /// definition; only path-only (`covers`) callers admit directories,
 /// since git measures a directory's history as readily as a file's,
