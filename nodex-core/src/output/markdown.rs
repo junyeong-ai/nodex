@@ -30,11 +30,9 @@ pub fn render_markdown(graph: &Graph, config: &Config, today: NaiveDate) -> Stri
     // Summary
     render_summary(&mut out, graph, config);
 
-    // God nodes
     render_god_nodes(&mut out, graph, config);
 
-    // Supersession chains
-    render_chains(&mut out, graph, config);
+    render_succession(&mut out, graph, config);
 
     // Orphans
     render_orphans(&mut out, graph, config, today);
@@ -102,7 +100,7 @@ fn format_tally(counts: &BTreeMap<&str, usize>) -> String {
 fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(
         out,
-        "## God Nodes (top-{} by backlinks)",
+        "## Most Referenced Documents (top-{} by backlinks)",
         config.report.god_node_display_limit
     )
     .unwrap();
@@ -118,7 +116,7 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
                 .unwrap_or(false)
         })
         // "Backlinks" here is the same external-attention measure
-        // `query backlinks`, the trust `backlinks_signal`, and orphan
+        // `query backlinks` and orphan
         // detection use — `external_incoming_edges` excludes self-loops,
         // so a self-referencing node can't inflate its own god-node rank
         // (and a node `query orphans` calls an orphan can't also appear
@@ -146,53 +144,33 @@ fn render_god_nodes(out: &mut String, graph: &Graph, config: &Config) {
     writeln!(out).unwrap();
 }
 
-fn render_chains(out: &mut String, graph: &Graph, config: &Config) {
-    writeln!(out, "## Supersession Chains").unwrap();
+fn render_succession(out: &mut String, graph: &Graph, config: &Config) {
+    writeln!(out, "## Supersession Links").unwrap();
     writeln!(out).unwrap();
-
-    // `find_chain` returns the whole connected supersession component from
-    // any member, ordered identically regardless of which member anchors
-    // it. So we visit node ids in order and render each component exactly
-    // once: the lex-smallest member emits it, and every other member is
-    // skipped via `seen`. This is authoring-agnostic — a component
-    // declared purely through `supersedes:` (no `superseded_by` tail)
-    // still appears — and never duplicates a component reachable from
-    // more than one root.
-    let mut ids: Vec<String> = graph.nodes().keys().cloned().collect();
-    ids.sort();
-
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut rendered_any = false;
-    for id in &ids {
-        if seen.contains(id) {
-            continue;
+    let links: BTreeSet<_> = graph
+        .edges()
+        .iter()
+        .filter(|edge| edge.relation == "supersedes")
+        .filter_map(|edge| {
+            edge.target
+                .id()
+                .map(|predecessor| (predecessor, edge.source.as_str()))
+        })
+        .collect();
+    let label = |id: &str| {
+        if graph
+            .node(id)
+            .is_some_and(|node| config.is_terminal(node.status.as_str()))
+        {
+            format!("~~{}~~", inline(id))
+        } else {
+            format!("**{}**", inline(id))
         }
-        let chain = crate::query::traverse::find_chain(graph, id);
-        for entry in &chain {
-            seen.insert(entry.node.id.clone());
-        }
-        if chain.len() < 2 {
-            continue;
-        }
-        // Terminal (superseded) nodes are struck-through, live ones bold.
-        // Terminality is config-driven (`statuses.terminal`), not a fixed
-        // "active" vocabulary — a project that uses "live" or "current"
-        // still renders correctly.
-        let parts: Vec<String> = chain
-            .iter()
-            .map(|c| {
-                if config.is_terminal(&c.node.status) {
-                    format!("~~{}~~", inline(&c.node.id))
-                } else {
-                    format!("**{}**", inline(&c.node.id))
-                }
-            })
-            .collect();
-        writeln!(out, "- {}", parts.join(" → ")).unwrap();
-        rendered_any = true;
+    };
+    for (predecessor, successor) in &links {
+        writeln!(out, "- {} → {}", label(predecessor), label(successor)).unwrap();
     }
-
-    if !rendered_any {
+    if links.is_empty() {
         writeln!(out, "_None_").unwrap();
     }
     writeln!(out).unwrap();
@@ -271,7 +249,7 @@ fn compute_generation_hash(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{inline, render_chains};
+    use super::{inline, render_succession};
     use crate::config::Config;
     use crate::model::{Edge, Graph, GraphMeta, Kind, Node, ResolvedTarget, Status};
     use indexmap::IndexMap;
@@ -336,51 +314,51 @@ mod tests {
         Graph::new(map, edges, vec![], vec![], vec![], GraphMeta::default())
     }
 
-    /// The bullet lines of a rendered "Supersession Chains" section.
-    fn chain_lines(out: &str) -> Vec<&str> {
+    /// The bullet lines of a rendered "Supersession Links" section.
+    fn succession_lines(out: &str) -> Vec<&str> {
         out.lines().filter(|l| l.starts_with("- ")).collect()
     }
 
     #[test]
-    fn chains_render_a_supersedes_only_component_once_with_every_member() {
-        // `x supersedes [a, b]`, authored purely as supersedes edges — no
-        // `superseded_by` tail on a/b. The old tail heuristic found no
-        // start node and silently omitted the whole component; the
-        // component model renders it once, with all three members.
+    fn succession_renders_only_real_links_and_keeps_branches() {
         let g = graph(
-            vec![node("a", None), node("b", None), node("x", None)],
-            vec![supersedes_edge("x", "a"), supersedes_edge("x", "b")],
+            vec![
+                node("a", None),
+                node("b", None),
+                node("x", None),
+                node("y", None),
+            ],
+            vec![
+                supersedes_edge("x", "a"),
+                supersedes_edge("x", "b"),
+                supersedes_edge("y", "x"),
+            ],
         );
         let mut out = String::new();
-        render_chains(&mut out, &g, &Config::default());
-        let lines = chain_lines(&out);
-        assert_eq!(lines.len(), 1, "exactly one component line: {out}");
-        for id in ["a", "b", "x"] {
-            assert!(lines[0].contains(id), "member {id} missing: {out}");
-        }
-        assert!(!out.contains("_None_"));
+        render_succession(&mut out, &g, &Config::default());
+        assert_eq!(
+            succession_lines(&out),
+            ["- **a** → **x**", "- **b** → **x**", "- **x** → **y**"]
+        );
     }
 
     #[test]
-    fn chains_do_not_duplicate_a_multi_root_component() {
-        // Two tails (`a`, `b`) both author `superseded_by: x`. Under the
-        // component model `find_chain` returns the same component from
-        // either, so the report renders it exactly once, not twice.
+    fn succession_deduplicates_the_same_link() {
         let g = graph(
-            vec![node("a", Some("x")), node("b", Some("x")), node("x", None)],
-            vec![supersedes_edge("x", "a"), supersedes_edge("x", "b")],
+            vec![node("a", Some("x")), node("x", None)],
+            vec![supersedes_edge("x", "a"), supersedes_edge("x", "a")],
         );
         let mut out = String::new();
-        render_chains(&mut out, &g, &Config::default());
-        assert_eq!(chain_lines(&out).len(), 1, "no duplicate component: {out}");
+        render_succession(&mut out, &g, &Config::default());
+        assert_eq!(succession_lines(&out), ["- **a** → **x**"]);
     }
 
     #[test]
-    fn chains_render_none_when_no_supersession_exists() {
+    fn succession_renders_none_without_links() {
         let g = graph(vec![node("solo", None)], vec![]);
         let mut out = String::new();
-        render_chains(&mut out, &g, &Config::default());
+        render_succession(&mut out, &g, &Config::default());
         assert!(out.contains("_None_"), "no chains → _None_: {out}");
-        assert!(chain_lines(&out).is_empty());
+        assert!(succession_lines(&out).is_empty());
     }
 }

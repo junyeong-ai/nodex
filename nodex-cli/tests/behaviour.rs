@@ -28,7 +28,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 /// The date every swept command measures against. Fixture dates are
-/// authored around it, so staleness, orphan grace, and trust freshness
+/// authored around it, so staleness and orphan grace
 /// all land on their interesting side.
 const TODAY: &str = "2026-06-15";
 
@@ -49,7 +49,6 @@ const SHARED: &[&[&str]] = &[
     &["query", "components"],
     &["query", "annotations"],
     &["query", "recent", "--days", "365"],
-    &["query", "trust", "--bottom", "5"],
     &["query", "node", "no-such-id"],
     &["export", "schema"],
     &["export", "enums"],

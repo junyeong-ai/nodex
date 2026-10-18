@@ -207,7 +207,7 @@ pub(crate) fn run_recent(
     let config = nodex_core::load_project(context.root)?;
     // Validate inputs BEFORE `load_graph` so an invalid flag surfaces
     // as `CONFIG_ERROR` even when `graph.json` is missing — symmetric
-    // with `run_trust` / `run_similar`. Reject zero on `--days` /
+    // with `run_similar`. Reject zero on `--days` /
     // `--limit` (a zero-day window is degenerate; a zero limit
     // silently empties the listing).
     if args.since.is_none() {

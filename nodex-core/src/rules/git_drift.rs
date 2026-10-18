@@ -229,11 +229,7 @@ impl DriftTarget {
     }
 }
 
-/// The subjects of `node`'s drift: one entry per outgoing edge in a
-/// `detection.git_drift_relations` relation, in graph order. `check` and `query trust` read the
-/// resolution here, so the two readings of drift can never measure
-/// different files — the discipline [`DriftHistory`] already applies to
-/// the repository, applied to the paths inside it.
+/// Resolve outgoing edges selected by `detection.git_drift_relations`.
 ///
 /// `covers` typically points at code paths that live outside the doc
 /// graph, so a target the graph has no node for still resolves. What an
@@ -310,9 +306,7 @@ pub(crate) fn drift_targets(
 ///
 /// Nothing is read until something asks. A project without
 /// `detection.git_drift_threshold` measures no drift and never reaches
-/// git at all; a pass whose rules do not measure it never asks; and
-/// `check` and `query trust` both ask through here, so the two readings
-/// of drift can never land on different repositories.
+/// git at all; a pass whose rules do not measure it never asks.
 pub struct DriftHistory {
     /// The project root, when the project measures drift at all.
     measured: Option<PathBuf>,
@@ -429,12 +423,7 @@ impl DriftHistory {
     /// Commits touching the project's `path` strictly *after* the
     /// `reviewed` date, or `None` when git could not be read. `None` is
     /// "unmeasurable", distinct from `Some(0)` "no drift": callers must
-    /// not conflate absence of a signal with a zero signal — the check
-    /// rule guards the environment through [`crate::rules::preflight`]
-    /// and treats a residual `None` as a skipped edge; the trust query
-    /// has no such guard and drops the whole drift component on `None`,
-    /// the same way `backlinks` drops an absent signal rather than
-    /// fabricating maximum trust from it.
+    /// not conflate an unavailable measurement with zero drift.
     ///
     /// The boundary is the day after `reviewed`, not `reviewed` itself: a
     /// review records that the doc was current as of that day, so the
@@ -627,8 +616,7 @@ mod tests {
 
     #[test]
     fn rule_skips_absolute_raw_target_without_probing_disk() {
-        // The check rule shares the trust query's probe discipline
-        // (symmetric guards): an absolute authored target carries no
+        // An absolute authored target carries no
         // in-root resolution candidates, so the edge is skipped — its
         // commits are never counted, even when the absolute path names
         // a real, heavily-committed file.

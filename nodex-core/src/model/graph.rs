@@ -170,8 +170,7 @@ impl Graph {
 
     /// Edges pointing to `id`. Includes self-loops (a doc that
     /// references itself surfaces here) — callers that measure
-    /// *external attention* (orphan detection, backlinks query, trust
-    /// score) should use [`Self::external_incoming_edges`] instead,
+    /// *external attention* (orphan detection and backlinks queries) should use [`Self::external_incoming_edges`] instead,
     /// which filters self-loops out. Honest graph-structure callers
     /// (node detail, diff, component analysis) use this method.
     pub fn incoming_edges(&self, id: &str) -> Vec<&Edge> {

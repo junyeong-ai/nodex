@@ -100,13 +100,7 @@ pub enum WarningCode {
     /// share is that a report is narrower than it reads, and only the message
     /// can say where the narrowing happened.
     BaselineInert,
-    /// Candidates were excluded from a ranking because they carry no score to
-    /// rank by: a target carrying no positively-weighted signal, which ranks
-    /// nothing (`query similar`), or no composite over a complete basis — a
-    /// positively-weighted component the run can measure and the document
-    /// declares no input for, or none of them present at all (`query trust
-    /// --top` / `--bottom`). Counted, never silently dropped — an absent
-    /// score must never read as a zero one.
+    /// The similarity target carries no positively-weighted signal.
     RankingUnscored,
     /// An edit did not land the way the command meant it to, in one of two
     /// shapes that read very differently.
@@ -216,7 +210,6 @@ pub enum WarningDetails {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RankingExclusion {
-    IncompleteBasis,
     TargetWithoutSignals,
 }
 

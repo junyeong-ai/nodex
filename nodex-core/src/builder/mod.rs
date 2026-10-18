@@ -185,7 +185,7 @@ pub fn build_of_ref(root: &Path, checkout: &Path, config: &Config) -> Result<Bui
 /// determine graph content — [`parser::ParseConfig`] (parse surface)
 /// and [`scanner::ScanConfig`] (membership surface). Config that only
 /// steers validation or query ranking never perturbs it, so retuning
-/// `trust` / `similarity` / `detection` / `schema` can never flag a
+/// `similarity` / `detection` / `schema` can never flag a
 /// snapshot stale. The version salt mirrors the cache policy: a binary
 /// upgrade marks existing snapshots for one rebuild.
 pub fn graph_config_hash(config: &Config) -> String {
@@ -2369,14 +2369,14 @@ mod tests {
 
     #[test]
     fn graph_config_hash_ignores_check_only_config_and_tracks_membership() {
-        // Check-only tuning (trust / detection / schema) never perturbs
+        // Check-only tuning (similarity / detection / schema) never perturbs
         // the hash — a snapshot must not read stale for config the
         // graph's content never consumed. Membership surface (scope)
         // always does. `statuses.terminal` participates only when a
         // conditional_exclude rule exists to consult it.
         let baseline = Config::default();
         let mut tuned = Config::default();
-        tuned.trust.weights.status = 0.9;
+        tuned.search.weights.title_exact = 0.9;
         tuned.detection.stale_days = Some(7);
         tuned.schema.required = vec!["created".into()];
         assert_eq!(graph_config_hash(&baseline), graph_config_hash(&tuned));
@@ -2543,7 +2543,7 @@ mod tests {
     #[test]
     fn config_hash_ignores_parse_irrelevant_config() {
         // The cache stores per-document *parse* output. Config that only
-        // steers query ranking or validation — trust / similarity /
+        // steers query ranking or validation — similarity /
         // detection weights and thresholds — never changes a parsed
         // node, so tuning it must NOT invalidate the whole cache. This
         // is the precision the hand-rolled hash lacked: it folded every
@@ -2551,7 +2551,7 @@ mod tests {
         // tweak.
         let baseline = Config::default();
         let mut tuned = Config::default();
-        tuned.trust.weights.status = 0.9;
+        tuned.search.weights.title_exact = 0.9;
         tuned.similarity.default_limit = 99;
         tuned.detection.stale_days = Some(7);
 

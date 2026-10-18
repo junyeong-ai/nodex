@@ -160,9 +160,7 @@ pub struct InitResult {
     pub path: String,
 }
 
-/// `report` result. Lists the artefacts the run produced (e.g.
-/// `["graph.json", "GRAPH.md"]`) and the directory they were written
-/// into.
+/// The generated Markdown report and its output directory.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReportResult {
     pub generated: Vec<String>,
