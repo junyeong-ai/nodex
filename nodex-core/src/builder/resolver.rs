@@ -502,42 +502,6 @@ pub(crate) fn first_candidate_on_disk(
         .map(PathBuf::from)
 }
 
-/// Whether on-disk content exists at exactly `rel` (a normalised
-/// root-relative path) under `root`, matching each path component
-/// **case-sensitively**. The final component must resolve to a file —
-/// or, with `admit_dirs`, a file or directory (symlinks are followed
-/// there, consistent with the scanner).
-///
-/// `Path::is_file` follows the filesystem's case-folding, so on a
-/// case-insensitive volume (APFS, Windows) a broken link whose spelling
-/// differs only in letter case from a real file would be misread as
-/// "exists on disk" — mislabelled `ExcludedFromScope` by the cause
-/// classifier, or measured for drift against a file the build never
-/// bound. The build's path index is case-sensitive, so the disk probe
-/// must be too: walk from `root`, and at each level require a directory
-/// entry whose name matches the component exactly.
-pub(crate) fn exists_case_sensitive(root: &Path, rel: &Path, admit_dirs: bool) -> bool {
-    use std::path::Component;
-    let mut current = root.to_path_buf();
-    let mut components = rel.components().peekable();
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return false; // `rel` is normalised: only Normal components occur
-        };
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            return false;
-        };
-        if !entries.flatten().any(|e| e.file_name() == name) {
-            return false;
-        }
-        current.push(name);
-        if components.peek().is_none() {
-            return current.is_file() || (admit_dirs && current.is_dir());
-        }
-    }
-    false
-}
-
 /// Whether a reference `raw`, written from `source_dir`, resolves to
 /// `target_path` (project-root-relative, forward-slashed) under the same
 /// candidate ladder the resolver uses — literal first, then resolved
