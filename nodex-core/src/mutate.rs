@@ -542,21 +542,9 @@ impl BaselineProbe {
     /// promise, not `this particular edit added nothing new`. Clearing the
     /// refusal means fixing the drift or superseding the record.
     ///
-    /// Scope is the rules a prior state exists to feed — those whose
-    /// `Rule::diff_aware` is true, read against the baseline, and those whose
-    /// `Rule::judges_steps` is true, read as the step the write would commit
-    /// onto the heads. It has to be all of them: a seam that *transforms*
-    /// documents already on disk passes [`ProposalDiff::Inert`] to
-    /// [`introduced`], so this is the only place either family gets a say
-    /// about such a write.
-    ///
-    /// The absolute reading is a **lock's** promise, though, not every
-    /// diff-aware rule's. A rule that judges a *change* rather than freezing
-    /// a part has no claim on a drift the proposal did not cause, so for
-    /// those the verdict is the delta this write introduces over the project
-    /// as it stands — the attribution every other proposal gate uses. Only
-    /// a lock refuses on the state alone, and only a lock's refusal carries
-    /// the remedy that belongs to one.
+    /// Prior-state rules share the bound baseline and commit-step history with
+    /// `introduced`. Locks refuse absolute drift here; other findings refuse
+    /// only the delta a proposal introduces.
     ///
     /// A rewrite of a document the proposed project does not contain — a
     /// `conditional_exclude` can evict one a batch still has to repoint — is
@@ -1253,18 +1241,9 @@ pub fn stage_plan(root: &Path, plan: &Planned) -> Result<path_guard::Staged> {
 /// legitimately differs between write seams, named so the choice is
 /// visible at every call site rather than inlined as an `Option`.
 pub enum ProposalDiff {
-    /// The diff-aware rules stay inert, exactly as they are in a `check`
-    /// this project runs with no baseline. The seams that *transform*
-    /// documents already on disk (`rename`, `retarget`, `lifecycle`) take
-    /// this: their immutability verdict is the baseline-relative one
-    /// [`BaselineProbe::refusals`] gives against the ref
-    /// `rules.immutable_baseline` names, and a second, working-tree-relative
-    /// opinion would refuse a write on a rule the same project's `check`
-    /// reports as skipped.
-    Inert,
-    /// Authored content compares against the working tree when no baseline
-    /// is configured. With a configured baseline, `BaselineProbe` owns locks
-    /// and this pass checks ordinary introduced errors.
+    /// Use only the configured baseline and the bound commit-step history.
+    Configured,
+    /// With no configured baseline, compare authored bytes against the working tree.
     OverWorkingTree,
 }
 
@@ -1389,16 +1368,20 @@ pub fn introduced(
     before: &crate::model::Graph,
     proposal: &[(PathBuf, Proposed)],
     diff: ProposalDiff,
+    probe: &BaselineProbe,
     today: chrono::NaiveDate,
 ) -> Result<Introduced> {
     let after = crate::builder::build_with_overlay(root, config, proposal)?;
-    let since = match diff {
-        ProposalDiff::Inert => None,
-        ProposalDiff::OverWorkingTree if config.rules.immutable_baseline.is_none() => {
-            Some(crate::diff::compute_diff(before, &after.graph))
-        }
-        ProposalDiff::OverWorkingTree => None,
-    };
+    let working =
+        matches!(diff, ProposalDiff::OverWorkingTree) && config.rules.immutable_baseline.is_none();
+    let since = probe
+        .diff(&after.graph)
+        .or_else(|| working.then(|| crate::diff::compute_diff(before, &after.graph)));
+    let standing = probe
+        .diff(before)
+        .or_else(|| working.then(|| crate::diff::compute_diff(before, before)));
+    let after_steps = probe.steps(&after.graph);
+    let before_steps = probe.steps(before);
     // One reading of git for both passes: the proposal is unwritten
     // bytes, and no unwritten byte is a commit.
     let history = crate::rules::git_drift::DriftHistory::of(config, root);
@@ -1414,7 +1397,7 @@ pub fn introduced(
                 since
                     .as_ref()
                     .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
-                None,
+                after_steps.as_deref(),
                 today,
             )
             .violations,
@@ -1424,8 +1407,10 @@ pub fn introduced(
                 config,
                 ProjectFiles::working_tree(root),
                 &history,
-                crate::rules::Since::None,
-                None,
+                standing
+                    .as_ref()
+                    .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
+                before_steps.as_deref(),
                 today,
             )
             .violations,

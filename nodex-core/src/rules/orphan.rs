@@ -195,7 +195,7 @@ mod tests {
                 doc("linker", "generic"),
             ],
             vec![Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "linker".into(),
                 target: ResolvedTarget::resolved("linked"),
                 relation: "references".into(),
@@ -230,7 +230,7 @@ mod tests {
         let today = crate::test_today();
         let config = Config::default();
         let successor_edge = || Edge {
-            reference: None,
+            references: Vec::new(),
             source: "new".into(),
             target: ResolvedTarget::resolved("old"),
             relation: "supersedes".into(),
@@ -300,7 +300,7 @@ mod tests {
                 doc("standing", "generic"),
             ],
             vec![Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "hub".into(),
                 target: ResolvedTarget::resolved("leaf"),
                 relation: "references".into(),

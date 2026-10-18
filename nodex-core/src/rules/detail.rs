@@ -460,6 +460,9 @@ pub enum ViolationDetails {
         /// read from — a line number moves when text above it does.
         location: Evidence<String>,
         cause: UnresolvedCause,
+        /// Location and lock evidence do not change the unresolved relation.
+        sources: Evidence<Vec<crate::model::ReferenceSource>>,
+        source_protection: Evidence<crate::model::ReferenceProtection>,
     },
     /// A live document cites `target`, a retired document whose lineage
     /// continues in a live one.
@@ -473,6 +476,8 @@ pub enum ViolationDetails {
         /// successor not retired — sorted. Evidence: a lineage moving past
         /// them moves where the citation belongs, not whether it is stale.
         current: Evidence<Vec<String>>,
+        /// Authored source evidence does not change the cited relation.
+        sources: Evidence<Vec<crate::model::ReferenceSource>>,
     },
 }
 
@@ -843,6 +848,7 @@ impl ViolationDetails {
                 raw_target,
                 location,
                 cause,
+                ..
             } => format!(
                 "{relation} reference {raw_target:?} ({location}) does not resolve: {cause}"
             ),
@@ -851,6 +857,7 @@ impl ViolationDetails {
                 target,
                 location,
                 current,
+                ..
             } => format!(
                 "{relation} reference {target:?} ({location}) names a retired document another \
                  supersedes; cite {} instead",
@@ -1016,6 +1023,8 @@ mod tests {
                 raw_target: "nope.md".to_string(),
                 location: Evidence("L1".to_string()),
                 cause: crate::UnresolvedCause::Missing,
+                sources: Evidence(Vec::new()),
+                source_protection: Evidence(crate::model::ReferenceProtection::Unknown),
             },
         ]
     }

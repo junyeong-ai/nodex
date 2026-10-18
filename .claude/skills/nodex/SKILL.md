@@ -6,7 +6,7 @@ description: >-
   guarded lifecycle or reference changes, and machine-readable CLI exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.58.0
+  version: 0.59.0
 ---
 
 # nodex
@@ -69,6 +69,10 @@ Read the [write gate](reference/commands.md#check) and the relevant command befo
 mutating. `check --content` validates proposed bytes in one combined graph;
 `SOURCE` is stdin (`-`) or a file relative to the invoking directory. A clean
 verdict does not certify explicit metadata unless the schema requires it.
+
+For reference findings, inspect `details.sources` (`sources` on unresolved listings)
+before proposing an edit; protection constrains modification and does not prove
+historical target validity. See [source protection](reference/config.md#unresolved-reference-policy).
 
 Use `scaffold`, `rename`, `retarget` and `lifecycle` for guarded graph changes.
 Classification globs do not choose creation paths; scaffold needs `--path` or a

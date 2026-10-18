@@ -405,6 +405,7 @@ pub fn scaffold(
             crate::builder::scanner::Proposed::Content(content.clone()),
         )],
         crate::mutate::ProposalDiff::OverWorkingTree,
+        probe,
         today,
     )?;
 

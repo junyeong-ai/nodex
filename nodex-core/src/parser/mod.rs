@@ -346,7 +346,9 @@ pub(crate) fn parse_with_patterns(
             syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "supersedes".to_string(),
-            location: "frontmatter:supersedes".to_string(),
+            location: crate::model::ReferenceLocation::Frontmatter {
+                field: "supersedes".into(),
+            },
         });
     }
     for target in &node.implements {
@@ -354,7 +356,9 @@ pub(crate) fn parse_with_patterns(
             syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "implements".to_string(),
-            location: "frontmatter:implements".to_string(),
+            location: crate::model::ReferenceLocation::Frontmatter {
+                field: "implements".into(),
+            },
         });
     }
     for target in &node.related {
@@ -362,7 +366,9 @@ pub(crate) fn parse_with_patterns(
             syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "related".to_string(),
-            location: "frontmatter:related".to_string(),
+            location: crate::model::ReferenceLocation::Frontmatter {
+                field: "related".into(),
+            },
         });
     }
     for relation in &config.parser.frontmatter_relations {
@@ -371,7 +377,9 @@ pub(crate) fn parse_with_patterns(
                 syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
                 target_path: target.clone(),
                 relation: relation.relation().to_string(),
-                location: format!("frontmatter:{}", relation.field),
+                location: crate::model::ReferenceLocation::Frontmatter {
+                    field: relation.field.clone(),
+                },
             });
         }
     }
@@ -384,7 +392,9 @@ pub(crate) fn parse_with_patterns(
             syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
             target_path: target.clone(),
             relation: "covers".to_string(),
-            location: "frontmatter:covers".to_string(),
+            location: crate::model::ReferenceLocation::Frontmatter {
+                field: "covers".into(),
+            },
         });
     }
 

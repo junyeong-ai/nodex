@@ -319,7 +319,7 @@ orphan_grace_days = 14
 # under the policy row's name. Unmatched references use the registered
 # `unresolved_reference` rule; this starter promotes it to error.
 #
-# Two optional axes narrow a row. `relations` picks which relation the
+# Three optional axes narrow a row. `relations` picks which relation the
 # edge carries (omitted = every one) — the axis that tells a structural
 # edge from a prose citation when both name the same dead id, and the
 # only place `superseded_by` is nameable, since a resolved successor
@@ -328,7 +328,9 @@ orphan_grace_days = 14
 # normalized root-relative candidates for a document reference, so
 # `../docs/x.md` written from `designs/a.md` matches `docs/**`. It is
 # refused at load on `escapes_source` / `absolute`, which are refused
-# before anything is looked up.
+# before anything is looked up. `source_protection` selects protected,
+# unprotected or unknown sources; omitted matches every state. Protection
+# follows the evaluated locks and does not establish historical validity.
 #
 # A row the earlier rows already claim is refused at load — first match
 # wins, so it could never fire, and an error row that never fires
