@@ -107,6 +107,22 @@ exit: 0
         ],
         "source": "guide-overview",
         "source_path": "docs/overview.md",
+        "source_protection": "unprotected",
+        "sources": [
+          {
+            "protection": "unprotected",
+            "reference": {
+              "location": {
+                "field": "covers",
+                "type": "frontmatter"
+              },
+              "source": "guide-overview",
+              "syntax": "frontmatter",
+              "target": "nodex.toml"
+            },
+            "rules": []
+          }
+        ],
         "syntax": "frontmatter"
       }
     ],

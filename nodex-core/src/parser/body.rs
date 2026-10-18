@@ -91,16 +91,34 @@ pub(crate) fn extract_links_prepared(
     // no destination to rewrite, only its own text, so binding it claimed
     // an edge `rename` could never follow and reported success leaving it
     // behind.
-    for (event, range) in Parser::new_ext(body, Options::empty()).into_offset_iter() {
+    let mut events = Parser::new_ext(body, Options::empty()).into_offset_iter();
+    while let Some((event, range)) = events.next() {
         if let Event::Start(Tag::Link {
             link_type,
             dest_url,
+            id,
             ..
         }) = &event
             && !matches!(link_type, LinkType::Autolink | LinkType::Email)
             && let Some(raw_edge) = process_link_target(
                 dest_url,
-                line_for_offset(&line_offsets, range.start),
+                crate::model::ReferenceLocation::Body {
+                    start_line: line_for_offset(&line_offsets, range.start),
+                    end_line: line_for_offset(
+                        &line_offsets,
+                        events
+                            .reference_definitions()
+                            .get(id)
+                            .filter(|_| {
+                                matches!(
+                                    link_type,
+                                    LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut
+                                )
+                            })
+                            .map_or(range.end, |definition| range.end.max(definition.span.end))
+                            .saturating_sub(1),
+                    ),
+                },
                 &config.extensions,
             )
         {
@@ -144,7 +162,10 @@ pub(crate) fn extract_links_prepared(
                         syntax,
                         target_path: body[start..end].to_string(),
                         relation: relation.to_string(),
-                        location: format!("L{}", idx + 1),
+                        location: crate::model::ReferenceLocation::Body {
+                            start_line: idx + 1,
+                            end_line: idx + 1,
+                        },
                     },
                 ));
             };
@@ -173,7 +194,7 @@ pub(crate) fn extract_links_prepared(
             if !code_spans {
                 continue;
             }
-            for (start, end) in protected.citations(body, regex) {
+            for (start, end, context_end) in protected.citation_spans(body, regex) {
                 let target = body[start..end].trim();
                 if target.is_empty() {
                     continue;
@@ -184,7 +205,10 @@ pub(crate) fn extract_links_prepared(
                         syntax: crate::model::edge::ReferenceSyntax::Pattern,
                         target_path: target.to_string(),
                         relation: relation.to_string(),
-                        location: format!("L{}", line_for_offset(&line_offsets, start)),
+                        location: crate::model::ReferenceLocation::Body {
+                            start_line: line_for_offset(&line_offsets, start),
+                            end_line: line_for_offset(&line_offsets, context_end.saturating_sub(1)),
+                        },
                     },
                 ));
             }
@@ -473,7 +497,11 @@ fn read_markdown(content: &str) -> MarkdownReading {
     reading
 }
 
-fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Option<RawEdge> {
+fn process_link_target(
+    dest: &str,
+    location: crate::model::ReferenceLocation,
+    extensions: &[String],
+) -> Option<RawEdge> {
     let path = super::destination::LocalDestination::parse(dest)?.path;
     if !extensions.iter().any(|ext| path.ends_with(ext)) {
         return None;
@@ -482,7 +510,7 @@ fn process_link_target(dest: &str, line_num: usize, extensions: &[String]) -> Op
         syntax: crate::model::edge::ReferenceSyntax::Markdown,
         target_path: path,
         relation: "references".to_string(),
-        location: format!("L{line_num}"),
+        location,
     })
 }
 
@@ -851,6 +879,13 @@ impl ProtectedSurfaces {
     /// its line. A match that leaves any of the span unexplained means the
     /// span is sample code (`just adr-tool`), not a citation.
     pub(crate) fn citations(&self, content: &str, re: &regex::Regex) -> Vec<(usize, usize)> {
+        self.citation_spans(content, re)
+            .into_iter()
+            .map(|(start, end, _)| (start, end))
+            .collect()
+    }
+
+    fn citation_spans(&self, content: &str, re: &regex::Regex) -> Vec<(usize, usize, usize)> {
         self.spans
             .iter()
             .filter(|span| {
@@ -865,7 +900,7 @@ impl ProtectedSurfaces {
                 let caps = re.captures(text)?;
                 let (whole, capture) = (caps.get(0)?, caps.get(1)?);
                 (whole.as_str() == text.trim())
-                    .then(|| (from + capture.start(), from + capture.end()))
+                    .then(|| (from + capture.start(), from + capture.end(), span.end))
             })
             .collect()
     }

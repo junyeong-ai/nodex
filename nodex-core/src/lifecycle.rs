@@ -76,7 +76,7 @@ pub fn check_supersede_safe(graph: &Graph, old_id: &str, new_id: &str) -> Result
     graph.require_node(new_id)?;
     let mut edges: Vec<Edge> = graph.edges().to_vec();
     edges.push(Edge {
-        reference: None,
+        references: Vec::new(),
         source: new_id.to_string(),
         target: ResolvedTarget::resolved(old_id),
         relation: "supersedes".to_string(),
@@ -172,7 +172,8 @@ pub fn transition(
         config,
         before,
         &proposal,
-        crate::mutate::ProposalDiff::Inert,
+        crate::mutate::ProposalDiff::Configured,
+        probe,
         today,
     )?;
     if let Some(refusal) = introduced.refusal(format!("lifecycle {action_name}")) {

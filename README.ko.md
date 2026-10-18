@@ -11,11 +11,9 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 
 ---
 
-## 0.58로 갱신
+## 0.59로 갱신
 
-`[trust]`와 `[[trust.overrides]]`를 제거합니다. 유지관리 관련 검사 결과는 `query issues`와 `check`로 확인합니다. 유사도 가중치는 `title`, `tags`, `linked`만 사용합니다. `query similar`의 `--kind`, `--status`, `--parent-dir`는 후보 필터이며 `--tags`는 `--title`과 함께 사용합니다. 실제 겹침이 있는 후보만 반환합니다. `report`는 `GRAPH.md`를 생성합니다. JSON은 `build`로 생성하고 `--format` 인자는 제거합니다.
-
-다른 종류의 결정·학습 문서도 찾으려면 `--kind`를 생략합니다. 갱신 후 `nodex build`를 실행하고 응답 스키마에서 생성한 클라이언트가 있다면 다시 생성합니다.
+기존 스냅샷은 `nodex build --full`로 다시 빌드하고 `nodex export envelope-schema`로 클라이언트를 다시 생성합니다. 엣지의 출처는 이제 `references` 배열이며 참조 위치는 `body` 또는 `frontmatter`로 구분한 객체입니다. 미해결 참조 조회와 참조 진단은 원본의 잠금 근거를 제공합니다. 정책 row에서 `source_protection`을 선택하지 않으면 기존 미해결 참조의 심각도는 유지됩니다.
 
 ## 목차
 
@@ -358,7 +356,7 @@ Markdown 목적지는 URI 경로·query·fragment를 분리한 뒤 경로만 디
 
 ### 조회와 정책 계약
 
-Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석한다. Wikilink와 설정된 패턴은 그래프 조회 규칙을 사용한다. 엣지의 `reference`는 source·syntax·디코딩된 target·location을 보존하고, 미해결 참조 조회는 실제로 찾은 이름도 제공한다. 사용자 frontmatter 속성은 속성으로 유지하며 명시된 관계 필드만 엣지를 만든다.
+Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석한다. Wikilink와 설정된 패턴은 그래프 조회 규칙을 사용한다. 엣지의 `references` 배열은 하나의 논리적 관계를 작성한 모든 위치의 source·syntax·디코딩된 target·location을 보존한다. 본문 위치는 본문 기준 1부터 시작하는 `start_line`과 끝을 포함하는 `end_line`이며, 참조를 결정하는 정의나 코드 span도 포함한다. 프런트매터 위치는 작성한 `field`를 담는다. 미해결 참조 조회는 실제로 찾은 이름도 제공한다. 조회의 `sources`와 참조 진단의 `details.sources`는 각 위치의 보호 여부와 잠금 규칙 ID를 제공한다. 미해결 엣지의 `source_protection`은 모든 위치가 보호되면 `protected`, 하나라도 보호되지 않으면 `unprotected`, 나머지는 `unknown`이다. 보호 여부는 대상이 과거에 유효했다는 증거가 아니며, 보호되지 않았다는 사실이 편집을 허용하지도 않는다. 제안한 바이트는 `check --content`로 검사한다. 사용자 frontmatter 속성은 속성으로 유지하며 명시된 관계 필드만 엣지를 만든다.
 
 기본 추론 id는 `{kind}-{path_slug}`로 반복 파일명을 구분한다. 이전 기본 id를 유지하려면 업그레이드 전에 이전 바이너리의 `migrate --apply`로 id를 명시하거나 `template = "{kind}-{stem}"`을 설정한다. 재빌드만으로 이전 추론 id를 유지하지는 않는다. 명시적 id와 설정된 템플릿이 우선한다. `scaffold --force`는 `--id`로 명시적으로 바꾸지 않는 한 기존 id를 유지한다.
 
@@ -624,7 +622,7 @@ spec = "specs/{slug}/spec.md"
 | `unique_numbering` | error | `unique = true` 인 `[[rules.naming]]` 블록에 매치하는 파일이 같은 선두 번호 공유 안 함 |
 | `stale_review` | warning | `reviewed` 날짜가 `stale_days` 일 이상 지난 active 노드. `reviewed` 부재는 `unjudged`로 보고하며 `query nodes --missing reviewed`로 조회. 부재를 오류로 처리하려면 required로 설정. `stale_days` 를 설정했을 때만 등록 |
 | `orphan` | warning | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — 들어오는 참조도, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것 — `orphan_ok_kinds`, 노드별 `orphan_ok`, `orphan_grace_days` 로 면제되지 않은 것 |
-| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_relations`에 든 관계, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 블록이 기준 시점에 이미 무장한 `frontmatter_immutable` / `body_immutable` 잠금 부분의 인용은 검사 대상에서 빠지며, baseline 이 없으면 잠금이 잡을 수 있는 부분의 인용을 `unjudged` 로 셈 |
+| `superseded_reference` | warning | `supersedes` 계보가 live 문서로 이어지는 terminal 노드를 인용하는 live 노드. 계보가 이어지는 문서를 `details.current` 로 알려줌. 대체한 계보가 이전 문서를 인용한 것과, 계보가 terminal 노드로 끝나는 terminal 노드(archived, deprecated)의 인용은 검사하되 통과. `supersedes` 관계 자체, `[detection].superseded_reference_ok_relations`에 든 관계, `[detection].superseded_reference_ok_kinds` 에 든 kind 의 문서, `[detection].superseded_reference_ok_annotation` 이 가리키는 `[[annotations]]` 블록의 표지로 인용 문서가 이름을 적은 대상(대상 id 를 키로 하므로 그 문서 본문에 있는 그 대상 인용 전부이고, 그 대상을 향한 프런트매터 관계는 계속 검사), 보호된 작성 위치는 검사 대상에서 빠진다. 면제되지 않은 위치 중 하나라도 보호되지 않으면 논리적 엣지는 계속 검사한다. 보호되지 않은 위치 없이 보호 여부가 unknown인 위치가 있으면 `unjudged`로 센다. 추가한 참조 정의가 완성한 링크를 포함해 새로 덧붙인 인용은 기존 본문의 보호를 물려받지 않는다 |
 | `git_drift` | warning | 참조 타깃 — 링크된 문서와 `covers` 코드 경로 (파일 또는 디렉토리 전체) — 에 `reviewed` 이후 `git_drift_threshold` 를 넘는 커밋이 쌓였는지 (opt-in). 세는 단위는 `reviewed` 다음 날 이후 그 타깃에 변경을 *도입한* 커밋: `git log -- <path>` 의 기본 단순화 뷰가 아니라 전체 히스토리이며, 머지는 모든 부모와 다를 때만 셈. 작업 트리나 index 를 검사하는 `check` 는 걸은 히스토리를 걸은 커밋을 키로 `_index/history.json` 에 보관하고, 다음 명령은 그 뒤 커밋만 걷는다. `HEAD` 가 보관된 커밋에 닿지 않거나 git 이 히스토리를 제자리에서 바꿀 수 있는 저장소(얕은 클론, graft, replace ref)에서는 전체를 다시 걷는다 |
 | `frontmatter_immutable/<name>` | error | `[[rules.frontmatter_immutable]]` 블록당 1개 — 블록의 `trigger` 가 기준 시점에 이미 무장한 문서의 locked 필드 변경 (diff-aware: `--since` 또는 `rules.immutable_baseline` 필요) |
 | `body_immutable/<name>` | error | `[[rules.body_immutable]]` 블록당 1개 — 블록의 `trigger` 가 발동된 뒤의 body 편집 (`terminal`: 이미 terminal 이던 문서; `status`: 블록이 지정한 status 중 하나였던 문서; `creation`: 이전 커밋 스냅샷 존재); `mode = "frozen"` 은 어떤 변경도 거부, `mode = "append_only"` 는 locked body 가 새 body 의 prefix 여야 하며 `append_section` 은 그 증가를 본문을 닫는 절 하나로 한정 (diff-aware) |
@@ -767,7 +765,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.58, <0.59"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.59, <0.60"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -958,7 +956,7 @@ orphan_grace_days = 14
 # git_drift_relations = ["references", "implements", "covers"]
 # unresolved reference 의 순서 기반 first-match 분류 —
 # "error"와 "warning"은 `unresolved_reference/<name>` rule 등록,
-# "info"는 finding total 밖에서 보고. row 는 세 축으로 좁히며 `cause` 만 필수다: `cause` 는 missing |
+# "info"는 finding total 밖에서 보고. row 는 네 축으로 좁히며 `cause` 만 필수다: `cause` 는 missing |
 # target_unparsed | excluded_from_scope | id_not_found | escapes_source |
 # absolute 중 하나, `relations` 는 엣지가 지닐 수 있는 relation 으로 좁히고
 # (생략하면 전부, `superseded_by` 는 unresolved 엣지만 지니는 유일한
@@ -967,7 +965,9 @@ orphan_grace_days = 14
 # resolution candidates, raw target 은 결코 아니다. 조회 전에 거부되는
 # `escapes_source` / `absolute` 에서는 glob 이 load 에서 거부된다. 앞선 row 가
 # 이미 포괄하는 row 도 load 에서 거부된다 — first match wins 라 결코 발화할 수
-# 없다. 좁은 row 를 넓은 row 앞에 선언할 것. 테이블을 선언하면 기본 row
+# 없다. 좁은 row 를 넓은 row 앞에 선언할 것. `source_protection` 은 선택적으로
+# protected | unprotected | unknown 을 고른다. 보호 여부는 평가한 잠금의 사실이며
+# 과거 대상의 유효성을 뜻하지 않는다. 테이블을 선언하면 기본 row
 # {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} 가 대체됨 — 유지하려면 다시 선언.
 # [[detection.unresolved_policy]]
@@ -1127,7 +1127,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.58, <0.59" build
+nodex --check-version ">=0.59, <0.60" build
 ```
 
 ---

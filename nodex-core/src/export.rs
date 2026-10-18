@@ -2044,6 +2044,7 @@ mod tests {
             cause: crate::model::UnresolvedCause::Missing,
             relations: vec!["references".into()],
             glob: Some("docs/**".into()),
+            source_protection: None,
             severity: crate::config::UnresolvedSeverity::Error,
         }];
         let m = export_rules(&c);

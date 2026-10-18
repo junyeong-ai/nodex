@@ -520,16 +520,29 @@ fn resolve_content_target(
     let steps = probe.steps(&after);
     let history = DriftHistory::of(config, root);
     let before_steps = probe.steps(&before);
+    let before_diff = if config.rules.immutable_baseline.is_some() {
+        probe.diff(&before)
+    } else {
+        Some(nodex_core::diff::compute_diff(&before, &before))
+    };
+    let lock_ids: BTreeSet<_> = nodex_core::rules::registered_rules(config)
+        .into_iter()
+        .filter(|rule| rule.is_lock())
+        .map(|rule| rule.id().to_string())
+        .collect();
     let baseline = check(
         &before,
         config,
         nodex_core::builder::scanner::ProjectFiles::working_tree(root),
         &history,
-        Since::None,
+        before_diff.as_ref().map_or(Since::None, Since::Baseline),
         before_steps.as_deref(),
         today,
     )
-    .violations;
+    .violations
+    .into_iter()
+    .filter(|violation| !lock_ids.contains(&violation.rule_id))
+    .collect();
     Ok(CheckTarget {
         graph: after,
         baseline_violations: Some(baseline),

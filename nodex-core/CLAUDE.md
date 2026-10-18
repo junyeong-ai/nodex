@@ -251,6 +251,7 @@ safety: `src/git.rs` rustdoc.
   drift, orphan and superseded-reference exempt retired subjects; backlinks,
   unresolved-reference and cycles still read their edges. A live record cited
   only by a terminal one remains referenced.
+- `rules::reference_protection` shares source-lock evidence between unresolved and superseded reference judgments. Edge `references` retain authored locations independently of logical relation deduplication; protection reads baseline and uncommitted-step priors, never historical target existence.
 - Shared detectors (`find_stale_past`, `find_orphans`, `find_unresolved_edges`)
   supply both listings and rule reach. `find_stale` returns None for an undeclared
   horizon: stale query warns `threshold_undeclared`, report says untracked, and

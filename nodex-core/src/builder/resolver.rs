@@ -74,16 +74,16 @@ pub fn resolve_edges(
                 extensions,
             );
             Edge {
-                reference: Some(crate::model::edge::Reference {
+                references: vec![crate::model::edge::Reference {
                     source: source.to_string(),
                     syntax: raw.syntax,
                     target: raw.target_path,
                     location: raw.location.clone(),
-                }),
+                }],
                 source: source.to_string(),
                 target,
                 relation: raw.relation,
-                location: raw.location,
+                location: raw.location.to_string(),
             }
         })
         .collect()
@@ -680,7 +680,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "docs/guides/auth.md".to_string(),
                 relation: "references".to_string(),
-                location: "L5".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 5,
+                    end_line: 5,
+                },
             }],
             Path::new("docs/decisions/0001-auth.md"),
             &bindings,
@@ -706,7 +709,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "auth.md".to_string(),
                 relation: "references".to_string(),
-                location: "L3".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 3,
+                    end_line: 3,
+                },
             }],
             Path::new("docs/guides/index.md"),
             &bindings,
@@ -735,7 +741,9 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "adr-001".to_string(),
                 relation: "supersedes".to_string(),
-                location: "frontmatter:supersedes".to_string(),
+                location: crate::model::ReferenceLocation::Frontmatter {
+                    field: "supersedes".into(),
+                },
             }],
             Path::new("docs/decisions/0002.md"),
             &bindings,
@@ -761,7 +769,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "nonexistent.md".to_string(),
                 relation: "references".to_string(),
-                location: "L1".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 1,
+                    end_line: 1,
+                },
             }],
             Path::new("test.md"),
             &bindings,
@@ -790,7 +801,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "../guides/setup.md".to_string(),
                 relation: "references".to_string(),
-                location: "L5".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 5,
+                    end_line: 5,
+                },
             }],
             Path::new("docs/decisions/0001-auth.md"),
             &bindings,
@@ -816,7 +830,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "../../../../escape.md".to_string(),
                 relation: "references".to_string(),
-                location: "L1".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 1,
+                    end_line: 1,
+                },
             }],
             Path::new("docs/decisions/0001.md"),
             &bindings,
@@ -847,7 +864,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: "/etc/passwd.md".to_string(),
                 relation: "references".to_string(),
-                location: "L1".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 1,
+                    end_line: 1,
+                },
             }],
             Path::new("docs/x.md"),
             &bindings,
@@ -880,7 +900,10 @@ mod tests {
                 syntax: crate::model::edge::ReferenceSyntax::Pattern,
                 target_path: target.to_string(),
                 relation: relation.to_string(),
-                location: "L1".to_string(),
+                location: crate::model::ReferenceLocation::Body {
+                    start_line: 1,
+                    end_line: 1,
+                },
             }],
             Path::new(source),
             &bindings,

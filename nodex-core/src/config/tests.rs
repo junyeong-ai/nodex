@@ -2329,8 +2329,72 @@ fn policy_row_for(
         cause,
         relations: relations.iter().map(|r| (*r).to_string()).collect(),
         glob: glob.map(str::to_string),
+        source_protection: None,
         severity,
     }
+}
+
+#[test]
+fn unresolved_policy_shadowing_covers_each_protection_state_independently() {
+    use crate::model::{ReferenceProtection, UnresolvedCause};
+    let mut config = Config::default();
+    config.rules.body_immutable = vec![body_immutable_block("record")];
+    let mut protected = policy_row(
+        "protected",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Info,
+    );
+    protected.source_protection = Some(ReferenceProtection::Protected);
+    let all = policy_row(
+        "all",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Error,
+    );
+    config.detection.unresolved_policy = vec![protected.clone(), all.clone()];
+    config.validate().unwrap();
+
+    let mut unprotected = protected.clone();
+    unprotected.name = "unprotected".into();
+    unprotected.source_protection = Some(ReferenceProtection::Unprotected);
+    let mut unknown = protected.clone();
+    unknown.name = "unknown".into();
+    unknown.source_protection = Some(ReferenceProtection::Unknown);
+    config.detection.unresolved_policy = vec![protected, unprotected, unknown, all];
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("can never fire"), "{error}");
+}
+
+#[test]
+fn unresolved_protection_selectors_require_a_lock_on_a_selected_source() {
+    use crate::model::{ReferenceProtection, UnresolvedCause};
+    let mut config = Config::default();
+    let mut row = policy_row(
+        "protected",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Error,
+    );
+    row.source_protection = Some(ReferenceProtection::Protected);
+    config.detection.unresolved_policy = vec![row];
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires a lock")
+    );
+    config.rules.body_immutable = vec![body_immutable_block("record")];
+    config.validate().unwrap();
+    config.detection.unresolved_policy[0].relations = vec!["covers".into()];
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires a lock")
+    );
 }
 
 #[test]

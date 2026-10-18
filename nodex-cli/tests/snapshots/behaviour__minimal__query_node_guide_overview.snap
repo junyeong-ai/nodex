@@ -7,12 +7,18 @@ exit: 0
   "data": {
     "incoming": [
       {
-        "reference": {
-          "location": "L4",
-          "source": "adr-storage",
-          "syntax": "markdown",
-          "target": "../overview.md"
-        },
+        "references": [
+          {
+            "location": {
+              "end_line": 4,
+              "start_line": 4,
+              "type": "body"
+            },
+            "source": "adr-storage",
+            "syntax": "markdown",
+            "target": "../overview.md"
+          }
+        ],
         "relation": "references",
         "source": "adr-storage"
       }
@@ -36,22 +42,33 @@ exit: 0
     },
     "outgoing": [
       {
-        "reference": {
-          "location": "frontmatter:covers",
-          "source": "guide-overview",
-          "syntax": "frontmatter",
-          "target": "nodex.toml"
-        },
+        "references": [
+          {
+            "location": {
+              "field": "covers",
+              "type": "frontmatter"
+            },
+            "source": "guide-overview",
+            "syntax": "frontmatter",
+            "target": "nodex.toml"
+          }
+        ],
         "relation": "covers",
         "target": "nodex.toml"
       },
       {
-        "reference": {
-          "location": "L4",
-          "source": "guide-overview",
-          "syntax": "markdown",
-          "target": "decisions/storage.md"
-        },
+        "references": [
+          {
+            "location": {
+              "end_line": 4,
+              "start_line": 4,
+              "type": "body"
+            },
+            "source": "guide-overview",
+            "syntax": "markdown",
+            "target": "decisions/storage.md"
+          }
+        ],
         "relation": "references",
         "target": "adr-storage"
       }

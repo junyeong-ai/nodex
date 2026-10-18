@@ -226,6 +226,7 @@ struct PolicySelector<'a> {
     cause: crate::model::UnresolvedCause,
     relations: std::collections::BTreeSet<&'a str>,
     glob: Option<&'a str>,
+    source_protection: Option<crate::model::ReferenceProtection>,
 }
 
 impl<'a> PolicySelector<'a> {
@@ -253,27 +254,46 @@ impl<'a> PolicySelector<'a> {
         vocabulary: &std::collections::BTreeSet<String>,
         parser: &ParserConfig,
     ) -> Option<Vec<&'a str>> {
-        let mut claimants = Vec::new();
-        let mut claimed = std::collections::BTreeSet::new();
-        for row in earlier {
-            if row.cause != self.cause || !(row.glob.is_none() || row.glob == self.glob) {
-                continue;
-            }
-            claimants.push(row.name);
-            if row.relations.is_empty() {
-                return Some(claimants);
-            }
-            claimed.extend(row.relations.iter().copied());
-        }
-        let selects: std::collections::BTreeSet<&str> = match self.relations.is_empty() {
-            false => self.relations.clone(),
-            true => vocabulary
+        let selects: std::collections::BTreeSet<&str> = if self.relations.is_empty() {
+            vocabulary
                 .iter()
                 .map(String::as_str)
                 .filter(|relation| self.cause.reachable_for(parser.is_id_relation(relation)))
-                .collect(),
+                .collect()
+        } else {
+            self.relations.clone()
         };
-        selects.is_subset(&claimed).then_some(claimants)
+        use crate::model::ReferenceProtection::{Protected, Unknown, Unprotected};
+        let states = self.source_protection.map_or_else(
+            || vec![Protected, Unprotected, Unknown],
+            |state| vec![state],
+        );
+        let mut claimants = Vec::new();
+        for state in states {
+            let mut claimed = std::collections::BTreeSet::new();
+            for row in earlier {
+                if row.cause != self.cause
+                    || !(row.glob.is_none() || row.glob == self.glob)
+                    || row
+                        .source_protection
+                        .is_some_and(|selected| selected != state)
+                {
+                    continue;
+                }
+                if !claimants.contains(&row.name) {
+                    claimants.push(row.name);
+                }
+                if row.relations.is_empty() {
+                    claimed.extend(selects.iter().copied());
+                } else {
+                    claimed.extend(row.relations.iter().copied());
+                }
+            }
+            if !selects.is_subset(&claimed) {
+                return None;
+            }
+        }
+        Some(claimants)
     }
 }
 
@@ -1239,7 +1259,45 @@ impl Config {
                 cause: row.cause,
                 relations: seen_relations,
                 glob: row.glob.as_deref(),
+                source_protection: row.source_protection,
             };
+            if matches!(
+                row.source_protection,
+                Some(
+                    crate::model::ReferenceProtection::Protected
+                        | crate::model::ReferenceProtection::Unknown
+                )
+            ) && !unresolved_relations.iter().any(|relation| {
+                if !row.matches_relation(relation)
+                    || !row
+                        .cause
+                        .reachable_for(self.parser.is_id_relation(relation))
+                {
+                    return false;
+                }
+                let field = self
+                    .parser
+                    .frontmatter_relation(relation)
+                    .map(|entry| entry.field.as_str())
+                    .or_else(|| {
+                        (crate::model::edge::ID_RESOLVED_RELATIONS.contains(&relation.as_str())
+                            || crate::model::edge::is_path_only_relation(relation))
+                        .then_some(relation.as_str())
+                    });
+                match field {
+                    Some(field) => self
+                        .rules
+                        .frontmatter_immutable
+                        .iter()
+                        .any(|block| block.locks_field(field)),
+                    None => !self.rules.body_immutable.is_empty(),
+                }
+            }) {
+                return Err(Error::Config(format!(
+                    "detection.unresolved_policy[{idx}] ({:?}).source_protection requires a lock covering a selected reference source",
+                    row.name
+                )));
+            }
             if let Some(claimants) =
                 selector.claimed_by(&selectors, &unresolved_relations, &self.parser)
             {

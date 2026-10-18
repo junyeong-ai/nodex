@@ -11,11 +11,9 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 
 ---
 
-## Upgrading to 0.58
+## Upgrading to 0.59
 
-Remove `[trust]` and `[[trust.overrides]]`; maintenance findings remain available through `query issues` and `check`. Similarity weights contain only `title`, `tags` and `linked`. `query similar --kind`, `--status` and `--parent-dir` filter candidates; `--tags` requires `--title`. Only positive-overlap candidates are returned. `report` writes `GRAPH.md`; use `build` for JSON and omit the removed `--format` option.
-
-Omit `--kind` when recall should include decisions or learnings of other kinds. After upgrading, run `nodex build` and regenerate any clients derived from the envelope schema.
+Rebuild existing snapshots with `nodex build --full` and regenerate clients from `nodex export envelope-schema`. Edge provenance is now a `references` array; reference locations are tagged `body` or `frontmatter` objects. Unresolved listings and reference findings expose source-lock evidence. Existing unresolved severity remains unchanged unless a policy row selects `source_protection`.
 
 ## Table of Contents
 
@@ -366,7 +364,7 @@ fragment. Heading-anchor validity remains outside the document graph.
 
 ### Query and policy contracts
 
-Markdown links resolve relative to their source document. Wikilinks and configured patterns use graph lookup; edge `reference` records source, syntax, decoded target and location. Unresolved listings also expose the sought lookup names. Custom frontmatter attributes remain attributes; only the documented relation fields create edges.
+Markdown links resolve relative to their source document. Wikilinks and configured patterns use graph lookup. Each edge's `references` array retains source, syntax, decoded target and location for every authoring site of one logical relation. Body locations use one-based body-relative `start_line` and inclusive `end_line`, including definitions or code spans that determine the reference; frontmatter locations name the authored `field`. Unresolved listings also expose the sought lookup names. Their `sources`, and reference findings' `details.sources`, report each site's protection and constraining rule IDs. An unresolved edge's `source_protection` is `protected` only when every site is protected, `unprotected` when any is unprotected, and `unknown` otherwise. Protection does not establish historical target validity; unprotected does not authorize an edit. Gate proposed bytes with `check --content`. Custom frontmatter attributes remain attributes; only the documented relation fields create edges.
 
 Default inferred ids use `{kind}-{path_slug}` to distinguish repeated filenames. Projects relying on the previous fallback should anchor inferred ids with the previous binary’s `migrate --apply` before upgrading, or explicitly retain `template = "{kind}-{stem}"`. Rebuilding alone does not preserve old inferred ids. Explicit ids and configured identity templates remain authoritative. `scaffold --force` preserves the existing identity unless `--id` explicitly replaces it.
 
@@ -641,7 +639,7 @@ Use explicit status and supersession records to identify what governs. `query si
 | `unique_numbering` | error | No two files matching a `[[rules.naming]]` block with `unique = true` share the same leading number |
 | `stale_review` | warning | Active (non-terminal) nodes whose `reviewed` date is `[detection].stale_days` or more days old; missing `reviewed` counts as `unjudged`; list these with `query nodes --missing reviewed`, or require the field to make absence an error. Registered only when `stale_days` is set |
 | `orphan` | warning | Live nodes no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
-| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, relations in `[detection].superseded_reference_ok_relations`, a target the citing document names in a marker of the `[[annotations]]` block `[detection].superseded_reference_ok_annotation` names (keyed by the target's id, so it covers every body citation of that target from that document; its frontmatter relations to the target stay asked), and a part a `frontmatter_immutable` / `body_immutable` block had already armed at the reference point — with no baseline, a citation a lock could hold counts as `unjudged` |
+| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, relations in `[detection].superseded_reference_ok_relations`, a target the citing document names in a marker of the `[[annotations]]` block `[detection].superseded_reference_ok_annotation` names (keyed by the target's id, so it covers every body citation of that target from that document; its frontmatter relations to the target stay asked), and protected authoring sites. A logical edge remains judged if any non-exempt site is unprotected; if none is unprotected and a non-exempt site's protection is unknown, it counts as `unjudged`. Newly appended citations do not inherit the prefix's protection, including citations completed by an appended reference definition |
 | `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have accumulated more than `git_drift_threshold` commits since `reviewed` (opt-in). The measure is commits that *introduced* a change to the target on a day after `reviewed`: whole history, not the simplified view `git log -- <path>` shows by default, and a merge counts only where it differs from every parent. A `check` of the working tree or the index keeps the history it walked in `_index/history.json`, keyed by the commit it was taken at, so the next command walks only the commits since; the whole history is walked again where `HEAD` does not reach the kept commit, or where git can reshape history in place (a shallow clone, a graft, a replace ref) |
 | `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc the block's `trigger` had already armed at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
 | `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `status`: it held one of the statuses the block names; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body, and `append_section` confines that growth to one closing section (diff-aware) |
@@ -787,7 +785,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.58, <0.59"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.59, <0.60"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -981,7 +979,7 @@ orphan_grace_days = 14
 # git_drift_relations = ["references", "implements", "covers"]
 # Ordered first-match classification of unresolved references —
 # Both "error" and "warning" register `unresolved_reference/<name>`;
-# "info" is reported outside the finding total. A row narrows on three axes, each optional but
+# "info" is reported outside the finding total. A row narrows on four axes, each optional but
 # `cause`: `cause` is one of missing | target_unparsed |
 # excluded_from_scope | id_not_found | escapes_source | absolute;
 # `relations` narrows to the relations the edge may carry (omitted =
@@ -992,7 +990,9 @@ orphan_grace_days = 14
 # and is refused at load on `escapes_source` / `absolute`, which are
 # refused before anything is looked up. A row an earlier row already
 # covers is refused at load: first match wins, so it could never fire —
-# declare the narrow rows first. Declaring the table replaces the
+# declare the narrow rows first. `source_protection` optionally selects
+# protected | unprotected | unknown; protection follows evaluated locks,
+# not historical target validity. Declaring the table replaces the
 # default row {name = "excluded_target", cause = "excluded_from_scope",
 # severity = "info"} — re-declare it to keep it.
 # [[detection.unresolved_policy]]
@@ -1164,7 +1164,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.58, <0.59" build
+nodex --check-version ">=0.59, <0.60" build
 ```
 
 ---

@@ -90,7 +90,7 @@ mod tests {
 
     fn make_supersedes_edge(source: &str, target: &str) -> Edge {
         Edge {
-            reference: None,
+            references: Vec::new(),
             source: source.to_string(),
             target: ResolvedTarget::resolved(target),
             relation: "supersedes".to_string(),
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn non_supersedes_edges_ignored() {
         let edges = vec![Edge {
-            reference: None,
+            references: Vec::new(),
             source: "a".to_string(),
             target: ResolvedTarget::resolved("b"),
             relation: "references".to_string(),

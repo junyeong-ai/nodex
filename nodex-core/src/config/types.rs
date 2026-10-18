@@ -1239,8 +1239,7 @@ pub struct DetectionConfig {
     /// given dangling link is a defect, a triage item, or
     /// expected-by-design varies by project, so the judgment lives
     /// here. Rows are evaluated in declared order and the first row
-    /// whose `cause` equals the edge's cause and whose `glob` (when
-    /// present) matches wins; an edge no row matches takes the
+    /// whose selectors match wins; an edge no row matches takes the
     /// unmatched `unresolved_reference` rule (warning unless promoted by
     /// `rules.severity`).
     /// Declaring the table replaces this default entirely (the
@@ -1308,6 +1307,10 @@ pub struct UnresolvedPolicyRuleConfig {
     /// `Config::validate` rejects it elsewhere.
     #[serde(default)]
     pub glob: Option<String>,
+    /// Protection required of the reference's authored sources. Omitted matches
+    /// every state; protected requires every source to be protected.
+    #[serde(default)]
+    pub source_protection: Option<crate::model::ReferenceProtection>,
     /// Which reporting plane matching edges land on.
     pub severity: UnresolvedSeverity,
 }
@@ -1343,6 +1346,7 @@ pub(crate) fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
         cause: crate::model::UnresolvedCause::ExcludedFromScope,
         relations: Vec::new(),
         glob: None,
+        source_protection: None,
         severity: UnresolvedSeverity::Info,
     }]
 }

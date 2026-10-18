@@ -11,6 +11,7 @@ pub mod graph_invariants;
 pub mod naming;
 pub mod orphan;
 pub mod parse;
+pub mod reference_protection;
 pub mod schema;
 pub mod status_flow;
 pub mod superseded_reference;
@@ -300,6 +301,54 @@ enum LockMerge {
     PreserveEveryRevision,
 }
 
+pub(crate) fn replaced_records(
+    step: &crate::ancestry::Step,
+) -> std::collections::BTreeMap<&Path, Vec<&str>> {
+    let mut replaced: std::collections::BTreeMap<&Path, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for before in step.parents.iter().flat_map(|parent| parent.documents()) {
+        if step.child.document(&before.id).is_empty() {
+            replaced
+                .entry(before.path.as_path())
+                .or_default()
+                .push(&before.id);
+        }
+    }
+    replaced
+}
+
+pub(crate) fn lock_priors<'a>(
+    config: &Config,
+    lock: crate::config::LockArming<'_>,
+    step: &'a crate::ancestry::Step,
+    node: &crate::model::Node,
+    replaced: &std::collections::BTreeMap<&Path, Vec<&str>>,
+    same_payload: &dyn Fn(&crate::model::Node, &crate::model::Node) -> bool,
+) -> (Vec<&'a crate::model::Node>, bool) {
+    let armed = |node: &crate::model::Node| {
+        lock_holds(config, lock, node.kind.as_str(), node.status.as_str())
+    };
+    let equivalent = |before: &crate::model::Node, after: &crate::model::Node| {
+        let before_armed = armed(before);
+        before.id == after.id
+            && before_armed == armed(after)
+            && (!before_armed
+                || !before.content_hash.is_empty()
+                    && before.path == after.path
+                    && before.content_hash == after.content_hash
+                || same_payload(before, after))
+    };
+    let (mut priors, mut known) = step.document_priors(&node.id, &equivalent);
+    if priors.is_empty() && known {
+        for id in replaced.get(node.path.as_path()).into_iter().flatten() {
+            let (held, answered) = step.document_priors(id, &equivalent);
+            known &= answered;
+            priors.extend(held.into_iter().filter(|before| before.path == node.path));
+        }
+    }
+    (priors, known)
+}
+
 fn lock_steps(
     rule: &dyn Rule,
     ctx: &RuleContext<'_>,
@@ -319,42 +368,14 @@ fn lock_steps(
     let armed = |node: &crate::model::Node| {
         lock_holds(ctx.config, lock, node.kind.as_str(), node.status.as_str())
     };
-    let equivalent = |before: &crate::model::Node, after: &crate::model::Node| {
-        let before_armed = armed(before);
-        before.id == after.id
-            && before_armed == armed(after)
-            && (!before_armed
-                || !before.content_hash.is_empty()
-                    && before.path == after.path
-                    && before.content_hash == after.content_hash
-                || same_payload(before, after))
-    };
     for step in steps {
-        let mut replaced: std::collections::BTreeMap<&Path, Vec<&str>> =
-            std::collections::BTreeMap::new();
-        for parent in &step.parents {
-            for before in parent
-                .documents()
-                .filter(|before| step.child.document(&before.id).is_empty())
-            {
-                replaced
-                    .entry(before.path.as_path())
-                    .or_default()
-                    .push(&before.id);
-            }
-        }
+        let replaced = replaced_records(step);
         for node in step.child.documents() {
             if step.child.document(&node.id).len() != 1 {
                 continue;
             }
-            let (mut priors, mut known) = step.document_priors(&node.id, &equivalent);
-            if priors.is_empty() && known {
-                for id in replaced.get(node.path.as_path()).into_iter().flatten() {
-                    let (held, answered) = step.document_priors(id, &equivalent);
-                    known &= answered;
-                    priors.extend(held.into_iter().filter(|before| before.path == node.path));
-                }
-            }
+            let (mut priors, known) =
+                lock_priors(ctx.config, lock, step, node, &replaced, &same_payload);
             if !known {
                 if lock_holds(ctx.config, lock, node.kind.as_str(), node.status.as_str()) {
                     unknown.insert(node.id.clone());
@@ -852,7 +873,7 @@ pub fn check(
 /// re-running the same stat probes, so the probes run once per report
 /// and the violations derive from exactly the edges the report lists.
 /// The seeded vector must be the same-context classification
-/// (`find_unresolved_edges(graph, config, files)`) the rules would
+/// (`find_unresolved_edges(graph, config, files, diff, steps)`) the rules would
 /// compute themselves.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check_with_unresolved(

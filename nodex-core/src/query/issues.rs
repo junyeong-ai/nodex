@@ -46,6 +46,8 @@ pub struct UnresolvedEdge {
     /// `IdNotFound` since they never had a path to stat. Named `cause`
     /// (not `kind`) to avoid colliding with a document's `kind`.
     pub cause: UnresolvedCause,
+    pub source_protection: crate::model::ReferenceProtection,
+    pub sources: Vec<crate::model::ReferenceSource>,
     /// Effective severity assigned by the matching policy row or the
     /// unmatched `unresolved_reference` rule, including configured promotion.
     pub severity: UnresolvedSeverity,
@@ -113,7 +115,7 @@ pub fn find_issues(
     let orphans = find_orphans(graph, config, today).entries;
     let stale = find_stale(graph, config, today).map_or_else(Vec::new, |outcome| outcome.entries);
     let files = crate::builder::scanner::ProjectFiles::working_tree(root);
-    let unresolved_edges = find_unresolved_edges(graph, config, files);
+    let unresolved_edges = find_unresolved_edges(graph, config, files, diff, steps);
     // The caller supplies the same diff context `check` runs under (the
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
     // does), so the violations reported here and by a default `check`
@@ -181,6 +183,8 @@ pub fn find_unresolved_edges(
     graph: &Graph,
     config: &Config,
     files: crate::builder::scanner::ProjectFiles<'_>,
+    diff: Option<&crate::diff::GraphDiff>,
+    steps: Option<&[crate::ancestry::Step]>,
 ) -> Vec<UnresolvedEdge> {
     let policy: Vec<(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)> = config
         .detection
@@ -196,10 +200,12 @@ pub fn find_unresolved_edges(
         })
         .collect();
 
+    let mut locks =
+        crate::rules::reference_protection::ReferenceLocks::new(graph, config, diff, steps);
     let mut entries: Vec<UnresolvedEdge> = graph
         .edges()
         .iter()
-        .filter_map(|edge| unresolved_from(graph, edge, config, files, &policy))
+        .filter_map(|edge| unresolved_from(graph, edge, config, files, &policy, &mut locks))
         .collect();
 
     entries.sort_by(|a, b| {
@@ -218,6 +224,7 @@ fn unresolved_from(
     config: &Config,
     files: crate::builder::scanner::ProjectFiles<'_>,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
+    locks: &mut crate::rules::reference_protection::ReferenceLocks<'_>,
 ) -> Option<UnresolvedEdge> {
     let ResolvedTarget::Unresolved { raw, cause } = &edge.target else {
         return None;
@@ -244,7 +251,15 @@ fn unresolved_from(
         files,
         crate::model::edge::is_path_only_relation(&edge.relation),
     );
-    let (mut severity, policy_name) = assign_policy(cause, &edge.relation, sought.names(), policy);
+    let sources = locks.sources(edge);
+    let source_protection = crate::rules::reference_protection::protection(&sources);
+    let (mut severity, policy_name) = assign_policy(
+        cause,
+        &edge.relation,
+        sought.names(),
+        source_protection,
+        policy,
+    );
     if policy_name.is_none()
         && let Some(level) = config.rules.severity.get("unresolved_reference")
     {
@@ -263,26 +278,33 @@ fn unresolved_from(
         reason: cause.to_string(),
         location: edge.location.clone(),
         cause,
+        source_protection,
+        sources,
         severity,
         policy_name,
     })
 }
 
-/// First-match-wins policy assignment over the three axes a row can
+/// First-match-wins policy assignment over the four axes a row can
 /// narrow on, each of which must admit the edge: `cause` (why the lookup
 /// failed), `relations` (which relation carries the reference — empty
 /// admits every one), and `glob` (which name the resolution sought,
 /// matching any of them; load-time validation confines a glob to causes
-/// that sought a name at all). The built-in fallthrough is `warning`,
+/// that sought a name at all), and `source_protection`. The fallthrough is `warning`,
 /// unattributed.
 fn assign_policy(
     cause: UnresolvedCause,
     relation: &str,
     sought: &[String],
+    source_protection: crate::model::ReferenceProtection,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> (UnresolvedSeverity, Option<String>) {
     for (row, matcher) in policy {
-        if row.cause != cause {
+        if row.cause != cause
+            || row
+                .source_protection
+                .is_some_and(|state| state != source_protection)
+        {
             continue;
         }
         if !row.matches_relation(relation) {
@@ -402,7 +424,7 @@ mod tests {
 
     fn dangling(source: &str, raw: &str, relation: &str) -> Edge {
         Edge {
-            reference: None,
+            references: Vec::new(),
             source: source.to_string(),
             target: ResolvedTarget::unresolved(raw, UnresolvedCause::Missing),
             relation: relation.to_string(),
@@ -414,7 +436,7 @@ mod tests {
     /// `supersedes:` / `related:` / `superseded_by:` value it cannot bind.
     fn dangling_id(source: &str, raw: &str, relation: &str) -> Edge {
         Edge {
-            reference: None,
+            references: Vec::new(),
             source: source.to_string(),
             target: ResolvedTarget::unresolved(raw, UnresolvedCause::IdNotFound),
             relation: relation.to_string(),
@@ -443,6 +465,7 @@ mod tests {
             cause,
             relations: relations.iter().map(|r| (*r).to_string()).collect(),
             glob: glob.map(str::to_string),
+            source_protection: None,
             severity,
         }
     }
@@ -696,7 +719,7 @@ mod tests {
         let graph = graph_of(
             vec![node("a")],
             vec![Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "a".to_string(),
                 target: ResolvedTarget::unresolved("missing.md", UnresolvedCause::Missing),
                 relation: "references".to_string(),
@@ -708,6 +731,8 @@ mod tests {
             &graph,
             &Config::default(),
             crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
+            None,
+            None,
         );
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].source, "a");
@@ -741,7 +766,7 @@ mod tests {
         let graph = graph_of(
             vec![both],
             vec![Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "both-problems".to_string(),
                 target: ResolvedTarget::unresolved("gone.md", UnresolvedCause::Missing),
                 relation: "references".to_string(),
@@ -817,14 +842,14 @@ mod tests {
             vec![node("a")],
             vec![
                 Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "a".to_string(),
                     target: ResolvedTarget::unresolved("x.md", UnresolvedCause::Missing),
                     relation: "references".to_string(),
                     location: "L1".to_string(),
                 },
                 Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "a".to_string(),
                     target: ResolvedTarget::unresolved("y.md", UnresolvedCause::Missing),
                     relation: "references".to_string(),
@@ -874,6 +899,8 @@ mod tests {
             &graph,
             &narrow_first,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
         assert_eq!(edges[0].policy_name.as_deref(), Some("ephemeral-specs"));
@@ -896,6 +923,8 @@ mod tests {
             &graph,
             &broad_first,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         assert_eq!(edges[0].severity, UnresolvedSeverity::Error);
         assert_eq!(edges[0].policy_name.as_deref(), Some("any-missing"));
@@ -937,6 +966,8 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         let by_source = |source: &str| {
             edges
@@ -975,6 +1006,8 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         assert_eq!(edges[0].severity, UnresolvedSeverity::Warning);
         assert_eq!(edges[0].policy_name, None);
@@ -1005,6 +1038,8 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         let by_target = |raw: &str| {
             edges
@@ -1042,6 +1077,8 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].cause, UnresolvedCause::Missing);
@@ -1070,6 +1107,8 @@ mod tests {
             &reference,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         assert_eq!(edges[0].policy_name.as_deref(), Some("guide-links"));
         assert_eq!(edges[0].severity, UnresolvedSeverity::Info);
@@ -1079,6 +1118,8 @@ mod tests {
             &covers,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            None,
+            None,
         );
         assert_eq!(
             edges[0].policy_name, None,

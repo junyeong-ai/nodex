@@ -152,6 +152,23 @@ exit: 0
         ],
         "source": "adr-gamma",
         "source_path": "docs/decisions/gamma.md",
+        "source_protection": "unprotected",
+        "sources": [
+          {
+            "protection": "unprotected",
+            "reference": {
+              "location": {
+                "end_line": 5,
+                "start_line": 5,
+                "type": "body"
+              },
+              "source": "adr-gamma",
+              "syntax": "markdown",
+              "target": "../does-not-exist.md"
+            },
+            "rules": []
+          }
+        ],
         "syntax": "markdown"
       },
       {
@@ -168,6 +185,22 @@ exit: 0
         ],
         "source": "guide-index",
         "source_path": "docs/index.md",
+        "source_protection": "unprotected",
+        "sources": [
+          {
+            "protection": "unprotected",
+            "reference": {
+              "location": {
+                "field": "covers",
+                "type": "frontmatter"
+              },
+              "source": "guide-index",
+              "syntax": "frontmatter",
+              "target": "nodex.toml"
+            },
+            "rules": []
+          }
+        ],
         "syntax": "frontmatter"
       }
     ],
@@ -255,6 +288,23 @@ exit: 0
           "location": "L5",
           "raw_target": "../does-not-exist.md",
           "relation": "references",
+          "source_protection": "unprotected",
+          "sources": [
+            {
+              "protection": "unprotected",
+              "reference": {
+                "location": {
+                  "end_line": 5,
+                  "start_line": 5,
+                  "type": "body"
+                },
+                "source": "adr-gamma",
+                "syntax": "markdown",
+                "target": "../does-not-exist.md"
+              },
+              "rules": []
+            }
+          ],
           "type": "unresolved_reference"
         },
         "message": "references reference \"../does-not-exist.md\" (L5) does not resolve: nothing in scope resolves this target",

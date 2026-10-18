@@ -395,7 +395,8 @@ pub fn run(
         &config,
         &before.graph,
         &final_proposal,
-        nodex_core::ProposalDiff::Inert,
+        nodex_core::ProposalDiff::Configured,
+        &probe,
         today,
     )
     .context("the project this rename would produce could not be checked")?;

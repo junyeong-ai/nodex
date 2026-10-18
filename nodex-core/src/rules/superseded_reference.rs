@@ -37,13 +37,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value, json};
 
 use crate::config::Config;
-use crate::diff::{GraphDiff, Touched};
-use crate::model::edge::{ID_RESOLVED_RELATIONS, PATH_ONLY_RELATION};
-use crate::model::{Graph, Node};
+use crate::diff::Touched;
+use crate::model::{Graph, ReferenceLocation, ReferenceProtection};
 use crate::query::structure::{Direction, adjacent};
 
 use super::{
-    DocumentPart, Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
+    Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
     detail::Evidence,
 };
 
@@ -110,7 +109,9 @@ impl Rule for SupersededReferenceRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let baseline = ctx.since.map(Baseline::of);
+        let mut locks = super::reference_protection::ReferenceLocks::new(
+            ctx.graph, ctx.config, ctx.since, ctx.steps,
+        );
         let declared: BTreeSet<(&str, &str)> = ctx
             .config
             .detection
@@ -153,32 +154,24 @@ impl Rule for SupersededReferenceRule {
             {
                 continue;
             }
-            let part = ctx
-                .config
-                .parser
-                .frontmatter_relation(&edge.relation)
-                .map_or_else(
-                    || part_of(&edge.relation),
-                    |entry| DocumentPart::Field(entry.field.clone()),
-                );
-            if part == DocumentPart::Body
-                && declared.contains(&(source.id.as_str(), target.id.as_str()))
-            {
-                continue;
-            }
-            match &baseline {
-                Some(baseline) if baseline.holds(ctx.config, source, &part) => continue,
-                None if locks(
-                    ctx.config,
-                    source.kind.as_str(),
-                    source.status.as_str(),
-                    &part,
-                ) =>
+            let sources = locks.sources(edge);
+            let mut asked = sources.is_empty();
+            let mut unknown = false;
+            for citation in &sources {
+                if matches!(citation.reference.location, ReferenceLocation::Body { .. })
+                    && declared.contains(&(source.id.as_str(), target.id.as_str()))
                 {
-                    unjudged += 1;
                     continue;
                 }
-                _ => {}
+                match citation.protection {
+                    ReferenceProtection::Protected => {}
+                    ReferenceProtection::Unknown => unknown = true,
+                    ReferenceProtection::Unprotected => asked = true,
+                }
+            }
+            if !asked {
+                unjudged += usize::from(unknown);
+                continue;
             }
             subjects += 1;
             if !ctx.config.is_terminal(target.status.as_str()) {
@@ -200,6 +193,7 @@ impl Rule for SupersededReferenceRule {
                     target: target.id.clone(),
                     location: Evidence(edge.location.clone()),
                     current: Evidence(lineage.current.clone()),
+                    sources: Evidence(sources),
                 },
             ));
         }
@@ -246,67 +240,6 @@ fn lineage<'g>(graph: &'g Graph, config: &Config, id: &str) -> Lineage<'g> {
     }
 }
 
-/// The part of its document a citation was read from. The id relations and
-/// `covers` are each produced only by the frontmatter field of the same name —
-/// `Config::validate` keeps them off link patterns — and every other relation
-/// only by the body.
-fn part_of(relation: &str) -> DocumentPart {
-    if ID_RESOLVED_RELATIONS.contains(&relation) || relation == PATH_ONLY_RELATION {
-        DocumentPart::Field(relation.to_string())
-    } else {
-        DocumentPart::Body
-    }
-}
-
-/// The frame the immutability locks judge in. A run without a diff has none,
-/// and cannot tell a part a lock holds from one it does not.
-struct Baseline<'a> {
-    diff: &'a GraphDiff,
-    added: BTreeSet<&'a str>,
-}
-
-impl<'a> Baseline<'a> {
-    fn of(diff: &'a GraphDiff) -> Self {
-        Self {
-            diff,
-            added: diff.added_ids(),
-        }
-    }
-
-    /// Whether a lock holds `part` of `node` in this run, read as the locks
-    /// read it: over a record the baseline holds, at the kind and status the
-    /// baseline gave it. A document written since, or one only now moving into
-    /// an arming status, is not held — this is the edit where its citation can
-    /// still change.
-    fn holds(&self, config: &Config, node: &Node, part: &DocumentPart) -> bool {
-        !self.added.contains(node.id.as_str())
-            && locks(
-                config,
-                self.diff.before_kind(&node.id, node.kind.as_str()),
-                self.diff.before_status(&node.id, node.status.as_str()),
-                part,
-            )
-    }
-}
-
-/// Whether a lock block covering `part` arms over a record of `kind` at
-/// `status`.
-fn locks(config: &Config, kind: &str, status: &str, part: &DocumentPart) -> bool {
-    let holds = |lock| super::lock_holds(config, lock, kind, status);
-    match part {
-        DocumentPart::Body => config
-            .rules
-            .body_immutable
-            .iter()
-            .any(|block| holds(block.arming())),
-        DocumentPart::Field(field) => config
-            .rules
-            .frontmatter_immutable
-            .iter()
-            .any(|block| block.locks_field(field) && holds(block.arming())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,7 +247,8 @@ mod tests {
         BodyImmutableMode, BodyImmutableRuleConfig, FrontmatterImmutableRuleConfig,
         ImmutableTrigger,
     };
-    use crate::model::{Annotation, Edge, GraphMeta, Kind, ResolvedTarget, Status};
+    use crate::diff::GraphDiff;
+    use crate::model::{Annotation, Edge, GraphMeta, Kind, Node, ResolvedTarget, Status};
     use indexmap::IndexMap;
     use std::path::PathBuf;
 
@@ -353,11 +287,29 @@ mod tests {
 
     fn edge(source: &str, target: &str, relation: &str) -> Edge {
         Edge {
-            reference: None,
+            references: vec![crate::model::Reference {
+                source: source.to_string(),
+                syntax: if ["references", "derived_from"].contains(&relation) {
+                    crate::model::ReferenceSyntax::Markdown
+                } else {
+                    crate::model::ReferenceSyntax::Frontmatter
+                },
+                target: target.to_string(),
+                location: if ["references", "derived_from"].contains(&relation) {
+                    ReferenceLocation::Body {
+                        start_line: 1,
+                        end_line: 1,
+                    }
+                } else {
+                    ReferenceLocation::Frontmatter {
+                        field: relation.to_string(),
+                    }
+                },
+            }],
             source: source.to_string(),
             target: ResolvedTarget::resolved(target),
             relation: relation.to_string(),
-            location: if part_of(relation) == DocumentPart::Body {
+            location: if ["references", "derived_from"].contains(&relation) {
                 "L1".to_string()
             } else {
                 format!("frontmatter:{relation}")
