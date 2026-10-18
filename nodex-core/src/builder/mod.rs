@@ -602,11 +602,7 @@ fn build_inner(
     //     graph so every query uses the same traversal.
     edges.extend(derive_superseded_by_edges(&all_nodes));
 
-    // Dedupe by (source, target, relation) so documents that declare
-    // both sides (N.supersedes=[X] AND X.superseded_by=N) produce a
-    // single edge rather than two identical ones. The body-link
-    // resolver never produces duplicates, so this only affects
-    // frontmatter-sourced edges.
+    // Logical relations retain every authored source.
     dedupe_edges(&mut edges);
 
     // 8. Validate supersedes DAG
@@ -1055,12 +1051,14 @@ fn derive_superseded_by_edges(
         };
         if known_ids.contains(successor.as_str()) {
             out.push(Edge {
-                reference: Some(crate::model::edge::Reference {
+                references: vec![crate::model::edge::Reference {
                     source: id.clone(),
                     syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
                     target: successor.clone(),
-                    location: "frontmatter:superseded_by".into(),
-                }),
+                    location: crate::model::ReferenceLocation::Frontmatter {
+                        field: "superseded_by".into(),
+                    },
+                }],
                 source: successor.clone(),
                 target: ResolvedTarget::resolved(id.as_str()),
                 relation: "supersedes".to_string(),
@@ -1068,12 +1066,14 @@ fn derive_superseded_by_edges(
             });
         } else {
             out.push(Edge {
-                reference: Some(crate::model::edge::Reference {
+                references: vec![crate::model::edge::Reference {
                     source: id.clone(),
                     syntax: crate::model::edge::ReferenceSyntax::Frontmatter,
                     target: successor.clone(),
-                    location: "frontmatter:superseded_by".into(),
-                }),
+                    location: crate::model::ReferenceLocation::Frontmatter {
+                        field: "superseded_by".into(),
+                    },
+                }],
                 source: id.clone(),
                 target: ResolvedTarget::unresolved(
                     successor,
@@ -1087,11 +1087,27 @@ fn derive_superseded_by_edges(
     out
 }
 
-/// Remove duplicate edges by typed identity, keeping the first
-/// occurrence (which carries the original `location`).
+/// Merge authored sources without changing the logical relation count.
 fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
-    let mut seen = std::collections::HashSet::with_capacity(edges.len());
-    edges.retain(|edge| seen.insert(edge.identity()));
+    let mut positions: std::collections::HashMap<_, usize> =
+        std::collections::HashMap::with_capacity(edges.len());
+    let mut unique: Vec<crate::model::Edge> = Vec::with_capacity(edges.len());
+    let mut sources: Vec<std::collections::HashSet<crate::model::Reference>> = Vec::new();
+    for edge in edges.drain(..) {
+        if let Some(&index) = positions.get(&edge.identity()) {
+            let existing: &mut crate::model::Edge = &mut unique[index];
+            for reference in edge.references {
+                if sources[index].insert(reference.clone()) {
+                    existing.references.push(reference);
+                }
+            }
+        } else {
+            positions.insert(edge.identity(), unique.len());
+            sources.push(edge.references.iter().cloned().collect());
+            unique.push(edge);
+        }
+    }
+    *edges = unique;
 }
 
 #[cfg(test)]

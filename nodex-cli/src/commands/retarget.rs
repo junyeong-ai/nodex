@@ -242,7 +242,8 @@ pub fn run(
         &config,
         &graph,
         &landing,
-        nodex_core::ProposalDiff::Inert,
+        nodex_core::ProposalDiff::Configured,
+        &probe,
         today,
     )
     .context("the project this repoint would produce could not be checked")?;

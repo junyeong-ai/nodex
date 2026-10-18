@@ -678,7 +678,7 @@ mod tests {
         let graph = Graph::new(
             nodes,
             vec![Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "doc-x".to_string(),
                 target: crate::model::ResolvedTarget::unresolved(
                     dir.path().join("src/auth.rs").to_string_lossy(),
@@ -784,14 +784,14 @@ mod tests {
             nodes,
             vec![
                 Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "reviewer".to_string(),
                     target: crate::model::ResolvedTarget::resolved("measured"),
                     relation: "implements".to_string(),
                     location: "frontmatter:implements".to_string(),
                 },
                 Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "reviewer".to_string(),
                     target: crate::model::ResolvedTarget::unresolved(
                         "src/covered.rs",
@@ -926,7 +926,7 @@ mod tests {
         let graph = Graph::new(
             nodes,
             vec![Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "doc-x".to_string(),
                 target: crate::model::ResolvedTarget::unresolved("src", UnresolvedCause::Missing),
                 relation: "covers".to_string(),
@@ -1029,7 +1029,7 @@ mod tests {
                 .iter()
                 .zip(["covers", "covers", "references"])
                 .map(|(target, relation)| Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "doc-offers".to_string(),
                     target: crate::model::ResolvedTarget::unresolved(
                         *target,

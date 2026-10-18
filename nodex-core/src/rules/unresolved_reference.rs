@@ -82,6 +82,7 @@ impl Rule for UnresolvedReferenceRule {
             m.insert("cause".into(), json!(row.cause));
             m.insert("relations".into(), json!(row.relations));
             m.insert("glob".into(), json!(row.glob));
+            m.insert("source_protection".into(), json!(row.source_protection));
         }
         m
     }
@@ -91,9 +92,9 @@ impl Rule for UnresolvedReferenceRule {
     }
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
-        let edges = self
-            .classified
-            .get_or_init(|| find_unresolved_edges(ctx.graph, ctx.config, ctx.files));
+        let edges = self.classified.get_or_init(|| {
+            find_unresolved_edges(ctx.graph, ctx.config, ctx.files, ctx.since, ctx.steps)
+        });
         // Row names are unique (Config::validate), so an edge whose
         // `policy_name` equals this row's name was classified by this
         // row. The fallback matches edges without a policy name.
@@ -111,6 +112,8 @@ impl Rule for UnresolvedReferenceRule {
                         raw_target: e.raw_target.clone(),
                         location: Evidence(e.location.clone()),
                         cause: e.cause,
+                        sources: Evidence(e.sources.clone()),
+                        source_protection: Evidence(e.source_protection),
                     },
                 )
             })
@@ -164,7 +167,7 @@ mod tests {
 
     fn dangling(source: &str, raw: &str) -> Edge {
         Edge {
-            reference: None,
+            references: Vec::new(),
             source: source.to_string(),
             target: ResolvedTarget::unresolved(raw, UnresolvedCause::Missing),
             relation: "references".to_string(),
@@ -191,6 +194,7 @@ mod tests {
             cause,
             relations: Vec::new(),
             glob: glob.map(str::to_string),
+            source_protection: None,
             severity,
         }
     }

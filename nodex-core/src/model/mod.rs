@@ -11,8 +11,8 @@ pub use annotation::{Annotation, RawAnnotation};
 pub use body_line_match::{BodyLineMatch, RawBodyLineMatch};
 pub use body_structure::{BodySection, BodyStructure, ReferenceDefinition, SectionHeading};
 pub use edge::{
-    BUILTIN_EDGE_RELATIONS, Edge, RawEdge, Reference, ReferenceSyntax, ResolvedTarget,
-    UnresolvedCause,
+    BUILTIN_EDGE_RELATIONS, Edge, RawEdge, Reference, ReferenceLocation, ReferenceProtection,
+    ReferenceSource, ReferenceSyntax, ResolvedTarget, UnresolvedCause,
 };
 pub use graph::{Graph, GraphMeta, ParseFailure};
 pub use kind::Kind;

@@ -632,7 +632,7 @@ mod tests {
         }
         let edges = vec![
             Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "a".to_string(),
                 target: ResolvedTarget::Resolved {
                     id: "c".to_string(),
@@ -641,7 +641,7 @@ mod tests {
                 location: "frontmatter:related".to_string(),
             },
             Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "b".to_string(),
                 target: ResolvedTarget::Resolved {
                     id: "c".to_string(),
@@ -1002,7 +1002,7 @@ mod tests {
         let mut graph = graph_with(nodes);
         let edges = (0..24)
             .map(|index| Edge {
-                reference: None,
+                references: Vec::new(),
                 source: format!("n-{index:02}"),
                 target: ResolvedTarget::resolved(format!("n-{:02}", 24 + index % 4)),
                 relation: "references".into(),

@@ -227,20 +227,55 @@ impl ReferenceSyntax {
     }
 }
 
+/// The parser-owned source of an authored reference. Body lines are one-based,
+/// and `end_line` includes the definition or code span supplying its meaning.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReferenceLocation {
+    Body { start_line: usize, end_line: usize },
+    Frontmatter { field: String },
+}
+
+impl std::fmt::Display for ReferenceLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Body { start_line, .. } => write!(f, "L{start_line}"),
+            Self::Frontmatter { field } => write!(f, "frontmatter:{field}"),
+        }
+    }
+}
+
+/// Protection of an authored reference in the evaluated snapshots. Unprotected
+/// means no evaluated immutability lock holds it, not that an edit will pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceProtection {
+    Protected,
+    Unprotected,
+    Unknown,
+}
+
+/// An authored reference and the rules constraining its source.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct ReferenceSource {
+    pub reference: Reference,
+    pub protection: ReferenceProtection,
+    pub rules: Vec<String>,
+}
+
 /// Authored reference evidence, retained even when its target resolves.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Reference {
     pub source: String,
     pub syntax: ReferenceSyntax,
     pub target: String,
-    pub location: String,
+    pub location: ReferenceLocation,
 }
 
 /// A resolved edge in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Edge {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reference: Option<Reference>,
+    pub references: Vec<Reference>,
     pub source: String,
     pub target: ResolvedTarget,
     pub relation: String,
@@ -250,8 +285,8 @@ pub struct Edge {
 
 impl Edge {
     pub fn syntax(&self) -> ReferenceSyntax {
-        self.reference
-            .as_ref()
+        self.references
+            .first()
             .map_or(ReferenceSyntax::Frontmatter, |r| r.syntax)
     }
 }
@@ -309,8 +344,7 @@ enum DedupTarget {
 impl Edge {
     /// Identity for deduplication: source, target and relation. Unresolved
     /// targets retain their grammar because identical text can seek different paths.
-    /// `location` is not part of identity — two authoring sites for
-    /// the same logical relation collapse to the first encountered.
+    /// Authored locations do not change the logical relation.
     pub(crate) fn identity(&self) -> EdgeIdentity {
         EdgeIdentity {
             source: self.source.clone(),
@@ -338,7 +372,7 @@ pub struct RawEdge {
     pub target_path: String,
     pub relation: String,
     /// Source location, e.g. "L42" or "frontmatter:supersedes".
-    pub location: String,
+    pub location: ReferenceLocation,
 }
 
 #[cfg(test)]

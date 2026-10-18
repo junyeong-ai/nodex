@@ -25000,7 +25000,7 @@ fn ai_markdown_reference_identity_survives_namesakes_and_moves() {
     let detail = run_json(nodex(root).args(["query", "node", "start"]));
     assert_eq!(detail["outgoing"].as_array().unwrap().len(), 1);
     assert_eq!(detail["outgoing"][0]["target"], "local-guide");
-    assert_eq!(detail["outgoing"][0]["reference"]["syntax"], "markdown");
+    assert_eq!(detail["outgoing"][0]["references"][0]["syntax"], "markdown");
     nodex(root)
         .args(["rename", "guide.md", "renamed.md"])
         .assert()

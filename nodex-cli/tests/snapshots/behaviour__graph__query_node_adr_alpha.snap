@@ -7,22 +7,42 @@ exit: 0
   "data": {
     "incoming": [
       {
-        "reference": {
-          "location": "L4",
-          "source": "adr-beta",
-          "syntax": "markdown",
-          "target": "alpha.md"
-        },
+        "references": [
+          {
+            "location": {
+              "end_line": 4,
+              "start_line": 4,
+              "type": "body"
+            },
+            "source": "adr-beta",
+            "syntax": "markdown",
+            "target": "alpha.md"
+          }
+        ],
         "relation": "references",
         "source": "adr-beta"
       },
       {
-        "reference": {
-          "location": "frontmatter:supersedes",
-          "source": "adr-beta",
-          "syntax": "frontmatter",
-          "target": "adr-alpha"
-        },
+        "references": [
+          {
+            "location": {
+              "field": "supersedes",
+              "type": "frontmatter"
+            },
+            "source": "adr-beta",
+            "syntax": "frontmatter",
+            "target": "adr-alpha"
+          },
+          {
+            "location": {
+              "field": "superseded_by",
+              "type": "frontmatter"
+            },
+            "source": "adr-alpha",
+            "syntax": "frontmatter",
+            "target": "adr-beta"
+          }
+        ],
         "relation": "supersedes",
         "source": "adr-beta"
       }

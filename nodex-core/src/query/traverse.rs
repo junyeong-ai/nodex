@@ -60,14 +60,14 @@ mod tests {
         }
         let edges = vec![
             Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "z".into(),
                 target: ResolvedTarget::resolved("x"),
                 relation: "references".into(),
                 location: "L1".into(),
             },
             Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "x".into(),
                 target: ResolvedTarget::resolved("y"),
                 relation: "references".into(),
@@ -106,14 +106,14 @@ mod tests {
         }
         let edges = vec![
             Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "v2".into(),
                 target: ResolvedTarget::resolved("v1"),
                 relation: "supersedes".into(),
                 location: "frontmatter:supersedes".into(),
             },
             Edge {
-                reference: None,
+                references: Vec::new(),
                 source: "v3".into(),
                 target: ResolvedTarget::resolved("v2"),
                 relation: "supersedes".into(),
@@ -164,7 +164,7 @@ mod tests {
             let edges = pairs
                 .iter()
                 .map(|(newer, older)| Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: (*newer).into(),
                     target: ResolvedTarget::resolved(*older),
                     relation: "supersedes".into(),
@@ -381,7 +381,7 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
         .map(|e| IncomingEdgeRef {
             source: e.source.clone(),
             relation: e.relation.clone(),
-            reference: e.reference.clone(),
+            references: e.references.clone(),
         })
         .collect();
 
@@ -394,7 +394,7 @@ pub fn find_node_entry(graph: &Graph, id: &str) -> Option<NodeEntry> {
                 crate::model::ResolvedTarget::Unresolved { raw, .. } => raw.clone(),
             },
             relation: e.relation.clone(),
-            reference: e.reference.clone(),
+            references: e.references.clone(),
         })
         .collect();
 
@@ -434,8 +434,7 @@ pub struct NodeEntry {
 /// to also mean "source for incoming".
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct IncomingEdgeRef {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reference: Option<crate::model::edge::Reference>,
+    pub references: Vec<crate::model::edge::Reference>,
     pub source: String,
     pub relation: String,
 }
@@ -446,8 +445,7 @@ pub struct IncomingEdgeRef {
 /// source files).
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct OutgoingEdgeRef {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reference: Option<crate::model::edge::Reference>,
+    pub references: Vec<crate::model::edge::Reference>,
     pub target: String,
     pub relation: String,
 }

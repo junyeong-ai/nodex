@@ -363,14 +363,14 @@ mod tests {
             ],
             vec![
                 Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "new".into(),
                     target: ResolvedTarget::resolved("old"),
                     relation: "supersedes".into(),
                     location: "frontmatter:supersedes".into(),
                 },
                 Edge {
-                    reference: None,
+                    references: Vec::new(),
                     source: "one-sided-successor".into(),
                     target: ResolvedTarget::resolved("unpointed-old"),
                     relation: "supersedes".into(),
@@ -404,7 +404,7 @@ mod tests {
         config.detection.orphan_ok_kinds = vec!["guide".into()];
         config.detection.orphan_grace_days = 14;
         let self_edge = Edge {
-            reference: None,
+            references: Vec::new(),
             source: "self-citing".into(),
             target: ResolvedTarget::resolved("self-citing"),
             relation: "references".into(),

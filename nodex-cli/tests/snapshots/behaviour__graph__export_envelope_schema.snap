@@ -449,6 +449,117 @@ exit: 0
             ],
             "type": "object"
           },
+          "Reference": {
+            "description": "Authored reference evidence, retained even when its target resolves.",
+            "properties": {
+              "location": {
+                "$ref": "#/$defs/ReferenceLocation"
+              },
+              "source": {
+                "type": "string"
+              },
+              "syntax": {
+                "$ref": "#/$defs/ReferenceSyntax"
+              },
+              "target": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "syntax",
+              "target",
+              "location"
+            ],
+            "type": "object"
+          },
+          "ReferenceLocation": {
+            "description": "The parser-owned source of an authored reference. Body lines are one-based,\nand `end_line` includes the definition or code span supplying its meaning.",
+            "oneOf": [
+              {
+                "properties": {
+                  "end_line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "start_line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "body",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "start_line",
+                  "end_line"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "frontmatter",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "ReferenceProtection": {
+            "description": "Protection of an authored reference in the evaluated snapshots. Unprotected\nmeans no evaluated immutability lock holds it, not that an edit will pass.",
+            "enum": [
+              "protected",
+              "unprotected",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "ReferenceSource": {
+            "description": "An authored reference and the rules constraining its source.",
+            "properties": {
+              "protection": {
+                "$ref": "#/$defs/ReferenceProtection"
+              },
+              "reference": {
+                "$ref": "#/$defs/Reference"
+              },
+              "rules": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "reference",
+              "protection",
+              "rules"
+            ],
+            "type": "object"
+          },
+          "ReferenceSyntax": {
+            "description": "The grammar that authored a reference. Markdown destinations use the\nreferring document as their base; graph citations use document lookup.",
+            "enum": [
+              "markdown",
+              "wikilink",
+              "pattern",
+              "frontmatter"
+            ],
+            "type": "string"
+          },
           "RuleCoverage": {
             "description": "One applied rule's reach: the rule ran, and this is how much of the\nproject it had to run over.\n\nA rule that examines nothing passes for the same reason a rule that\nexamines everything passes, and `violations` alone cannot tell the two\napart. A declared rule whose subject set is empty is inert config —\ngovernance in the file, none in effect — and the only place that shows\nis here.",
             "properties": {
@@ -1292,6 +1403,16 @@ exit: 0
                   "relation": {
                     "type": "string"
                   },
+                  "source_protection": {
+                    "$ref": "#/$defs/ReferenceProtection"
+                  },
+                  "sources": {
+                    "description": "Location and lock evidence do not change the unresolved relation.",
+                    "items": {
+                      "$ref": "#/$defs/ReferenceSource"
+                    },
+                    "type": "array"
+                  },
                   "type": {
                     "const": "unresolved_reference",
                     "type": "string"
@@ -1302,7 +1423,9 @@ exit: 0
                   "relation",
                   "raw_target",
                   "location",
-                  "cause"
+                  "cause",
+                  "sources",
+                  "source_protection"
                 ],
                 "type": "object"
               },
@@ -1323,6 +1446,13 @@ exit: 0
                   "relation": {
                     "type": "string"
                   },
+                  "sources": {
+                    "description": "Authored source evidence does not change the cited relation.",
+                    "items": {
+                      "$ref": "#/$defs/ReferenceSource"
+                    },
+                    "type": "array"
+                  },
                   "target": {
                     "type": "string"
                   },
@@ -1336,7 +1466,8 @@ exit: 0
                   "relation",
                   "target",
                   "location",
-                  "current"
+                  "current",
+                  "sources"
                 ],
                 "type": "object"
               }
@@ -3698,6 +3829,107 @@ exit: 0
             ],
             "type": "object"
           },
+          "Reference": {
+            "description": "Authored reference evidence, retained even when its target resolves.",
+            "properties": {
+              "location": {
+                "$ref": "#/$defs/ReferenceLocation"
+              },
+              "source": {
+                "type": "string"
+              },
+              "syntax": {
+                "$ref": "#/$defs/ReferenceSyntax"
+              },
+              "target": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "syntax",
+              "target",
+              "location"
+            ],
+            "type": "object"
+          },
+          "ReferenceLocation": {
+            "description": "The parser-owned source of an authored reference. Body lines are one-based,\nand `end_line` includes the definition or code span supplying its meaning.",
+            "oneOf": [
+              {
+                "properties": {
+                  "end_line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "start_line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "body",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "start_line",
+                  "end_line"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "frontmatter",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "ReferenceProtection": {
+            "description": "Protection of an authored reference in the evaluated snapshots. Unprotected\nmeans no evaluated immutability lock holds it, not that an edit will pass.",
+            "enum": [
+              "protected",
+              "unprotected",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "ReferenceSource": {
+            "description": "An authored reference and the rules constraining its source.",
+            "properties": {
+              "protection": {
+                "$ref": "#/$defs/ReferenceProtection"
+              },
+              "reference": {
+                "$ref": "#/$defs/Reference"
+              },
+              "rules": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "reference",
+              "protection",
+              "rules"
+            ],
+            "type": "object"
+          },
           "ReferenceSyntax": {
             "description": "The grammar that authored a reference. Markdown destinations use the\nreferring document as their base; graph citations use document lookup.",
             "enum": [
@@ -3888,6 +4120,15 @@ exit: 0
               "source_path": {
                 "type": "string"
               },
+              "source_protection": {
+                "$ref": "#/$defs/ReferenceProtection"
+              },
+              "sources": {
+                "items": {
+                  "$ref": "#/$defs/ReferenceSource"
+                },
+                "type": "array"
+              },
               "syntax": {
                 "$ref": "#/$defs/ReferenceSyntax"
               }
@@ -3902,6 +4143,8 @@ exit: 0
               "reason",
               "location",
               "cause",
+              "source_protection",
+              "sources",
               "severity"
             ],
             "type": "object"
@@ -4672,6 +4915,16 @@ exit: 0
                   "relation": {
                     "type": "string"
                   },
+                  "source_protection": {
+                    "$ref": "#/$defs/ReferenceProtection"
+                  },
+                  "sources": {
+                    "description": "Location and lock evidence do not change the unresolved relation.",
+                    "items": {
+                      "$ref": "#/$defs/ReferenceSource"
+                    },
+                    "type": "array"
+                  },
                   "type": {
                     "const": "unresolved_reference",
                     "type": "string"
@@ -4682,7 +4935,9 @@ exit: 0
                   "relation",
                   "raw_target",
                   "location",
-                  "cause"
+                  "cause",
+                  "sources",
+                  "source_protection"
                 ],
                 "type": "object"
               },
@@ -4703,6 +4958,13 @@ exit: 0
                   "relation": {
                     "type": "string"
                   },
+                  "sources": {
+                    "description": "Authored source evidence does not change the cited relation.",
+                    "items": {
+                      "$ref": "#/$defs/ReferenceSource"
+                    },
+                    "type": "array"
+                  },
                   "target": {
                     "type": "string"
                   },
@@ -4716,7 +4978,8 @@ exit: 0
                   "relation",
                   "target",
                   "location",
-                  "current"
+                  "current",
+                  "sources"
                 ],
                 "type": "object"
               }
@@ -4894,15 +5157,11 @@ exit: 0
           "IncomingEdgeRef": {
             "description": "One edge pointing **into** the queried node. `source` is the other\nend — the node that links to us. Split from [`OutgoingEdgeRef`] so the\nJSON shape names each end honestly instead of overloading \"target\"\nto also mean \"source for incoming\".",
             "properties": {
-              "reference": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/Reference"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "references": {
+                "items": {
+                  "$ref": "#/$defs/Reference"
+                },
+                "type": "array"
               },
               "relation": {
                 "type": "string"
@@ -4912,6 +5171,7 @@ exit: 0
               }
             },
             "required": [
+              "references",
               "source",
               "relation"
             ],
@@ -5045,15 +5305,11 @@ exit: 0
           "OutgoingEdgeRef": {
             "description": "One edge originating **from** the queried node. `target` is the\nresolved node id when the edge points into the graph, or the raw\nuser string for out-of-graph references (e.g. `covers` pointing at\nsource files).",
             "properties": {
-              "reference": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/Reference"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "references": {
+                "items": {
+                  "$ref": "#/$defs/Reference"
+                },
+                "type": "array"
               },
               "relation": {
                 "type": "string"
@@ -5063,6 +5319,7 @@ exit: 0
               }
             },
             "required": [
+              "references",
               "target",
               "relation"
             ],
@@ -5072,7 +5329,7 @@ exit: 0
             "description": "Authored reference evidence, retained even when its target resolves.",
             "properties": {
               "location": {
-                "type": "string"
+                "$ref": "#/$defs/ReferenceLocation"
               },
               "source": {
                 "type": "string"
@@ -5091,6 +5348,51 @@ exit: 0
               "location"
             ],
             "type": "object"
+          },
+          "ReferenceLocation": {
+            "description": "The parser-owned source of an authored reference. Body lines are one-based,\nand `end_line` includes the definition or code span supplying its meaning.",
+            "oneOf": [
+              {
+                "properties": {
+                  "end_line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "start_line": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "body",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "start_line",
+                  "end_line"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "frontmatter",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "field"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "ReferenceSyntax": {
             "description": "The grammar that authored a reference. Markdown destinations use the\nreferring document as their base; graph citations use document lookup.",
@@ -6267,7 +6569,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.58.0"
+    "version": "0.59.0"
   },
   "ok": true
 }
