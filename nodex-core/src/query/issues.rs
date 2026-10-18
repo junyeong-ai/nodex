@@ -114,7 +114,8 @@ pub fn find_issues(
 ) -> IssueReport {
     let orphans = find_orphans(graph, config, today).entries;
     let stale = find_stale(graph, config, today).map_or_else(Vec::new, |outcome| outcome.entries);
-    let files = crate::builder::scanner::ProjectFiles::working_tree(root);
+    let probe = crate::builder::file_probe::FileProbe::default();
+    let files = crate::builder::scanner::ProjectFiles::working_tree(root).with_probe(&probe);
     let unresolved_edges = find_unresolved_edges(graph, config, files, diff, steps);
     // The caller supplies the same diff context `check` runs under (the
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
@@ -186,6 +187,8 @@ pub fn find_unresolved_edges(
     diff: Option<&crate::diff::GraphDiff>,
     steps: Option<&[crate::ancestry::Step]>,
 ) -> Vec<UnresolvedEdge> {
+    let probe = crate::builder::file_probe::FileProbe::default();
+    let files = files.with_probe(&probe);
     let policy: Vec<(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)> = config
         .detection
         .unresolved_policy

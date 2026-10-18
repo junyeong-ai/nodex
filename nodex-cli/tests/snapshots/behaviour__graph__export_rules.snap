@@ -128,7 +128,7 @@ exit: 0
         "source": "builtin"
       }
     ],
-    "version": "0.59.0"
+    "version": "0.59.1"
   },
   "ok": true
 }

@@ -6,7 +6,7 @@ description: >-
   guarded lifecycle or reference changes, and machine-readable CLI exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.59.0
+  version: 0.59.1
 ---
 
 # nodex

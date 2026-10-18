@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 
 pub mod cache;
+pub(crate) mod file_probe;
 pub mod resolver;
 pub mod scanner;
 pub mod validator;

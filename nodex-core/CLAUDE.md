@@ -117,6 +117,11 @@ safety: `src/git.rs` rustdoc.
   preflight and measurements are distinct: git/stat-backed rules are not graph-
   only computations. Diff-aware rules declare non-applicability via
   `is_applicable`; the runner records `skipped_rules`.
+- `FileProbe` shares exact directory names and terminal types within one
+  evaluation. Issue queries, standalone unresolved classification, rule
+  evaluation and the rule runner bind its lifetime; before/after proposals and
+  later invocations get fresh observations. Overlay declarations answer before
+  disk observations.
 - `RuleRun::subjects` and `unjudged` state reach for every evaluated rule;
   `rule_coverage` and `skipped_rules` partition the registry. Reach is measured
   before any `--since` report narrowing. Counting conventions and new-rule

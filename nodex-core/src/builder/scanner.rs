@@ -182,20 +182,40 @@ pub enum Proposed {
 pub struct ProjectFiles<'a> {
     root: &'a Path,
     overlay: &'a [(PathBuf, Proposed)],
+    probe: Option<&'a super::file_probe::FileProbe>,
 }
 
 impl<'a> ProjectFiles<'a> {
     /// The tree as it stands. Every read-plane evaluation, and the
     /// before-half of every proposal gate.
     pub fn working_tree(root: &'a Path) -> Self {
-        Self { root, overlay: &[] }
+        Self {
+            root,
+            overlay: &[],
+            probe: None,
+        }
     }
 
     /// The tree with `overlay` applied — the same slice
     /// [`build_with_overlay`](crate::builder::build_with_overlay) graphed, so
     /// the probes and the graph describe one project.
     pub fn proposed(root: &'a Path, overlay: &'a [(PathBuf, Proposed)]) -> Self {
-        Self { root, overlay }
+        Self {
+            root,
+            overlay,
+            probe: None,
+        }
+    }
+
+    pub(crate) fn with_probe<'b>(self, probe: &'b super::file_probe::FileProbe) -> ProjectFiles<'b>
+    where
+        'a: 'b,
+    {
+        ProjectFiles {
+            root: self.root,
+            overlay: self.overlay,
+            probe: self.probe.or(Some(probe)),
+        }
     }
 
     /// The project root — for the probes that walk it, and for the rules
@@ -225,7 +245,10 @@ impl<'a> ProjectFiles<'a> {
             {
                 true
             }
-            None => crate::builder::resolver::exists_case_sensitive(self.root, rel, admit_dirs),
+            None => self.probe.map_or_else(
+                || super::file_probe::FileProbe::default().holds(self.root, rel, admit_dirs),
+                |probe| probe.holds(self.root, rel, admit_dirs),
+            ),
         }
     }
 }
