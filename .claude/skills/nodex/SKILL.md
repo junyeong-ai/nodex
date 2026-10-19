@@ -6,7 +6,7 @@ description: >-
   guarded lifecycle or reference changes, and machine-readable CLI exports.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.59.1
+  version: 0.60.0
 ---
 
 # nodex
@@ -43,6 +43,8 @@ A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 `GRAPH_MISSING` / `GRAPH_OUTDATED`; fix unreadable paths for `IO_ERROR`.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
 and `current`; rebuild with `--full` for a schema mismatch.
+Incompatible snapshot schemas also yield `GRAPH_OUTDATED`, naming the recorded
+and supported versions. `--allow-stale` does not bypass schema compatibility.
 
 Before treating an empty answer or green check as complete, inspect
 `scope_coverage`, `snapshot.unbuildable`, `skipped_rules` and `rule_coverage`.
