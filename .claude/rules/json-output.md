@@ -14,7 +14,7 @@ Success: {"ok": true, "data": T, "warnings": [...]}
 Error:   {"ok": false, "error": {"code": "CODE", "message": "..."}}
 ```
 
-- Snapshot queries verify content by default; `--allow-stale` explicitly selects membership-only reads. Envelope `snapshot` carries probe scope and coverage: membership does not measure content, and content fidelity does not certify parsing completeness.
+- Snapshot queries verify content by default; `--allow-stale` explicitly selects membership-only reads. Schema compatibility is checked before decoding graph data in either mode; mismatch yields `GRAPH_OUTDATED` with a rebuild remedy. Envelope `snapshot` carries probe scope and coverage: membership does not measure content, and content fidelity does not certify parsing completeness.
 - Batch mutation `completion` distinguishes `planned`, `complete` and `partial`; non-empty typed `failures` retain the result envelope and exit 2 through `emit_batch_write`. Policy holds alone exit 0. Scope and retention advisories still matter.
 - `warnings` array is omitted when empty (`skip_serializing_if`)
 - Warnings with machine-readable evidence use optional typed `WarningDetails`.

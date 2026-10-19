@@ -258,6 +258,50 @@ pub struct DivergenceOutcome {
     pub scan: crate::builder::scanner::ScopeScan,
 }
 
+#[derive(serde::Deserialize)]
+struct SnapshotHeader {
+    schema_version: u32,
+    #[serde(default)]
+    meta: serde_json::Value,
+}
+
+impl SnapshotHeader {
+    fn parse(content: &str) -> serde_json::Result<Self> {
+        struct HeaderVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for HeaderVisitor {
+            type Value = SnapshotHeader;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a graph snapshot JSON object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                serde::Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+
+        let mut deserializer = serde_json::Deserializer::from_str(content);
+        let header = serde::Deserializer::deserialize_map(&mut deserializer, HeaderVisitor)?;
+        deserializer.end()?;
+        Ok(header)
+    }
+
+    fn require_supported(&self, path: &Path) -> Result<()> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(Error::GraphSchemaMismatch {
+                path: path.to_path_buf(),
+                snapshot_version: self.schema_version,
+                supported_version: SCHEMA_VERSION,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Probe `<output.dir>/graph.json` and classify it into one of the five
 /// [`GraphState`]s, running the full content probe on a readable
 /// snapshot. A probe, not a gate: every reachable file state is a
@@ -279,20 +323,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec
         }
     };
 
-    // The version pre-probe runs BEFORE the full Graph parse so a
-    // schema mismatch classifies as its own state instead of blurring
-    // into the deserializer's error string. `schema_version` is the
-    // only typed discriminator; `meta` is probed as raw JSON — a
-    // snapshot whose meta shape differs from this binary's is exactly
-    // the situation the probe classifies, so its shape must not be
-    // able to fail the probe into `unreadable`.
-    #[derive(serde::Deserialize)]
-    struct VersionProbe {
-        schema_version: u32,
-        #[serde(default)]
-        meta: serde_json::Value,
-    }
-    let probe: VersionProbe = match serde_json::from_str(&content) {
+    let probe = match SnapshotHeader::parse(&content) {
         Ok(probe) => probe,
         Err(e) => {
             let mut report = StatusReport::new(GraphState::Unreadable, rel_path);
@@ -300,7 +331,7 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec
             return Ok((report, Vec::new()));
         }
     };
-    if probe.schema_version != SCHEMA_VERSION {
+    if probe.require_supported(&graph_path).is_err() {
         let mut report = StatusReport::new(GraphState::SchemaMismatch, rel_path);
         report.snapshot_schema_version = Some(probe.schema_version);
         report.snapshot_nodex_version = probe
@@ -364,6 +395,8 @@ pub fn compute_status(root: &Path, config: &Config) -> Result<(StatusReport, Vec
 ///
 /// - a missing file is the typed [`Error::MissingGraph`] (`GRAPH_MISSING`),
 ///   so "unbuilt" is machine-distinguishable from a permissions failure;
+/// - an incompatible schema is [`Error::GraphSchemaMismatch`]
+///   (`GRAPH_OUTDATED`), requiring a rebuild before any payload is decoded;
 /// - a readable snapshot gets the cheap exact probe
 ///   ([`DivergenceProbe::Membership`]); divergence renders one prose
 ///   warning — advisory only, never a gate;
@@ -398,6 +431,11 @@ fn read_snapshot(root: &Path, config: &Config, require_current: bool) -> Result<
             });
         }
     };
+    let header = SnapshotHeader::parse(&content).map_err(|e| Error::Parse {
+        path: graph_path.clone(),
+        source: crate::error::ParseError::Json(e),
+    })?;
+    header.require_supported(&graph_path)?;
     let graph: Graph = serde_json::from_str(&content).map_err(|e| Error::Parse {
         path: graph_path,
         source: crate::error::ParseError::Json(e),
@@ -1140,6 +1178,81 @@ mod tests {
             err.to_string().contains("nodex build"),
             "the remedy rides the message: {err}"
         );
+    }
+
+    #[test]
+    fn snapshot_readers_check_schema_before_decoding_foreign_payloads() {
+        let (dir, config) = project_with(&[DOC_A]);
+        let graph_path = dir.path().join(&config.output.dir).join("graph.json");
+        std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
+
+        for version in [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1] {
+            for payload in [
+                r#""nodes": {}, "edges": [{"source": "doc-a", "reference": null}]"#,
+                r#""nodes": [], "edges": {}, "meta": [42]"#,
+            ] {
+                for content in [
+                    format!(r#"{{"schema_version": {version}, {payload}}}"#),
+                    format!(r#"{{{payload}, "schema_version": {version}}}"#),
+                ] {
+                    std::fs::write(&graph_path, &content).unwrap();
+                    let (report, _) = compute_status(dir.path(), &config).unwrap();
+                    assert_eq!(report.state, GraphState::SchemaMismatch);
+                    assert_eq!(report.snapshot_schema_version, Some(version));
+
+                    for reader in [load_graph, load_current_graph] {
+                        let error = reader(dir.path(), &config).unwrap_err();
+                        assert!(matches!(
+                            &error,
+                            Error::GraphSchemaMismatch {
+                                path,
+                                snapshot_version,
+                                supported_version,
+                            } if path == &graph_path
+                                && *snapshot_version == version
+                                && *supported_version == SCHEMA_VERSION
+                        ));
+                        assert_eq!(error.code(), "GRAPH_OUTDATED", "{content}: {error}");
+                        assert!(error.to_string().contains("nodex build --full"));
+                        assert!(error.to_string().contains(&version.to_string()));
+                        assert!(error.to_string().contains(&SCHEMA_VERSION.to_string()));
+                    }
+                    assert_eq!(std::fs::read_to_string(&graph_path).unwrap(), content);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_readers_do_not_treat_corruption_as_schema_mismatch() {
+        let (dir, config) = project_with(&[DOC_A]);
+        let graph_path = dir.path().join(&config.output.dir).join("graph.json");
+        std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
+
+        for content in [
+            "not json".to_string(),
+            "[]".to_string(),
+            "[15]".to_string(),
+            "[15, {}]".to_string(),
+            r#"{"nodes": {}, "edges": []}"#.to_string(),
+            r#"{"schema_version": "15"}"#.to_string(),
+            r#"{"schema_version": -1}"#.to_string(),
+            r#"{"schema_version": 4294967296}"#.to_string(),
+            r#"{"schema_version": 15, "schema_version": 16}"#.to_string(),
+            r#"{"schema_version": 15, "edges": ["#.to_string(),
+            r#"{"schema_version": 15} null"#.to_string(),
+            format!(
+                r#"{{"schema_version": {SCHEMA_VERSION}, "nodes": {{}}, "edges": [{{"source": "doc-a", "reference": null}}]}}"#
+            ),
+        ] {
+            std::fs::write(&graph_path, &content).unwrap();
+            let (report, _) = compute_status(dir.path(), &config).unwrap();
+            assert_eq!(report.state, GraphState::Unreadable, "{content}");
+            for reader in [load_graph, load_current_graph] {
+                let error = reader(dir.path(), &config).unwrap_err();
+                assert_eq!(error.code(), "PARSE_ERROR", "{content}: {error}");
+            }
+        }
     }
 
     #[test]

@@ -44,7 +44,7 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 `unbuildable_paths` lists the snapshot's recorded parse failures. They are covered by the digest the failed parse consumed, so unchanged broken bytes are never staleness — fix the document, `check` reds it. One exception: a path the build could not read at all had no bytes to digest, so the probe can never confirm it and the state stays `outdated` (naming that path in `changed_paths`) until the file is readable; a rebuild will not clear it.
 
-`snapshot_nodex_version` names the producing binary. Its version is part of what `config_changed` is keyed on, so an upgrade flags existing snapshots `outdated` with `config_changed: true` until one rebuild; an upgrade that changes the snapshot format reads `schema_mismatch` instead, and a query refuses that snapshot (`PARSE_ERROR`) until `nodex build --full`.
+`snapshot_nodex_version` names the producing binary. Its version is part of what `config_changed` is keyed on, so an upgrade flags existing snapshots `outdated` with `config_changed: true` until one rebuild; an incompatible snapshot format reads `schema_mismatch` instead, and a query refuses that snapshot (`GRAPH_OUTDATED`) until `nodex build --full`. The error names the recorded and supported schema versions. `--allow-stale` does not bypass schema compatibility.
 
 ## query
 

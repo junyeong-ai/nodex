@@ -2336,6 +2336,11 @@ mod tests {
                 corpus: crate::error::Corpus::Documents,
             },
             Error::MissingGraph { path: p() },
+            Error::GraphSchemaMismatch {
+                path: p(),
+                snapshot_version: 1,
+                supported_version: crate::model::graph::SCHEMA_VERSION,
+            },
             Error::WriteConflict(p()),
             Error::StaleGraph {
                 asked: crate::error::Lookup::Id("x".into()),

@@ -19853,6 +19853,56 @@ fn scaffold_refuses_relocating_a_frozen_record_under_its_own_id() {
 // ─── status & the snapshot contract ─────────────────────────────────
 
 #[test]
+fn queries_reject_incompatible_snapshots_without_writes_and_build_recovers() {
+    let tmp = scratch();
+    init_project(tmp.path());
+    write_doc(tmp.path(), "docs/a.md", "---\nid: doc-a\n---\n[B](b.md)\n");
+    write_doc(tmp.path(), "docs/b.md", "---\nid: doc-b\n---\n# B\n");
+    nodex(tmp.path()).arg("build").assert().success();
+
+    let graph_path = tmp.path().join("_index/graph.json");
+    let original: Value = serde_json::from_str(&fs::read_to_string(&graph_path).unwrap()).unwrap();
+    let cache_path = tmp.path().join("_index/cache.json");
+    let cache = fs::read(&cache_path).unwrap();
+    let version = nodex_core::model::graph::SCHEMA_VERSION;
+
+    for foreign_version in [version - 1, version + 1] {
+        let mut foreign = original.clone();
+        foreign["schema_version"] = foreign_version.into();
+        for edge in foreign["edges"].as_array_mut().unwrap() {
+            edge.as_object_mut().unwrap().remove("references");
+        }
+        let content = serde_json::to_vec(&foreign).unwrap();
+        fs::write(&graph_path, &content).unwrap();
+
+        let status = run_json(nodex(tmp.path()).arg("status"));
+        assert_eq!(status["state"], "schema_mismatch");
+        assert_eq!(status["snapshot_schema_version"], foreign_version);
+
+        for args in [
+            vec!["query", "nodes"],
+            vec!["query", "--allow-stale", "nodes"],
+            vec!["query", "issues"],
+            vec!["query", "chain", "doc-a"],
+        ] {
+            let output = nodex(tmp.path()).args(&args).assert().code(2);
+            let envelope: Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+            assert_eq!(envelope["ok"], false, "{args:?}: {envelope}");
+            assert_eq!(envelope["error"]["code"], "GRAPH_OUTDATED");
+            assert_eq!(fs::read(&graph_path).unwrap(), content);
+            assert_eq!(fs::read(&cache_path).unwrap(), cache);
+        }
+
+        nodex(tmp.path()).arg("build").assert().success();
+        let status = run_json(nodex(tmp.path()).arg("status"));
+        assert_eq!(status["state"], "current");
+        assert_eq!(status["snapshot_schema_version"], version);
+        let backlinks = run_json(nodex(tmp.path()).args(["query", "backlinks", "doc-b"]));
+        assert_eq!(backlinks["total"], 1);
+    }
+}
+
+#[test]
 fn status_walks_the_snapshot_state_ladder() {
     let tmp = scratch();
     init_project(tmp.path());

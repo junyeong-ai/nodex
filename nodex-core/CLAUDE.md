@@ -327,10 +327,12 @@ safety: `src/git.rs` rustdoc.
 
 ## Snapshot and output contracts
 
-`Graph` serialization reconstructs derived adjacency via `Graph::new`.
-Provenance (`meta.nodex_version`, `config_hash`) and parse failures default during
-old-file deserialization so compatibility fails via the schema guard. Bump
+`Graph` serialization reconstructs derived adjacency via `Graph::new`. Bump
 `SCHEMA_VERSION` in `src/model/graph.rs` on an on-disk shape change.
+Snapshot readers validate `SnapshotHeader` before decoding graph data, independent
+of JSON field order or the foreign payload's shape. Schema mismatch is typed
+`GraphSchemaMismatch` (`GRAPH_OUTDATED`); invalid JSON or malformed current-schema data
+remains `PARSE_ERROR`. `--allow-stale` never bypasses schema compatibility.
 
 `src/status.rs` owns graph.json reads. `load_graph` advises on membership/config
 drift; `load_current_graph` requires config, membership and exact content.

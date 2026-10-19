@@ -11,9 +11,9 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 
 ---
 
-## Upgrading to 0.59
+## Upgrading
 
-Rebuild existing snapshots with `nodex build --full` and regenerate clients from `nodex export envelope-schema`. Edge provenance is now a `references` array; reference locations are tagged `body` or `frontmatter` objects. Unresolved listings and reference findings expose source-lock evidence. Existing unresolved severity remains unchanged unless a policy row selects `source_protection`.
+Run `nodex build --full` in each project after upgrading and regenerate clients from `nodex export envelope-schema`. Queries reject incompatible snapshot formats with `GRAPH_OUTDATED`, naming the recorded and supported schema versions.
 
 ## Table of Contents
 
@@ -438,6 +438,11 @@ Snapshot queries include envelope `snapshot` with `verification` (`membership`,
 Membership verification does not check content; content verification does not mean
 all documents parsed. Inspect `status` or `check` for failed paths.
 
+Snapshot schema versions are checked before decoding graph data. An incompatible
+schema yields `GRAPH_OUTDATED` with the recorded and supported versions; run
+`nodex build --full` in that project to regenerate it. `--allow-stale` does not
+bypass schema compatibility. Queries never rebuild snapshots automatically.
+
 Body search accepts `--max-matches N` across documents and `--max-line-chars N`
 per line. Results carry `match_total`, optional `match_returned` when capped, and
 `truncated: true` on shortened lines. Limits bound output, not revision checks.
@@ -504,11 +509,11 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `CYCLE_DETECTED` | A cycle exists in `supersedes` edges |
 | `DUPLICATE_ID` | Two documents resolved to the same node id |
-| `PARSE_ERROR` | A write command met a document whose frontmatter does not parse — or, for `lifecycle`, has none (`nodex migrate --apply` writes one) — or `graph.json` is corrupt or of another snapshot schema (`nodex build --full`); a build records a malformed document as a `parse_failure` violation instead |
+| `PARSE_ERROR` | A write command met a document whose frontmatter does not parse — or, for `lifecycle`, has none (`nodex migrate --apply` writes one) — or `graph.json` is corrupt (`nodex build --full`); a build records a malformed document as a `parse_failure` violation instead |
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
-| `GRAPH_OUTDATED` | A lookup or requested body does not match the indexed revision — run `nodex build`; the remedy is a rebuild, not a corrected id (that is `NOT_FOUND`) |
+| `GRAPH_OUTDATED` | The snapshot schema is incompatible, or a lookup or requested body does not match the indexed revision — rebuild with `nodex build` (`--full` for schema mismatch) |
 | `WRITE_CONFLICT` | A document changed after the mutation read it; reread and retry against its current revision. |
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
@@ -785,7 +790,7 @@ Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.59, <0.60"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.60, <0.61"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH` — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -1164,7 +1169,7 @@ cd nodex
 Every command accepts `--check-version <semver-req>` as a global flag — refuse to run unless the installed binary satisfies the requirement.
 
 ```bash
-nodex --check-version ">=0.59, <0.60" build
+nodex --check-version ">=0.60, <0.61" build
 ```
 
 ---
