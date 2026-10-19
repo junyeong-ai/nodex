@@ -127,6 +127,16 @@ pub enum Error {
     #[error("graph snapshot missing at {path} — run `nodex build`")]
     MissingGraph { path: PathBuf },
 
+    #[error(
+        "graph snapshot at {path} uses schema_version {snapshot_version}, but this binary supports \
+         {supported_version} — run `nodex build --full` to regenerate"
+    )]
+    GraphSchemaMismatch {
+        path: PathBuf,
+        snapshot_version: u32,
+        supported_version: u32,
+    },
+
     /// A lookup missed against a graph snapshot that no longer matches the
     /// working tree, so absence from the snapshot is not absence from the
     /// project. Distinct from [`Error::MissingNode`] because the remedy
@@ -193,7 +203,7 @@ impl Error {
             Self::Transition { .. } => "INVALID_TRANSITION",
             Self::MissingNode { .. } => "NOT_FOUND",
             Self::MissingGraph { .. } => "GRAPH_MISSING",
-            Self::StaleGraph { .. } => "GRAPH_OUTDATED",
+            Self::StaleGraph { .. } | Self::GraphSchemaMismatch { .. } => "GRAPH_OUTDATED",
             Self::WriteConflict(_) => "WRITE_CONFLICT",
             Self::Exists(_) => "ALREADY_EXISTS",
             Self::OutsideRoot(_) => "PATH_ESCAPES_ROOT",

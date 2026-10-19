@@ -295,10 +295,6 @@ impl<'de> Deserialize<'de> for Graph {
         #[derive(Deserialize)]
         struct Raw {
             schema_version: u32,
-            // `meta` and `parse_failures` default so a file from an
-            // older schema still fails through the version-mismatch
-            // message below — the version gate is the single designed
-            // rejection seam, never a "missing field" error.
             #[serde(default)]
             meta: GraphMeta,
             nodes: IndexMap<String, Node>,
@@ -361,14 +357,6 @@ mod tests {
 
     #[test]
     fn deserialize_rejects_outdated_schema_version() {
-        // A graph.json produced by an older nodex binary must not
-        // silently load — the schema envelope is part of the
-        // contract. Operators see the "run nodex build --full"
-        // message; consumers see a typed deserialisation error. The
-        // payload deliberately carries no `meta` / `parse_failures`:
-        // both default during deserialisation precisely so an older
-        // file fails through this version message rather than a
-        // "missing field" error.
         let raw = format!(
             r#"{{"schema_version": {}, "nodes": {{}}, "edges": []}}"#,
             SCHEMA_VERSION - 1

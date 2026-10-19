@@ -11,9 +11,9 @@ nodex 는 프로젝트의 markdown 파일들을 스캔해 YAML frontmatter 와 �
 
 ---
 
-## 0.59로 갱신
+## 업그레이드
 
-기존 스냅샷은 `nodex build --full`로 다시 빌드하고 `nodex export envelope-schema`로 클라이언트를 다시 생성합니다. 엣지의 출처는 이제 `references` 배열이며 참조 위치는 `body` 또는 `frontmatter`로 구분한 객체입니다. 미해결 참조 조회와 참조 진단은 원본의 잠금 근거를 제공합니다. 정책 row에서 `source_protection`을 선택하지 않으면 기존 미해결 참조의 심각도는 유지됩니다.
+업그레이드 후 각 프로젝트에서 `nodex build --full`로 스냅샷을 다시 만들고 `nodex export envelope-schema`로 클라이언트를 다시 생성합니다. 호환되지 않는 스냅샷 형식은 기록된 버전과 지원 버전을 담은 `GRAPH_OUTDATED`로 거절합니다.
 
 ## 목차
 
@@ -420,6 +420,11 @@ flowchart LR
 파일 목록 검사는 내용의 최신성을 보장하지 않으며, 내용이 일치해도 파싱 실패
 문서는 노드에 포함되지 않습니다. 실패 경로는 `status`나 `check`로 확인합니다.
 
+스냅샷 스키마 버전은 그래프 데이터를 해석하기 전에 검사합니다. 호환되지 않으면
+기록된 버전과 지원 버전을 담은 `GRAPH_OUTDATED`를 반환합니다. 해당 프로젝트에서
+`nodex build --full`로 재생성합니다. `--allow-stale`도 스키마 호환성 검사를
+생략하지 않으며, 조회가 스냅샷을 자동 재생성하지는 않습니다.
+
 본문 검색의 `--max-matches N`은 전체 반환 일치 줄 수를,
 `--max-line-chars N`은 각 줄의 Unicode 문자 수를 제한합니다.
 `match_total`은 제한 전 일치 줄 수이며, 줄 수가 줄면 `match_returned`,
@@ -488,11 +493,11 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 |---|---|
 | `CYCLE_DETECTED` | `supersedes` cycle |
 | `DUPLICATE_ID` | 동일 node id 가 두 문서에 |
-| `PARSE_ERROR` | write 명령이 frontmatter 가 파싱되지 않는 문서(`lifecycle` 은 frontmatter 가 없는 문서도: `nodex migrate --apply` 가 만들어 줌)를 만났거나, `graph.json` 이 손상됐거나 다른 스냅샷 스키마임(`nodex build --full`) — build 는 깨진 문서를 `parse_failure` 위반으로 기록 |
+| `PARSE_ERROR` | write 명령이 frontmatter 가 파싱되지 않는 문서(`lifecycle` 은 frontmatter 가 없는 문서도: `nodex migrate --apply` 가 만들어 줌)를 만났거나, `graph.json` 이 손상됨(`nodex build --full`) — build 는 깨진 문서를 `parse_failure` 위반으로 기록 |
 | `INVALID_TRANSITION` | lifecycle 액션이 허용 안 되는 status 에서 시도됨 |
 | `NOT_FOUND` | 참조한 node id 가 그래프에 없음 |
 | `GRAPH_MISSING` | `graph.json` 스냅샷 없이 `query` 실행 — `nodex build` 먼저 |
-| `GRAPH_OUTDATED` | 조회나 요청한 본문이 색인된 리비전과 일치하지 않음 — `nodex build`. 처방은 재빌드이지 id 수정이 아님(그건 `NOT_FOUND`) |
+| `GRAPH_OUTDATED` | 스냅샷 스키마가 호환되지 않거나 조회·요청한 본문이 색인된 리비전과 일치하지 않음 — `nodex build`로 재생성(스키마 불일치는 `--full`) |
 | `WRITE_CONFLICT` | 수정이 읽은 뒤 문서가 변경됨. 현재 리비전을 다시 읽고 재시도 |
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` 대상 경로에 실제 파일이 이미 존재 |
 | `PATH_ESCAPES_ROOT` | `..` / 심볼릭 링크가 프로젝트 root 벗어남 |
@@ -765,7 +770,7 @@ per-block 룰 패밀리 (`[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[r
 
 ### 바이너리 버전 핀
 
-`nodex.toml` 의 `[meta] nodex_version = ">=0.59, <0.60"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
+`nodex.toml` 의 `[meta] nodex_version = ">=0.60, <0.61"` 은 프로젝트 문서를 **쓸** 수 있는 바이너리를 핀. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings` 에 비치명적 경고를 첨부하고, 문서를 쓰는 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH` 로 거부 — 그래프 읽기는 손상시킬 수 없으므로 변형만 게이트. 모든 CI / 컨트리뷰터가 자체 검사를 다시 짤 필요 없이 도구 버전을 핀. 글로벌 `--check-version` CLI 플래그는 불일치 시 *모든* 명령을 거부하는 별도 하드 게이트.
 
 ---
 
@@ -1127,7 +1132,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>` 를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부한다.
 
 ```bash
-nodex --check-version ">=0.59, <0.60" build
+nodex --check-version ">=0.60, <0.61" build
 ```
 
 ---
