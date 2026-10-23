@@ -27,7 +27,7 @@ pub enum ExportCommand {
     },
     /// Emit the resolved document-locating surface (scope, output, parser, identity, initial status)
     Config,
-    /// Emit the authoritative CLI invocation grammar (leaf paths, positional arity, payload-schema keys)
+    /// Emit the authoritative CLI invocation grammar (leaf paths, positionals, flags, payload-schema keys)
     Commands,
     /// Emit the error-code and exit-code vocabularies (closed sets, for codegen)
     Diagnostics,
