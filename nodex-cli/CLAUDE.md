@@ -56,8 +56,10 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
   stopped run; staged check drops its checkout before an encoder can exit.
 - Every invocation uses one `Repository` (`ensure_repository` supplies typed
   GIT_ERROR). Graph at `Repository::locate(checkout)` so nested projects stay
-  scoped. Ask `ref_state` / `recorded` before checkout; disk stats cannot
-  distinguish an absent project from a gitlink's empty directory.
+  scoped. Ask git whether a tree carries the project before checkout
+  (`carries_project`; `ref_state` / `recorded` for a ref, whose resolved commit
+  answers every later question); disk stats cannot distinguish an absent
+  project from a gitlink's empty directory.
 - `baseline_graph` builds the baseline under the judged config and retains its
   warnings. `diff_against_ref` / `baseline_diff` use that graph for reads;
   `write_baseline` passes it into `BaselineBinding::snapshot` for locks. Preserve

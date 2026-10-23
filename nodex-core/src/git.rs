@@ -234,8 +234,10 @@ fn git_path(rel_path: &Path) -> std::ffi::OsString {
 }
 
 /// What a git ref holds for one project — the states a baseline can be
-/// in before any document is looked up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// in before any document is looked up. A ref that names a commit carries
+/// the commit it named, so every later question is asked of that commit
+/// rather than of a name that may have moved since.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefState {
     /// No ref in the repository names a commit, so no baseline could
     /// name a snapshot either — an ordinary state for a project set up
@@ -251,11 +253,11 @@ pub enum RefState {
     /// The ref is a commit, but the project's own directory is not a
     /// directory in it — absent, or recorded there as a file or a
     /// submodule. There is no snapshot to compare against.
-    WithoutProject,
+    WithoutProject(String),
     /// The ref is a commit whose tree carries the project's directory, so
     /// a per-document lookup that finds nothing means that document is
     /// new.
-    CarriesProject,
+    CarriesProject(String),
 }
 
 /// The repository a project is tracked in, together with where the
@@ -557,7 +559,7 @@ impl Repository {
     /// nothing for this project at all — and a lock reading the second as
     /// the first permits every write it exists to refuse.
     pub fn ref_state(&self, git_ref: &str) -> io::Result<RefState> {
-        if !self.resolves(&format!("{git_ref}^{{commit}}"))? {
+        let Some(commit) = self.resolve(&format!("{git_ref}^{{commit}}"))? else {
             // A repository that has recorded nothing is a different fact
             // from one pointed at a ref it does not know, and only the
             // first is an ordinary state to go inert on. `HEAD` cannot
@@ -570,16 +572,18 @@ impl Repository {
             } else {
                 RefState::Unborn
             });
-        }
-        Ok(if self.carries_project(git_ref)? {
-            RefState::CarriesProject
+        };
+        Ok(if self.carries_project(&commit)? {
+            RefState::CarriesProject(commit)
         } else {
-            RefState::WithoutProject
+            RefState::WithoutProject(commit)
         })
     }
 
-    /// Whether `treeish` — a commit or a tree — records the project's
-    /// directory as a directory.
+    /// Whether `treeish` — a commit or a tree git has resolved — records the
+    /// project's directory as a directory. A project at the repository's top
+    /// level is the tree itself, which every commit and tree records, so
+    /// only a project with a prefix has a question to ask.
     ///
     /// A `rev-parse` of the path resolves just as happily for a file or a
     /// submodule gitlink recorded at that name, and binding to one would
@@ -596,6 +600,9 @@ impl Repository {
     /// Under-enforcing while saying so beats binding to a location git was
     /// not asked about.
     pub fn carries_project(&self, treeish: &str) -> io::Result<bool> {
+        if self.prefix.as_os_str().is_empty() {
+            return Ok(true);
+        }
         let object = format!(
             "{treeish}:{}",
             crate::path_guard::forward_string(&self.prefix)
@@ -863,10 +870,7 @@ impl Repository {
     /// The commit `HEAD` names, or `None` on an unborn branch — a
     /// repository with no commits, or a fresh orphan branch.
     pub fn head(&self) -> io::Result<Option<String>> {
-        match self.resolves("HEAD^{commit}")? {
-            true => Ok(Some(self.object_id("HEAD^{commit}")?)),
-            false => Ok(None),
-        }
+        self.resolve("HEAD^{commit}")
     }
 
     /// Whether `descendant` reaches `ancestor`; a commit reaches itself.
@@ -947,28 +951,24 @@ impl Repository {
         Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
     }
 
-    /// Resolve a ref to the immutable commit used by this invocation.
-    pub fn commit(&self, git_ref: &str) -> io::Result<String> {
-        self.object_id(&format!("{git_ref}^{{commit}}"))
-    }
-
     /// The root tree `commit` records.
     pub fn tree(&self, commit: &str) -> io::Result<String> {
-        self.object_id(&format!("{commit}^{{tree}}"))
+        let object = format!("{commit}^{{tree}}");
+        self.resolve(&object)?
+            .ok_or_else(|| io::Error::other(format!("git resolves no object for {object}")))
     }
 
-    /// The object id git resolves `object` to.
-    fn object_id(&self, object: &str) -> io::Result<String> {
+    /// The object id git resolves `object` to, or `None` where it resolves
+    /// none: one question answers both whether and what.
+    fn resolve(&self, object: &str) -> io::Result<Option<String>> {
         let output = self
             .command()
             .args(["rev-parse", "--verify", "--quiet", object])
             .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "git resolves no object for {object}"
-            )));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string()))
     }
 
     /// Whether the object `commit` names records a parent — asked of the
@@ -1001,15 +1001,6 @@ impl Repository {
             .args(["rev-list", "--all", "--max-count=1"])
             .output()?;
         Ok(output.status.success() && !output.stdout.is_empty())
-    }
-
-    /// Whether git resolves `object` in this repository.
-    fn resolves(&self, object: &str) -> io::Result<bool> {
-        let output = self
-            .command()
-            .args(["rev-parse", "--verify", "--quiet", object])
-            .output()?;
-        Ok(output.status.success())
     }
 }
 

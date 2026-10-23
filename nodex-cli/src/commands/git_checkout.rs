@@ -688,20 +688,15 @@ impl<'a> Snapshots<'a> {
     /// The project as `commit` records it at `tree`, or `None` where the
     /// commit carries no project.
     fn graph_commit(&mut self, commit: &str, tree: &str) -> Result<Option<BuildOutcome>> {
-        let unreadable = |stderr: String| CoreError::Git {
-            context: format!("commit {commit} could not be checked out"),
-            stderr,
-        };
-        match self
+        let carries = self
             .repository
-            .ref_state(commit)
-            .map_err(|e| unreadable(e.to_string()))?
-        {
-            RefState::CarriesProject => {}
-            RefState::WithoutProject => return Ok(None),
-            RefState::Unborn | RefState::Unresolvable => {
-                return Err(unreadable("git resolves no such commit".to_string()).into());
-            }
+            .carries_project(tree)
+            .map_err(|e| CoreError::Git {
+                context: format!("commit {commit} could not be checked out"),
+                stderr: e.to_string(),
+            })?;
+        if !carries {
+            return Ok(None);
         }
         let checkout = match self.checkout.take() {
             Some(checkout) => checkout,
@@ -1204,7 +1199,7 @@ pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
         .into()),
         // Only reachable for a project with a prefix: a ref always records a
         // tree at a repository's own top level.
-        RefState::WithoutProject => Ok(Recorded::Absent(format!(
+        RefState::WithoutProject(_) => Ok(Recorded::Absent(format!(
             "that ref records no project directory at {:?}",
             nodex_core::path_guard::forward_string(repository.prefix())
         ))),
@@ -1212,13 +1207,15 @@ pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
             "no ref in the repository names a commit, so there is nothing to compare against"
                 .to_string(),
         )),
-        RefState::CarriesProject => repository.tree(git_ref).map(Recorded::Tree).map_err(|e| {
-            CoreError::Git {
-                context: format!("the tree {git_ref:?} records could not be read"),
-                stderr: e.to_string(),
-            }
-            .into()
-        }),
+        RefState::CarriesProject(commit) => {
+            repository.tree(&commit).map(Recorded::Tree).map_err(|e| {
+                CoreError::Git {
+                    context: format!("the tree {git_ref:?} records could not be read"),
+                    stderr: e.to_string(),
+                }
+                .into()
+            })
+        }
     }
 }
 
