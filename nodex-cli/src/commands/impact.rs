@@ -13,9 +13,10 @@ pub struct ImpactArgs {
     pub before: String,
     /// The "after" git ref.
     pub after: String,
-    /// Bound the transitive dependency walk to N hops (default: unbounded).
-    #[arg(long)]
-    pub depth: Option<u32>,
+    /// Expand each changed node's dependents to N hops (default 1: the
+    /// documents that reference it directly)
+    #[arg(long, default_value_t = 1)]
+    pub depth: u32,
     /// Restrict the dependency walk to specific edge relations
     /// (comma-separated; default: every relation).
     #[arg(long, value_delimiter = ',')]
@@ -25,9 +26,9 @@ pub struct ImpactArgs {
 pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     let repository = ensure_repository(root, "nodex impact")?;
 
-    if args.depth == Some(0) {
+    if args.depth == 0 {
         return Err(nodex_core::error::Error::Config(
-            "--depth 0 expands nothing; omit it for an unbounded walk or pass a value >= 1".into(),
+            "--depth 0 expands nothing; pass a value >= 1".into(),
         )
         .into());
     }
@@ -86,7 +87,7 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         &before_graph,
         &after_graph,
         &args.relations,
-        args.depth,
+        Some(args.depth),
         &after_extensions,
     );
 
