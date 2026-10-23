@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Local gate — runs the same checks as .github/workflows/lint.yml (fmt,
-# clippy, doc) then ci.yml (check, nextest, build, audit). Not a complete CI
-# proxy: CI's MSRV job uses the pinned toolchain from Cargo.toml's
-# rust-version (this script uses your local toolchain) and CI's test job
-# runs a multi-OS matrix. The divergence this prevents: `cargo test` runs
-# every test in one process, but CI uses `cargo nextest`, which runs each
-# in its own process and so surfaces test-isolation bugs (shared CWD /
-# `/tmp` roots / global state) that `cargo test` hides. Run before every
-# push.
+# zizmor, clippy, doc) then ci.yml (check, nextest, build, audit). Not a
+# complete CI proxy: CI's MSRV job uses the pinned toolchain from
+# Cargo.toml's rust-version (this script uses your local toolchain), CI's
+# test job runs a multi-OS matrix, and zizmor runs its online audits only
+# where GH_TOKEN is set, as CI sets it. The divergence this prevents:
+# `cargo test` runs every test in one process, but CI uses `cargo nextest`,
+# which runs each in its own process and so surfaces test-isolation bugs
+# (shared CWD / `/tmp` roots / global state) that `cargo test` hides. Run
+# before every push.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,6 +21,14 @@ degraded=0
 
 step "fmt   (cargo fmt --all -- --check)"
 cargo fmt --all -- --check
+
+step "zizmor (zizmor .)"
+if command -v zizmor >/dev/null 2>&1; then
+  zizmor .
+else
+  degraded=$((degraded + 1))
+  echo "  zizmor not found — CI runs it. Install: cargo install zizmor"
+fi
 
 step "clippy (--all-targets --all-features -- -D warnings)"
 cargo clippy --all-targets --all-features -- -D warnings
@@ -53,7 +62,7 @@ else
 fi
 
 if [ "$degraded" -gt 0 ]; then
-  printf '\n\033[1;33m⚠ passed with %d degraded step(s) — install cargo-nextest / cargo-audit for the full gate\033[0m\n' "$degraded"
+  printf '\n\033[1;33m⚠ passed with %d degraded step(s) — install cargo-nextest / cargo-audit / zizmor for the full gate\033[0m\n' "$degraded"
 else
   printf '\n\033[1;32m✓ all CI checks passed locally\033[0m\n'
 fi
