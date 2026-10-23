@@ -66,7 +66,7 @@ enum Command {
     Status,
     /// Structural diff between two git refs (added/removed nodes & edges, status transitions, field changes)
     Diff(DiffArgs),
-    /// What depends on what a diff changed: removed/modified nodes paired with their transitive dependents
+    /// What depends on what a diff changed: removed, moved and modified nodes paired with their dependents
     Impact(ImpactArgs),
     /// Search and explore the graph
     Query {

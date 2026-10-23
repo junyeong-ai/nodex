@@ -2790,7 +2790,7 @@ exit: 0
                 "$ref": "#/$defs/ChangeKind"
               },
               "dependents": {
-                "description": "For a **modified** node: its transitive dependents in the *after*\ngraph. For a **removed** node: the documents in the *after* graph\nthat still reference its id and now dangle (each a direct,\nsingle-hop referrer) — references repointed elsewhere by the same\nchange are correctly absent. For a **moved** node: both — its\ntransitive dependents where it now is, then the direct referrers\nstill pointing at where it was; a document in both is listed once,\nunder the edge that still binds it.",
+                "description": "For a **modified** node: its dependents in the *after* graph,\nwithin the requested hops. For a **removed** node: the documents in the *after* graph\nthat still reference its id and now dangle (each a direct,\nsingle-hop referrer) — references repointed elsewhere by the same\nchange are correctly absent. For a **moved** node: both — its\ndependents where it now is, then the direct referrers\nstill pointing at where it was; a document in both is listed once,\nunder the edge that still binds it.",
                 "items": {
                   "$ref": "#/$defs/DependentEntry"
                 },

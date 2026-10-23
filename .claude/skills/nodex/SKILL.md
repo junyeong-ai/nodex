@@ -80,8 +80,9 @@ before proposing an edit; protection constrains modification and does not prove
 historical target validity. See [source protection](reference/config.md#unresolved-reference-policy).
 
 Use `scaffold`, `rename`, `retarget` and `lifecycle` for guarded graph changes.
-`scaffold`, `rename` and `retarget` take `--dry-run`, which reports the planned
-result (`completion: planned`) after the same gates and writes nothing.
+`scaffold`, `rename` and `retarget` take `--dry-run`, which runs the same gates
+and writes nothing: `scaffold` reports `written: false`, `rename` and `retarget`
+`completion: planned`.
 Classification globs do not choose creation paths; scaffold needs `--path` or a
 `scaffold.paths` template. Default-only scaffold advises; authored content is gated.
 `migrate --apply` injects inferred defaults into bare Markdown.

@@ -232,7 +232,7 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 `scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession.
 
 `migrate`, `rename` and `retarget` report `completion: planned | complete | partial`.
-`planned` is migrate's dry run. `partial` means a requested edit was held or failed;
+`planned` is a dry run: `migrate` without `--apply`, or `rename` / `retarget --dry-run`. `partial` means a requested edit was held or failed;
 inspect warnings and `failures` before continuing. A no-op may be complete.
 Completion answers for the configured, readable corpus; scope warnings still matter.
 Actual write failures retain the `ok: true` result and exit 2. Policy holds alone
