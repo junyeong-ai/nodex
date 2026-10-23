@@ -44,8 +44,8 @@ A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 `GRAPH_MISSING` / `GRAPH_OUTDATED`; fix unreadable paths for `IO_ERROR`.
 `CONFIG_ERROR` also refuses an argument the configuration rules out (an undeclared
 kind, status, field, relation or annotation name, a `--body-lines` range outside
-the body, a zero cap, a scaffold with no path): check the values against
-`export enums` / `export config` before editing `nodex.toml`.
+the body, a zero cap, a scaffold with no path); the refusal message lists the
+accepted values, so correct the argument rather than `nodex.toml`.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
 and `current`; rebuild with `--full` for a schema mismatch.
 Incompatible snapshot schemas also yield `GRAPH_OUTDATED`, naming the recorded

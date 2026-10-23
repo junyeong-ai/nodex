@@ -28,9 +28,11 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
 - `[[statuses.flow]]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
-- `kinds.allowed` must include `generic`, the kind a document no `identity.kind_rules` glob classifies takes.
-- `rules.acyclic_relations` must name known relations and cannot be empty; `[[annotations]]` names must be unique; two identical `parser.link_patterns` blocks are refused.
-- `similarity.default_limit` and the `[report]` display limits must be at least 1.
+- `kinds.allowed` must include `generic`, the kind of a document that neither authors `kind:` nor matches an `identity.kind_rules` glob.
+- `rules.acyclic_relations` must name known relations and cannot be empty; `[[annotations]]` names must be unique; two `parser.link_patterns` blocks with the same `pattern` and `relation` are refused.
+- `statuses.initial` must be one of `statuses.allowed`; `meta.nodex_version` must parse as a SemVer requirement.
+- `scope.prune_dirs` entries are plain directory basenames: no empty entry, no path separator, no glob.
+- `similarity.weights` and `search.weights` must be finite and non-negative, with at least one positive component; `similarity.default_limit` and the `[report]` display limits must be at least 1.
 - `schema.require_explicit` refuses `orphan_ok`: a boolean is always present, so authored and inferred cannot differ.
 
 With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is **also** parsed as a wikilink and surfaces as an unresolved edge in `query issues`. Use a non-bracket marker syntax if you want annotations only.
@@ -39,7 +41,7 @@ An annotation pattern reads every line outside a code block, inline code include
 
 ## Identity
 
-`identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. Inferred identity is `{kind}-{path_slug}`; an authored `id:` or a matching `identity.id_rules` template takes precedence. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
+An authored `kind:` or `id:` takes precedence; otherwise `identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. A document no kind rule classifies is `generic`, and one no id rule names takes the inferred id `{kind}-{path_slug}`. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
 
 ## Scope
 
