@@ -456,6 +456,12 @@ exit: 0
       {
         "flags": [
           {
+            "long": "max-size",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
             "long": "limit",
             "repeatable": false,
             "required": false,

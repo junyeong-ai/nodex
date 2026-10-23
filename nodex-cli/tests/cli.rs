@@ -15593,6 +15593,12 @@ fn query_components_partitions_disconnected_subgraphs() {
     // Largest first: {a,b} (size 2), then {c} (size 1).
     assert_eq!(items[0].get("size").and_then(Value::as_u64), Some(2));
     assert_eq!(items[1].get("size").and_then(Value::as_u64), Some(1));
+
+    // A size bound counts and ranks against the whole partition.
+    let data = run_json(nodex(tmp.path()).args(["query", "components", "--max-size", "1"]));
+    assert_eq!(data["total"], 1, "{data}");
+    assert_eq!(data["items"][0]["component_id"], 2, "{data}");
+    assert_eq!(data["items"][0]["members"][0]["id"], "doc-c", "{data}");
 }
 
 #[test]
@@ -18091,6 +18097,7 @@ fn query_backlinks_stale_components_limit_report_honest_counts() {
         vec!["query", "backlinks", "target", "--limit", "0"],
         vec!["query", "stale", "--limit", "0"],
         vec!["query", "components", "--limit", "0"],
+        vec!["query", "components", "--max-size", "0"],
         vec!["query", "orphans", "--limit", "0"],
         vec!["query", "search", "t", "--limit", "0"],
     ] {
