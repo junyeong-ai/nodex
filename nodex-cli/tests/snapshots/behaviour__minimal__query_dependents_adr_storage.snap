@@ -25,6 +25,7 @@ exit: 0
         ]
       }
     ],
+    "max_depth": 1,
     "relations": [],
     "root_id": "adr-storage"
   },

@@ -131,9 +131,9 @@ semantic duplication.
 nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]
 nodex query components [--limit N]              # connected components, undirected, size-desc
 nodex query neighborhood <id> [--depth N]       # N-hop (default 1), undirected; --depth 0 rejected
-nodex query dependents <id> [--depth N --relations a,b]
+nodex query dependents <id> [--depth N --relations a,b]   # default 1 hop
 ```
-`dependents` is the transitive reverse — every doc that depends on `<id>`. Entries carry inline `{id, title, kind, status, path}` plus `hops` and a `via` witness chain, so no follow-up `query node` is needed.
+`dependents` follows incoming edges back from `<id>`: the documents that reference it directly, or with `--depth N` every document within N hops (a hub's transitive closure over citations can reach most of a corpus). Entries carry inline `{id, title, kind, status, path}` plus `hops` and a `via` witness chain, so no follow-up `query node` is needed.
 
 ```bash
 nodex query annotations [--name <block>] [--with-frontmatter f1,f2] [--min-count N]
