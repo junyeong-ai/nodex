@@ -18,6 +18,7 @@ mod check;
 mod check_content;
 mod checkout;
 mod config;
+#[cfg(unix)]
 mod containment;
 mod contract_gate;
 mod diff;

@@ -10,7 +10,6 @@ use std::fs;
 /// scanner admits a document by `is_file()`, and so does the gate — decided
 /// from metadata, which never opens anything.
 #[test]
-#[cfg(unix)]
 fn rename_does_not_open_a_non_regular_destination_target() {
     let tmp = scratch();
     let project = tmp.path();
@@ -74,7 +73,6 @@ fn rename_does_not_open_a_non_regular_destination_target() {
 }
 
 #[test]
-#[cfg(unix)]
 fn rename_rewriter_does_not_follow_symlinks() {
     // The link rewriter touches every in-scope file. Symlinks are
     // skipped so a link pointing outside the project root cannot have
@@ -123,7 +121,6 @@ fn rename_rewriter_does_not_follow_symlinks() {
 }
 
 #[test]
-#[cfg(unix)]
 fn lifecycle_refuses_to_mutate_through_symlink() {
     // `lifecycle::transition` refuses to write through a symlink, so
     // `nodex lifecycle set <id> --status` on a symlinked doc cannot reach
@@ -163,7 +160,6 @@ fn lifecycle_refuses_to_mutate_through_symlink() {
 }
 
 #[test]
-#[cfg(unix)]
 fn rename_rejects_destination_through_symlinked_directory() {
     // A lexically clean destination (`linked-dir/evil.md`) whose
     // ancestor is a symlink pointing outside the project root must be
@@ -201,7 +197,6 @@ fn rename_rejects_destination_through_symlinked_directory() {
 }
 
 #[test]
-#[cfg(unix)]
 fn rename_rejects_source_through_symlinked_directory() {
     // The mirror of the destination guard: a SOURCE reached through a
     // symlinked ancestor would let `fs::rename` pull an out-of-root
@@ -251,7 +246,6 @@ fn rename_rejects_source_through_symlinked_directory() {
 }
 
 #[test]
-#[cfg(unix)]
 fn retarget_skips_file_under_symlinked_directory_with_warning() {
     // With `scope.follow_symlinks` on, a file outside the root can be a graph
     // node. Retargeting must give it the reader-follows / writer-skips
@@ -324,7 +318,6 @@ fn retarget_skips_file_under_symlinked_directory_with_warning() {
 }
 
 #[test]
-#[cfg(unix)]
 fn migrate_warns_on_bare_symlinked_file() {
     // Writer-skips / reader-follows symmetry: migrate skips symlinks
     // like rename/retarget do, but a *bare* symlinked file is exactly
@@ -358,7 +351,6 @@ fn migrate_warns_on_bare_symlinked_file() {
 }
 
 #[test]
-#[cfg(unix)]
 fn migrate_tolerates_dangling_symlink_and_silences_anchored_ones() {
     // A dangling symlink in scope must neither abort the batch nor
     // warn (it is not a migration target); a symlinked file that
@@ -393,7 +385,6 @@ fn migrate_tolerates_dangling_symlink_and_silences_anchored_ones() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn report_refuses_symlinked_output_dir_escape() {
     // `output.dir` passes the lexical load check, but a symlinked
@@ -425,7 +416,6 @@ fn report_refuses_symlinked_output_dir_escape() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn build_refuses_graph_json_write_through_escaping_output_dir() {
     // graph.json is the build's purpose, so an escaping output dir is a
@@ -447,7 +437,6 @@ fn build_refuses_graph_json_write_through_escaping_output_dir() {
     assert!(!outside.path().join("graph.json").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn build_warns_and_skips_cache_persist_when_cache_json_is_a_symlink() {
     // The cache is an optimization, not the build's purpose: a
@@ -494,7 +483,6 @@ fn build_warns_and_skips_cache_persist_when_cache_json_is_a_symlink() {
     assert!(tmp.path().join("_index/graph.json").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn init_refuses_dangling_symlinked_nodex_toml() {
     use std::os::unix::fs as unix_fs;

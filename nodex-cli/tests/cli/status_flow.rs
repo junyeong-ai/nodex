@@ -1,9 +1,11 @@
 //! `statuses.flow` judged per git step: the index, ranges, merges, and
 //! history the walk cannot read.
 
+#[cfg(unix)]
+use crate::support::warning_msg;
 use crate::support::{
     adr, envelope_of, error_code, flow_project, git_runner, judged, nodex, reported, run_envelope,
-    run_json, scratch, staged, warning_msg, write_doc,
+    run_json, scratch, staged, write_doc,
 };
 use assert_cmd::Command;
 use serde_json::Value;

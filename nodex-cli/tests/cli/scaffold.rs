@@ -1,7 +1,9 @@
 //! `scaffold`.
 
+#[cfg(unix)]
+use crate::support::envelope_of;
 use crate::support::{
-    envelope_of, init_project, nodex, run_envelope, run_json, scratch, warning_msg, write_doc,
+    init_project, nodex, run_envelope, run_json, scratch, warning_msg, write_doc,
 };
 use serde_json::Value;
 use std::fs;
