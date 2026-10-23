@@ -28,6 +28,10 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
 - `[[statuses.flow]]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
+- `kinds.allowed` must include `generic`, the kind a document no `identity.kind_rules` glob classifies takes.
+- `rules.acyclic_relations` must name known relations and cannot be empty; `[[annotations]]` names must be unique; two identical `parser.link_patterns` blocks are refused.
+- `similarity.default_limit` and the `[report]` display limits must be at least 1.
+- `schema.require_explicit` refuses `orphan_ok`: a boolean is always present, so authored and inferred cannot differ.
 
 With `parser.wikilink_enabled = true`, a `[[...]]`-shaped annotation marker is **also** parsed as a wikilink and surfaces as an unresolved edge in `query issues`. Use a non-bracket marker syntax if you want annotations only.
 
@@ -35,7 +39,7 @@ An annotation pattern reads every line outside a code block, inline code include
 
 ## Identity
 
-Default inferred identity is `{kind}-{path_slug}`; explicit ids and configured templates take precedence. To retain the previous inferred identity when upgrading, anchor ids with the previous binary's `migrate --apply` before upgrading, or explicitly retain `template = "{kind}-{stem}"`. Rebuilding alone does not preserve inferred ids across a fallback-template change.
+`identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. Inferred identity is `{kind}-{path_slug}`; an authored `id:` or a matching `identity.id_rules` template takes precedence. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
 
 ## Scope
 
@@ -50,7 +54,7 @@ include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
 
 `scope.prune_dirs` names directory basenames pruned at any depth (default `["node_modules", "__pycache__", "target", ".git", ".venv"]`; an empty list disables basename pruning).
 
-The walk skips directories outside every include's literal prefix and uses recursive `/**` exclusions to skip subtrees only when globset's compiled pattern proves every descendant is excluded. Thus `exclude = ["_*/**"]` skips matching root subtrees, while `exclude = ["docs/private"]` does not stop descent into `docs/private`. Scan diagnostics describe entries reached by this walk; they do not inventory skipped subtrees.
+The walk skips directories outside every include's literal prefix and uses recursive `/**` exclusions to skip subtrees only when globset's compiled pattern proves every descendant is excluded. Thus `exclude = ["_*/**"]` skips matching root subtrees. `exclude = ["docs/private"]` matches only the directory's own path, so it excludes no document beneath it; write `docs/private/**`, which both excludes and prunes the subtree. Scan diagnostics describe entries reached by this walk; they do not inventory skipped subtrees.
 
 Dot-prefixed paths (`.draft.md`, `.archive/`, `.claude/`) are skipped unless an include pattern **requires** the dot at that position. `.claude/**/*.md` opts `.claude` in, as do the spellings globset treats as the same literal (`\.claude`, `[.]claude`) and a pattern that can only match a hidden entry (`.*/**/*.md`). A wildcard that merely *matches* one (`**/*.md`, `?claude/**`) does not. Dot-prefixed trees stay caught by the hidden-path guard regardless of `prune_dirs`.
 
@@ -93,7 +97,7 @@ Declared fields participate in `required`, `forbidden`, strict mode, collection 
 
 Standard markdown (`[text](path.md)`) by default. Wikilinks (`[[id]]`) opt in via `parser.wikilink_enabled = true`.
 
-`parser.link_patterns` declares arbitrary syntaxes. Each block needs a `pattern` with **exactly one** capture group and a `relation`. Any relation name is legal except the built-ins with code-fixed resolution, which are rejected at load: `covers` (path-only) and `supersedes` / `implements` / `related` (id-resolved) are declared through their frontmatter fields only. `references` stays legal. A pattern cannot share a relation name with a declared frontmatter relation.
+`parser.link_patterns` declares arbitrary syntaxes. Each block needs a `pattern` with **exactly one** capture group and a `relation`. Any relation name is legal except the built-ins with code-fixed resolution, which are rejected at load: `covers` (path-only) and `supersedes` / `superseded_by` / `implements` / `related` (id-resolved) are declared through their frontmatter fields only. `references` stays legal. A pattern cannot share a relation name with a declared frontmatter relation.
 
 A block may set `code_spans = true`: an inline code span whose **entire content** the pattern matches is then a citation on both the extraction and the rewriting side, so a corpus writing ids as `` `adr-001` `` is reachable as edges and `retarget` repoints them. A span is matched as its own text, so `^` / `$` mean the span and the backticks are never part of what the pattern sees; what the match leaves over is what keeps a span code (`` `just adr-tool` `` cites nothing). Code *blocks* stay opaque unconditionally. The field defaults off.
 
@@ -239,7 +243,7 @@ initial = "proposed"
 
 [[statuses.flow]]
 kinds = ["adr"]          # empty = every kind
-initial = "proposed"     # where a governed kind starts; omitted = statuses.initial
+initial = "proposed"     # where a governed kind starts; omitted = statuses.initial, whose own default is the first allowed status
 transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
 ```
 
