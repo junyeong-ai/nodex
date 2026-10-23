@@ -11,8 +11,8 @@ metadata:
 
 # nodex
 
-The binary is the contract. Discover commands and positionals with `nodex export
-commands`, flags with `<command> --help`, payloads with `nodex export
+The binary is the contract. Discover commands, positionals and flags with `nodex
+export commands` (`<command> --help` explains each), payloads with `nodex export
 envelope-schema`, and codes with `nodex export diagnostics`. Use project vocabulary
 from `nodex export config`, `enums` and `rules` rather than inventing kinds or statuses.
 

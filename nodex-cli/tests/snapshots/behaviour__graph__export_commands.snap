@@ -13,6 +13,14 @@ exit: 0
         "schema": "init"
       },
       {
+        "flags": [
+          {
+            "long": "full",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "build"
         ],
@@ -41,6 +49,20 @@ exit: 0
         "schema": "diff"
       },
       {
+        "flags": [
+          {
+            "long": "depth",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "relations",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          }
+        ],
         "path": [
           "impact"
         ],
@@ -57,6 +79,26 @@ exit: 0
         "schema": "impact"
       },
       {
+        "flags": [
+          {
+            "long": "status",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "search"
@@ -70,6 +112,20 @@ exit: 0
         "schema": "query.search"
       },
       {
+        "flags": [
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "backlinks"
@@ -83,6 +139,14 @@ exit: 0
         "schema": "query.backlinks"
       },
       {
+        "flags": [
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "chain"
@@ -96,6 +160,20 @@ exit: 0
         "schema": "query.chain"
       },
       {
+        "flags": [
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "orphans"
@@ -103,6 +181,20 @@ exit: 0
         "schema": "query.orphans"
       },
       {
+        "flags": [
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "stale"
@@ -110,6 +202,68 @@ exit: 0
         "schema": "query.stale"
       },
       {
+        "flags": [
+          {
+            "long": "kind",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "status",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "tag",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "all-tags",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          },
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "fields",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "where",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "missing",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "body-contains",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "nodes"
@@ -117,6 +271,32 @@ exit: 0
         "schema": "query.nodes"
       },
       {
+        "flags": [
+          {
+            "long": "path",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "with-body",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          },
+          {
+            "long": "body-lines",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "node"
@@ -130,6 +310,14 @@ exit: 0
         "schema": "query.node"
       },
       {
+        "flags": [
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "covered-by"
@@ -143,6 +331,14 @@ exit: 0
         "schema": "query.covered-by"
       },
       {
+        "flags": [
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "issues"
@@ -150,6 +346,62 @@ exit: 0
         "schema": "query.issues"
       },
       {
+        "flags": [
+          {
+            "long": "status",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "id",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "title",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "kind",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "tags",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "parent-dir",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "min-score",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "similar"
@@ -157,6 +409,44 @@ exit: 0
         "schema": "query.similar"
       },
       {
+        "flags": [
+          {
+            "long": "since",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "days",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "kind",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "field",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "recent"
@@ -164,6 +454,20 @@ exit: 0
         "schema": "query.recent"
       },
       {
+        "flags": [
+          {
+            "long": "limit",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "components"
@@ -171,6 +475,20 @@ exit: 0
         "schema": "query.components"
       },
       {
+        "flags": [
+          {
+            "long": "depth",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "neighborhood"
@@ -184,6 +502,32 @@ exit: 0
         "schema": "query.neighborhood"
       },
       {
+        "flags": [
+          {
+            "long": "name",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "with-frontmatter",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "min-count",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "annotations"
@@ -191,6 +535,26 @@ exit: 0
         "schema": "query.annotations"
       },
       {
+        "flags": [
+          {
+            "long": "depth",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "relations",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "allow-stale",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "query",
           "dependents"
@@ -204,12 +568,46 @@ exit: 0
         "schema": "query.dependents"
       },
       {
+        "flags": [
+          {
+            "long": "content",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "severity",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "since",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "staged",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "check"
         ],
         "schema": "check"
       },
       {
+        "flags": [
+          {
+            "long": "to",
+            "repeatable": false,
+            "required": true,
+            "takes_value": true
+          }
+        ],
         "path": [
           "lifecycle",
           "supersede"
@@ -223,6 +621,14 @@ exit: 0
         "schema": "lifecycle.supersede"
       },
       {
+        "flags": [
+          {
+            "long": "status",
+            "repeatable": false,
+            "required": true,
+            "takes_value": true
+          }
+        ],
         "path": [
           "lifecycle",
           "set"
@@ -255,12 +661,28 @@ exit: 0
         "schema": "report"
       },
       {
+        "flags": [
+          {
+            "long": "apply",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "migrate"
         ],
         "schema": "migrate"
       },
       {
+        "flags": [
+          {
+            "long": "dry-run",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "rename"
         ],
@@ -277,6 +699,20 @@ exit: 0
         "schema": "rename"
       },
       {
+        "flags": [
+          {
+            "long": "supersede",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          },
+          {
+            "long": "dry-run",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "retarget"
         ],
@@ -293,6 +729,56 @@ exit: 0
         "schema": "retarget"
       },
       {
+        "flags": [
+          {
+            "long": "kind",
+            "repeatable": false,
+            "required": true,
+            "takes_value": true
+          },
+          {
+            "long": "title",
+            "repeatable": false,
+            "required": true,
+            "takes_value": true
+          },
+          {
+            "long": "id",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "path",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "body",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "field",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
+            "long": "dry-run",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          },
+          {
+            "long": "force",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "scaffold"
         ],
@@ -320,6 +806,14 @@ exit: 0
         "schema": "export.rules"
       },
       {
+        "flags": [
+          {
+            "long": "inline-refs",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          }
+        ],
         "path": [
           "export",
           "envelope-schema"
@@ -346,6 +840,38 @@ exit: 0
           "diagnostics"
         ],
         "schema": "export.diagnostics"
+      }
+    ],
+    "global_flags": [
+      {
+        "repeatable": false,
+        "required": false,
+        "short": "C",
+        "takes_value": true
+      },
+      {
+        "long": "pretty",
+        "repeatable": false,
+        "required": false,
+        "takes_value": false
+      },
+      {
+        "long": "jobs",
+        "repeatable": false,
+        "required": false,
+        "takes_value": true
+      },
+      {
+        "long": "check-version",
+        "repeatable": false,
+        "required": false,
+        "takes_value": true
+      },
+      {
+        "long": "today",
+        "repeatable": false,
+        "required": false,
+        "takes_value": true
       }
     ],
     "version": "<version>"

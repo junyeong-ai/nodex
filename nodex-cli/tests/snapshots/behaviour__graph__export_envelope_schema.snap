@@ -1830,8 +1830,14 @@ exit: 0
       "export.commands": {
         "$defs": {
           "CommandManifestEntry": {
-            "description": "One CLI leaf: its invocation tokens, its `per_command` envelope-\nschema key (the dotted join of `path`), and its positional arity.",
+            "description": "One CLI leaf: its invocation tokens, its `per_command` envelope-\nschema key (the dotted join of `path`), its positional arity and the\nflags it accepts beyond the global ones.",
             "properties": {
+              "flags": {
+                "items": {
+                  "$ref": "#/$defs/FlagEntry"
+                },
+                "type": "array"
+              },
               "path": {
                 "description": "Invocation tokens, e.g. `[\"query\", \"search\"]`.",
                 "items": {
@@ -1853,6 +1859,42 @@ exit: 0
             "required": [
               "path",
               "schema"
+            ],
+            "type": "object"
+          },
+          "FlagEntry": {
+            "description": "One flag: how it is spelled and what it takes.",
+            "properties": {
+              "long": {
+                "description": "The long spelling without `--`, when it has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repeatable": {
+                "description": "Whether it may be given more than once.",
+                "type": "boolean"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "short": {
+                "description": "The one-letter spelling without `-`, when it has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "takes_value": {
+                "description": "Whether the flag is followed by a value rather than standing alone.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "takes_value",
+              "repeatable",
+              "required"
             ],
             "type": "object"
           },
@@ -1882,6 +1924,13 @@ exit: 0
             },
             "type": "array"
           },
+          "global_flags": {
+            "description": "Flags every leaf accepts.",
+            "items": {
+              "$ref": "#/$defs/FlagEntry"
+            },
+            "type": "array"
+          },
           "version": {
             "description": "Nodex binary version that produced this manifest.",
             "type": "string"
@@ -1889,6 +1938,7 @@ exit: 0
         },
         "required": [
           "version",
+          "global_flags",
           "commands"
         ],
         "title": "CommandsManifest",
