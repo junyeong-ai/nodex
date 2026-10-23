@@ -648,4 +648,46 @@ mod tests {
              nodex_core::export::per_command_schemas"
         );
     }
+
+    /// Global flags are listed once, and a leaf lists every other flag an
+    /// invocation of it may spell, a group's (`query --allow-stale`) included.
+    #[test]
+    fn the_commands_manifest_spells_each_leafs_flags() {
+        let manifest = commands::export::commands_manifest();
+        let leaf = |path: &[&str]| {
+            manifest
+                .commands
+                .iter()
+                .find(|entry| entry.path == path)
+                .unwrap_or_else(|| panic!("no leaf {path:?}"))
+        };
+        let flag = |path: &[&str], long: &str| {
+            leaf(path)
+                .flags
+                .iter()
+                .find(|flag| flag.long.as_deref() == Some(long))
+                .unwrap_or_else(|| panic!("{path:?} has no --{long}"))
+                .clone()
+        };
+
+        assert!(
+            manifest
+                .global_flags
+                .iter()
+                .any(|flag| flag.short.as_deref() == Some("C") && flag.takes_value)
+        );
+        let content = flag(&["check"], "content");
+        assert!(content.takes_value && content.repeatable && !content.required);
+        assert!(flag(&["scaffold"], "kind").required);
+        assert!(!flag(&["rename"], "dry-run").takes_value);
+        flag(&["query", "nodes"], "allow-stale");
+        assert!(
+            manifest
+                .commands
+                .iter()
+                .flat_map(|entry| &entry.flags)
+                .all(|flag| flag.long.as_deref() != Some("pretty")),
+            "a global flag is not repeated on a leaf"
+        );
+    }
 }

@@ -575,7 +575,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex export rules` | 등록된 룰 매니페스트 — 현재 config 가 등록하는 모든 룰과 `id`, `severity`, `description`, `diff_aware` / `judges_steps`, per-rule `params` payload (등록된 룰도 실행 시 `skipped_rules` 로 빠질 수 있음) |
 | `nodex export envelope-schema [--inline-refs]` | 모든 CLI envelope shape 의 JSON Schema (draft 2020-12) — 타입드 다운스트림 consumer 의 codegen 컨트랙트; `--inline-refs` 는 per-command 스키마를 완전 자기 완결형 (`$ref`/`$defs` 없음) 으로 emit — `$ref` 를 못 따라가는 generator 용 |
 | `nodex export config` | 해석된 document-locating surface: scope, output, parser, scaffold 템플릿, 평가 순서의 identity rules + 코드 레벨 fallback (`fallback_kind`, `fallback_id_template`), 해석된 전역 `initial_status` (`[[statuses.flow]]` 가 지배하는 kind 는 그 flow 의 `initial` 에서 시작) |
-| `nodex export commands` | leaf 의 권위 목록: 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional(이름, 필수 여부); flag 자체는 `--help` 에 있음 |
+| `nodex export commands` | CLI 문법의 권위 목록: 전역 flag, 그리고 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional(이름, 필수 여부), flag(철자, 값을 받는지, 반복 가능한지, 필수인지) |
 | `nodex export diagnostics` | error-code / exit-code vocabulary — envelope `error.code` 닫힌 집합(각 `core`/`cli` origin 태그) + advisory `warnings[].code` + `0`/`1`/`2` exit-code 계약. 소비자가 prose 하드코딩 대신 exhaustive error enum 을 codegen |
 
 ### 문서 생성과 순위
@@ -802,7 +802,7 @@ nodex export enums                            # kinds + statuses + per-field enu
 nodex export rules                            # active rules (built-in + config-driven) + `params`
 nodex export envelope-schema [--inline-refs]  # 모든 CLI envelope shape 의 JSON Schema (타입드 codegen 컨트랙트)
 nodex export config                           # 해석된 scope / output / parser / scaffold / identity surface + fallback
-nodex export commands                         # 모든 leaf 와 positional, payload mode (flag 는 --help)
+nodex export commands                         # 모든 leaf 와 positional, flag
 nodex export diagnostics                       # error-code + warning-code + exit-code vocabulary (닫힌 집합, codegen 용)
 ```
 

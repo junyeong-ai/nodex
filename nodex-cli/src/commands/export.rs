@@ -2,7 +2,9 @@ use anyhow::Result;
 use clap::Subcommand;
 use std::path::Path;
 
-use nodex_core::export::{CommandManifestEntry, CommandsManifest, PositionalEntry};
+use std::collections::BTreeSet;
+
+use nodex_core::export::{CommandManifestEntry, CommandsManifest, FlagEntry, PositionalEntry};
 
 use crate::format::{Envelope, emit_read, print_json};
 
@@ -79,12 +81,21 @@ pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
 /// exactly this manifest.
 pub(crate) fn commands_manifest() -> CommandsManifest {
     use clap::CommandFactory;
-    let cli = crate::Cli::command();
+    let mut cli = crate::Cli::command();
+    // Building propagates each global flag down to the leaves that accept it,
+    // so a leaf's own arguments are what an invocation of it may spell.
+    cli.build();
+    let global: Vec<&clap::Arg> = cli
+        .get_arguments()
+        .filter(|arg| arg.is_global_set())
+        .collect();
+    let global_ids: BTreeSet<&str> = global.iter().map(|arg| arg.get_id().as_str()).collect();
     let mut commands = Vec::new();
     let mut path = Vec::new();
-    collect_leaves(&cli, &mut path, &mut commands);
+    collect_leaves(&cli, &global_ids, &mut path, &mut commands);
     CommandsManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        global_flags: global.into_iter().map(flag_entry).collect(),
         commands,
     }
 }
@@ -94,6 +105,7 @@ pub(crate) fn commands_manifest() -> CommandsManifest {
 /// not a contract leaf.
 fn collect_leaves(
     cmd: &clap::Command,
+    global_ids: &BTreeSet<&str>,
     path: &mut Vec<String>,
     out: &mut Vec<CommandManifestEntry>,
 ) {
@@ -103,15 +115,19 @@ fn collect_leaves(
         }
         path.push(sub.get_name().to_string());
         if sub.get_subcommands().next().is_none() {
-            out.push(leaf_entry(sub, path));
+            out.push(leaf_entry(sub, global_ids, path));
         } else {
-            collect_leaves(sub, path, out);
+            collect_leaves(sub, global_ids, path, out);
         }
         path.pop();
     }
 }
 
-fn leaf_entry(leaf: &clap::Command, path: &[String]) -> CommandManifestEntry {
+fn leaf_entry(
+    leaf: &clap::Command,
+    global_ids: &BTreeSet<&str>,
+    path: &[String],
+) -> CommandManifestEntry {
     let schema = path.join(".");
     let positionals = leaf
         .get_positionals()
@@ -120,9 +136,35 @@ fn leaf_entry(leaf: &clap::Command, path: &[String]) -> CommandManifestEntry {
             required: arg.is_required_set(),
         })
         .collect();
+    let flags = leaf
+        .get_arguments()
+        .filter(|arg| {
+            !arg.is_positional()
+                && !global_ids.contains(arg.get_id().as_str())
+                && !matches!(
+                    arg.get_action(),
+                    clap::ArgAction::Help | clap::ArgAction::HelpShort | clap::ArgAction::HelpLong
+                )
+        })
+        .map(flag_entry)
+        .collect();
     CommandManifestEntry {
         path: path.to_vec(),
         schema,
         positionals,
+        flags,
+    }
+}
+
+fn flag_entry(arg: &clap::Arg) -> FlagEntry {
+    FlagEntry {
+        long: arg.get_long().map(str::to_string),
+        short: arg.get_short().map(String::from),
+        takes_value: arg.get_action().takes_values(),
+        repeatable: matches!(
+            arg.get_action(),
+            clap::ArgAction::Append | clap::ArgAction::Count
+        ),
+        required: arg.is_required_set(),
     }
 }

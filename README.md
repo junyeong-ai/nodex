@@ -591,7 +591,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `nodex export rules` | Registered-rules manifest — every rule the current config registers, with `id`, `severity`, `description`, `diff_aware` / `judges_steps` and a per-rule `params` payload (a registered rule can still report itself in `skipped_rules` when it runs) |
 | `nodex export envelope-schema [--inline-refs]` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers; `--inline-refs` emits each per-command schema fully self-contained (no `$ref`/`$defs`) for `$ref`-naive generators |
 | `nodex export config` | Resolved document-locating surface: scope, output, parser, scaffold templates, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at that flow's `initial`) |
-| `nodex export commands` | The authoritative list of leaves: every leaf's `path` tokens, its `per_command` schema key, and its positionals (name, required); flags themselves are in `--help` |
+| `nodex export commands` | The authoritative CLI grammar: the global flags, then every leaf's `path` tokens, its `per_command` schema key, its positionals (name, required) and its flags (spelling, whether it takes a value, repeats or is required) |
 | `nodex export diagnostics` | Error-code and exit-code vocabularies — the closed sets of envelope `error.code` values (each tagged `core`/`cli` origin) and advisory `warnings[].code` values, plus the `0`/`1`/`2` exit-code contract, so a consumer codegens an exhaustive error enum instead of hard-coding it from prose |
 
 ### Creation and ranking
@@ -822,7 +822,7 @@ nodex export enums                          # kinds + statuses + per-field enums
 nodex export rules                          # active rules (built-in + config-driven) with `params`
 nodex export envelope-schema [--inline-refs]  # JSON Schema for every CLI envelope shape (typed-codegen contract)
 nodex export config                         # resolved scope / output / parser / scaffold / identity surface + fallbacks
-nodex export commands                       # every leaf and its positionals (flags: --help)
+nodex export commands                       # every leaf, its positionals and its flags
 nodex export diagnostics                     # error-code + warning-code + exit-code vocabularies (closed sets, for codegen)
 ```
 

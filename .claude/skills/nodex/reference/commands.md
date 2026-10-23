@@ -1,6 +1,6 @@
 # nodex — command reference
 
-Per-leaf flags and payload semantics. The authoritative list of leaves and their positionals is `nodex export commands` (flags are in `--help`); the authoritative payload shapes are `nodex export envelope-schema`. This file carries what neither of those states: what a flag *means* and where a result is easy to misread.
+Per-leaf flags and payload semantics. The authoritative list of leaves, their positionals and their flags is `nodex export commands` (`--help` explains each flag); the authoritative payload shapes are `nodex export envelope-schema`. This file carries what neither of those states: what a flag *means* and where a result is easy to misread.
 
 ## Contents
 
@@ -315,7 +315,7 @@ nodex export rules               # active rules (built-in + config-driven) with 
 nodex export envelope-schema     # JSON Schema for every CLI envelope shape
 nodex export envelope-schema --inline-refs   # every $ref resolved in place, for $ref-naive generators
 nodex export config              # resolved document-locating surface
-nodex export commands            # every leaf and its positionals
+nodex export commands            # every leaf, its positionals and its flags
 nodex export diagnostics         # error / warning / exit-code vocabularies
 ```
 
@@ -323,7 +323,7 @@ External lints consume these instead of re-parsing `nodex.toml`. `envelope-schem
 
 `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
-`export commands` entries carry `{path, schema}` plus `positionals` when the leaf takes any: `schema` is the `per_command` envelope-schema key.
+`export commands` carries `global_flags`, accepted by every leaf, and one entry per leaf with `{path, schema}` plus `positionals` and `flags` when it has any: `schema` is the `per_command` envelope-schema key, and each flag states its `long` / `short` spelling, `takes_value`, `repeatable` and `required`. A group's flag (`query --allow-stale`) is listed on each of its leaves.
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one; `judges_steps` reads git's history a commit at a time. A lock can require both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 

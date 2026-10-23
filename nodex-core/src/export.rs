@@ -594,11 +594,14 @@ pub fn export_config(config: &Config) -> ConfigManifest {
 pub struct CommandsManifest {
     /// Nodex binary version that produced this manifest.
     pub version: String,
+    /// Flags every leaf accepts.
+    pub global_flags: Vec<FlagEntry>,
     pub commands: Vec<CommandManifestEntry>,
 }
 
 /// One CLI leaf: its invocation tokens, its `per_command` envelope-
-/// schema key (the dotted join of `path`), and its positional arity.
+/// schema key (the dotted join of `path`), its positional arity and the
+/// flags it accepts beyond the global ones.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CommandManifestEntry {
     /// Invocation tokens, e.g. `["query", "search"]`.
@@ -607,12 +610,30 @@ pub struct CommandManifestEntry {
     pub schema: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub positionals: Vec<PositionalEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<FlagEntry>,
 }
 
 /// One positional argument of a CLI leaf.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PositionalEntry {
     pub name: String,
+    pub required: bool,
+}
+
+/// One flag: how it is spelled and what it takes.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FlagEntry {
+    /// The long spelling without `--`, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long: Option<String>,
+    /// The one-letter spelling without `-`, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short: Option<String>,
+    /// Whether the flag is followed by a value rather than standing alone.
+    pub takes_value: bool,
+    /// Whether it may be given more than once.
+    pub repeatable: bool,
     pub required: bool,
 }
 
