@@ -13,7 +13,13 @@ nodex scans your project's markdown files, extracts YAML frontmatter and link re
 
 ## Upgrading
 
-Run `nodex build --full` in each project after upgrading and regenerate clients from `nodex export envelope-schema`. Queries reject incompatible snapshot formats with `GRAPH_OUTDATED`, naming the recorded and supported schema versions.
+Run `nodex build --full` in each project after upgrading and regenerate clients from `nodex export envelope-schema`. Queries reject incompatible snapshot formats with `GRAPH_OUTDATED`, naming the recorded and supported schema versions. Each [release's notes](https://github.com/junyeong-ai/nodex/releases) state the compatibility changes it makes and the steps they need.
+
+From a release before 0.55:
+
+- Inferred ids default to `{kind}-{path_slug}`. To keep ids inferred under the earlier `{kind}-{stem}` fallback, anchor them with the previous binary's `migrate --apply` before upgrading, or declare `template = "{kind}-{stem}"`; rebuilding alone does not preserve them.
+- Convert `[statuses.flow]` to `[[statuses.flow]]`. Queries verify snapshot content by default; `--allow-stale` asks for a membership-only snapshot read.
+- Scan diagnostics cover the entries a walk reaches rather than the subtrees it skips.
 
 ## Table of Contents
 
@@ -366,7 +372,7 @@ fragment. Heading-anchor validity remains outside the document graph.
 
 Markdown links resolve relative to their source document. Wikilinks and configured patterns use graph lookup. Each edge's `references` array retains source, syntax, decoded target and location for every authoring site of one logical relation. Body locations use one-based body-relative `start_line` and inclusive `end_line`, including definitions or code spans that determine the reference; frontmatter locations name the authored `field`. Unresolved listings also expose the sought lookup names. Their `sources`, and reference findings' `details.sources`, report each site's protection and constraining rule IDs. An unresolved edge's `source_protection` is `protected` only when every site is protected, `unprotected` when any is unprotected, and `unknown` otherwise. Protection does not establish historical target validity; unprotected does not authorize an edit. Gate proposed bytes with `check --content`. Custom frontmatter attributes remain attributes; only the documented relation fields create edges.
 
-Default inferred ids use `{kind}-{path_slug}` to distinguish repeated filenames. Projects relying on the previous fallback should anchor inferred ids with the previous binary’s `migrate --apply` before upgrading, or explicitly retain `template = "{kind}-{stem}"`. Rebuilding alone does not preserve old inferred ids. Explicit ids and configured identity templates remain authoritative. `scaffold --force` preserves the existing identity unless `--id` explicitly replaces it.
+Default inferred ids use `{kind}-{path_slug}` to distinguish repeated filenames. Explicit ids and configured identity templates remain authoritative. `scaffold --force` preserves the existing identity unless `--id` explicitly replaces it.
 
 `query node` omits internal fingerprints. Use `--with-body --body-lines START:END` for positive, inclusive canonical body lines and `body_range: {start, end, total}`. `query nodes --missing reviewed` finds absent review metadata. `query stale` and `query orphans` disclose `subjects` and `unjudged`; missing review dates are unjudged, rather than stale or freshly reviewed.
 
@@ -375,10 +381,6 @@ Default inferred ids use `{kind}-{path_slug}` to distinguish repeated filenames.
 Use `nodex retarget <old-id> <new-id> --supersede` to plan lifecycle and exact resolved-reference edits together, including Markdown paths. Locked historical citations are preserved and reported. File replacements report partial failures; the batch is not a filesystem transaction.
 
 Each `[[statuses.flow]]` declares one lifecycle over disjoint kinds; a wildcard flow cannot coexist with another flow. Global terminal vocabulary is shared. Flows enforce declared transitions, not human approval.
-
-When upgrading from before 0.54, convert `[statuses.flow]` to `[[statuses.flow]]`, replace opt-in currentness with default verified queries (`--allow-stale` for explicit snapshot reads), and rebuild with `nodex build --full`. Pin consumers to the supported minor version and regenerate response types from `export envelope-schema`.
-
-For 0.55, scan diagnostics cover reached entries rather than skipped subtrees. Rebuild snapshots after upgrading; scoped document selection is preserved.
 
 A configured `rules.immutable_baseline` also governs `--since` and content proposals. `--since` selects the report and history range without replacing that baseline. Proposals reject existing lock drift on targeted records and judge introduced status-flow findings. Choose `immutable_history = "snapshot"` to permit branch-only revisions, and `immutable_baseline_mode = "merge_base"` when the baseline should follow shared ancestry.
 
