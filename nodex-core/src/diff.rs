@@ -30,10 +30,11 @@ pub struct GraphDiff {
     /// reference from it resolves.
     pub path_changes: Vec<PathChange>,
     /// Body-text annotations that appear in `after` but not `before`.
-    /// Identity = `(name, key, source, line)` — a moved
-    /// marker (same pattern + key, different line) shows as removed
-    /// from the old line and added on the new one, which is the
-    /// honest delta for reviewers.
+    /// Identity = `(name, key, source)` and the marker's line within the
+    /// body — a marker moved inside the body (same pattern + key,
+    /// different line) shows as removed from the old line and added on
+    /// the new one, which is the honest delta for reviewers, while a
+    /// frontmatter edit above the body moves none.
     pub added_annotations: Vec<Annotation>,
     pub removed_annotations: Vec<Annotation>,
     /// Per-node body-text deltas — one entry whenever the body
@@ -344,8 +345,7 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
     path_changes.sort_by(|x, y| x.id.cmp(&y.id));
     body_changes.sort_by(|x, y| x.id.cmp(&y.id));
 
-    let (added_annotations, removed_annotations) =
-        diff_annotations(before.annotations(), after.annotations());
+    let (added_annotations, removed_annotations) = diff_annotations(before, after);
 
     GraphDiff {
         added_nodes: added,
@@ -362,24 +362,29 @@ pub fn compute_diff(before: &Graph, after: &Graph) -> GraphDiff {
 }
 
 /// Set-difference annotations on the 4-tuple identity
-/// `(name, key, source, line)`. Output is sorted by the
-/// same key so two runs on the same inputs produce byte-identical
+/// `(name, key, source, body line)`. Output is sorted by name, key, source
+/// and file line so two runs on the same inputs produce byte-identical
 /// JSON, in line with the rest of `compute_diff`.
-fn diff_annotations(
-    before: &[Annotation],
-    after: &[Annotation],
-) -> (Vec<Annotation>, Vec<Annotation>) {
-    let before_set: BTreeSet<AnnotationKey> = before.iter().map(AnnotationKey::from_ref).collect();
-    let after_set: BTreeSet<AnnotationKey> = after.iter().map(AnnotationKey::from_ref).collect();
+fn diff_annotations(before: &Graph, after: &Graph) -> (Vec<Annotation>, Vec<Annotation>) {
+    let keys = |graph: &Graph| -> BTreeSet<AnnotationKey> {
+        graph
+            .annotations()
+            .iter()
+            .map(|a| AnnotationKey::of(graph, a))
+            .collect()
+    };
+    let (before_set, after_set) = (keys(before), keys(after));
 
     let mut added: Vec<Annotation> = after
+        .annotations()
         .iter()
-        .filter(|a| !before_set.contains(&AnnotationKey::from_ref(a)))
+        .filter(|a| !before_set.contains(&AnnotationKey::of(after, a)))
         .cloned()
         .collect();
     let mut removed: Vec<Annotation> = before
+        .annotations()
         .iter()
-        .filter(|a| !after_set.contains(&AnnotationKey::from_ref(a)))
+        .filter(|a| !after_set.contains(&AnnotationKey::of(before, a)))
         .cloned()
         .collect();
 
@@ -400,16 +405,20 @@ struct AnnotationKey {
     name: String,
     key: String,
     source: String,
-    line: usize,
+    body_line: usize,
 }
 
 impl AnnotationKey {
-    fn from_ref(a: &Annotation) -> Self {
+    /// The annotation keyed by its line within its source's body.
+    fn of(graph: &Graph, a: &Annotation) -> Self {
+        let preceding = graph
+            .node(&a.source)
+            .map_or(0, |node| node.body_start_line - 1);
         Self {
             name: a.name.clone(),
             key: a.key.clone(),
             source: a.source.clone(),
-            line: a.line,
+            body_line: a.line.saturating_sub(preceding),
         }
     }
 }
@@ -811,6 +820,27 @@ mod tests {
             vec![("promotes", "spec-x", 5), ("research", "q-1", 9)]
         );
         assert_eq!(removed, vec![("promotes", "spec-x", 1)]);
+    }
+
+    /// A field added above the body moves every marker down the file and
+    /// none of them within the body.
+    #[test]
+    fn a_frontmatter_edit_moves_no_annotation() {
+        let before = build_with_anns(
+            &[n("a", "active")],
+            vec![],
+            vec![ann("a", "promotes", "spec-x", 8)],
+        );
+        let mut grown = n("a", "active");
+        grown.body_start_line = 2;
+        let after = build_with_anns(&[grown], vec![], vec![ann("a", "promotes", "spec-x", 9)]);
+        let d = compute_diff(&before, &after);
+        assert!(d.added_annotations.is_empty(), "{:?}", d.added_annotations);
+        assert!(
+            d.removed_annotations.is_empty(),
+            "{:?}",
+            d.removed_annotations
+        );
     }
 
     #[test]

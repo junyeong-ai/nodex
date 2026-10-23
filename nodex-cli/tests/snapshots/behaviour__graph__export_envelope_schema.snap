@@ -1758,7 +1758,7 @@ exit: 0
         "description": "A structural delta between graph A (the \"before\" snapshot) and\ngraph B (the \"after\" snapshot).",
         "properties": {
           "added_annotations": {
-            "description": "Body-text annotations that appear in `after` but not `before`.\nIdentity = `(name, key, source, line)` — a moved\nmarker (same pattern + key, different line) shows as removed\nfrom the old line and added on the new one, which is the\nhonest delta for reviewers.",
+            "description": "Body-text annotations that appear in `after` but not `before`.\nIdentity = `(name, key, source)` and the marker's line within the\nbody — a marker moved inside the body (same pattern + key,\ndifferent line) shows as removed from the old line and added on\nthe new one, which is the honest delta for reviewers, while a\nfrontmatter edit above the body moves none.",
             "items": {
               "$ref": "#/$defs/Annotation"
             },
@@ -2714,7 +2714,7 @@ exit: 0
             "description": "A structural delta between graph A (the \"before\" snapshot) and\ngraph B (the \"after\" snapshot).",
             "properties": {
               "added_annotations": {
-                "description": "Body-text annotations that appear in `after` but not `before`.\nIdentity = `(name, key, source, line)` — a moved\nmarker (same pattern + key, different line) shows as removed\nfrom the old line and added on the new one, which is the\nhonest delta for reviewers.",
+                "description": "Body-text annotations that appear in `after` but not `before`.\nIdentity = `(name, key, source)` and the marker's line within the\nbody — a marker moved inside the body (same pattern + key,\ndifferent line) shows as removed from the old line and added on\nthe new one, which is the honest delta for reviewers, while a\nfrontmatter edit above the body moves none.",
                 "items": {
                   "$ref": "#/$defs/Annotation"
                 },
