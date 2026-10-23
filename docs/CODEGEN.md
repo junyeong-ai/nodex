@@ -28,9 +28,9 @@ Three pieces, one direction:
 2. **Commit** — check the generated file into version control. This
    makes the contract visible to humans and AI agents reading the
    codebase.
-3. **Gate** — re-run the generation in CI. If the diff is non-empty,
-   the CI fails with a typed error pointing at the changed shape.
-   This catches envelope drift on `nodex` upgrades before runtime.
+3. **Gate** — re-run the generation in CI and fail when a regenerated
+   file differs from the committed one. This catches envelope drift on
+   `nodex` upgrades before runtime.
 
 ```
 nodex export envelope-schema → extract the per-command schema → [codegen] → typed payload models → CI drift gate
@@ -63,8 +63,9 @@ uv add --dev datamodel-code-generator
 ### Generate
 
 One extraction + one codegen per command you consume; the root model
-name comes from `--class-name` (the schema's own `title` would name the
-inner item type otherwise):
+name comes from `--class-name`, because every listing schema's own
+`title` is the generic `ItemsEnvelopeShape` and would give each
+command's root model the same name:
 
 ```bash
 nodex export envelope-schema > _generated/nodex_envelope_schema.json
@@ -123,15 +124,15 @@ diff -q _generated/nodex_envelope_schema.json{,.new} \
     && diff -q _generated/query_annotations.py{,.new}
 ```
 
-Failure = nodex envelope changed shape. Resolve by reviewing the diff,
-re-running generation locally, and committing the new file.
+Failure = the installed nodex is not the one the committed files were
+generated from: its version changed (the full export carries
+`data.version`), a payload shape changed, or both. Review the diff,
+regenerate locally and commit the new files.
 
 ## TypeScript (Zod via `json-schema-to-zod`)
 
-`json-schema-to-zod` emits Zod schemas which are *runtime* validators
-— a `safeParse` call validates the envelope at the point of parse,
-matching the contract gate semantic that's compile-time in other
-languages.
+`json-schema-to-zod` emits Zod schemas, which validate at runtime: a
+`safeParse` call checks the payload where it is parsed.
 
 ### Install
 
@@ -198,17 +199,16 @@ diff -q _generated/nodex-envelope-schema.json{,.new} \
 
 ## Recommended layout
 
-Per-project conventions vary, but every reference implementation
-groups the generated artefacts under one `_generated/` (or
-`generated/`) directory adjacent to the consuming code:
+Group the generated artefacts under one `_generated/` directory beside
+the consuming code:
 
 ```
 project/
 ├── _generated/
 │   ├── README.md                    # "do not edit; regen via just <recipe>"
-│   ├── nodex_envelope_schema.json   # committed: the full export, unmodified (drift reference)
-│   ├── query_issues.schema.json     # committed: extracted per-command schema
-│   └── query_issues.<py|ts>         # committed: codegen output
+│   ├── nodex-envelope-schema.json   # committed: the full export, unmodified (drift reference)
+│   ├── <command>.schema.json        # committed: extracted per-command schema
+│   └── <command>.<py|ts>            # committed: codegen output
 ├── scripts/   (Python) | tools/   (TS)
 └── Justfile / package.json        # 1 recipe wires steps 1 + 2
 ```
