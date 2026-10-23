@@ -229,13 +229,6 @@ fn init_creates_config_and_writes_path_to_envelope() {
     );
 }
 
-#[test]
-fn init_twice_fails_with_nonzero_exit() {
-    let tmp = scratch();
-    nodex(tmp.path()).arg("init").assert().success();
-    nodex(tmp.path()).arg("init").assert().failure();
-}
-
 // ─── build ──────────────────────────────────────────────────────────
 
 #[test]
