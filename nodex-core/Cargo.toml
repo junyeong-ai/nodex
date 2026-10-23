@@ -27,10 +27,5 @@ schemars = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = { workspace = true }
 jsonschema = { workspace = true }
 proptest = { workspace = true }
-
-[[bench]]
-name = "build"
-harness = false

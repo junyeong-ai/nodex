@@ -30,7 +30,7 @@ use validator::validate_supersedes_dag;
 /// Build result.
 ///
 /// Intermediate aggregate the builder hands back to in-process
-/// callers (the CLI, benches, tests). Holds the built `Graph`, the
+/// callers (the CLI, tests). Holds the built `Graph`, the
 /// counter snapshot, and any non-fatal advisories (scope coverage
 /// gaps, cache load/save problems). A document the build saw but could
 /// not turn into a node — unreadable, non-UTF-8, or unparseable — is
