@@ -83,8 +83,13 @@ pub enum QueryCommand {
     Recent(RecentArgs),
     /// Partition the graph into connected components (undirected projection)
     Components {
+        /// Keep only components of at most N members, such as the islands
+        /// beside a corpus's main component. Each keeps its
+        /// `component_id`, its rank in the whole partition.
+        #[arg(long)]
+        max_size: Option<usize>,
         /// Cap returned components (applied after size-desc sort;
-        /// `total` still reports every component).
+        /// `total` still reports every component kept).
         #[arg(long)]
         limit: Option<usize>,
     },
@@ -339,7 +344,9 @@ pub fn run(
         QueryCommand::Issues => detect::run_issues(root, pretty, today),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
         QueryCommand::Recent(args) => filter::run_recent(root, args, pretty, today),
-        QueryCommand::Components { limit } => traverse::run_components(root, limit, pretty),
+        QueryCommand::Components { max_size, limit } => {
+            traverse::run_components(root, max_size, limit, pretty)
+        }
         QueryCommand::Neighborhood { id, depth } => {
             traverse::run_neighborhood(root, &id, depth, pretty)
         }

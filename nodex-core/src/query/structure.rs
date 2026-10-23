@@ -107,7 +107,10 @@ pub struct Component {
 /// Pure structural output — leaf-by-design singletons appear as
 /// size-1 components without any "this is bad" labelling; downstream
 /// policy lives elsewhere.
-pub fn find_components(graph: &Graph) -> Vec<Component> {
+///
+/// `max_size` keeps only components of at most that many members; each
+/// keeps the `component_id` it ranks at in the whole partition.
+pub fn find_components(graph: &Graph, max_size: Option<usize>) -> Vec<Component> {
     // Sort node ids upfront so the BFS visit order is deterministic
     // regardless of `IndexMap` insertion order.
     let mut all_ids: Vec<&str> = graph.nodes().keys().map(|s| s.as_str()).collect();
@@ -148,6 +151,7 @@ pub fn find_components(graph: &Graph) -> Vec<Component> {
     components
         .into_iter()
         .enumerate()
+        .filter(|(_, members)| max_size.is_none_or(|max| members.len() <= max))
         .map(|(idx, members)| Component {
             component_id: (idx + 1) as u32,
             size: members.len(),
@@ -338,7 +342,7 @@ mod tests {
     #[test]
     fn singleton_node_is_its_own_component() {
         let g = build(&["a"], vec![]);
-        let cs = find_components(&g);
+        let cs = find_components(&g, None);
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].size, 1);
         assert_eq!(cs[0].component_id, 1);
@@ -347,14 +351,14 @@ mod tests {
     #[test]
     fn two_disconnected_nodes_are_two_components() {
         let g = build(&["a", "b"], vec![]);
-        let cs = find_components(&g);
+        let cs = find_components(&g, None);
         assert_eq!(cs.len(), 2);
     }
 
     #[test]
     fn directed_edge_still_connects_undirected_components() {
         let g = build(&["a", "b"], vec![edge("a", "b", "references")]);
-        let cs = find_components(&g);
+        let cs = find_components(&g, None);
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].size, 2);
     }
@@ -370,11 +374,27 @@ mod tests {
                 edge("x", "y", "references"),
             ],
         );
-        let cs = find_components(&g);
+        let cs = find_components(&g, None);
         assert_eq!(cs[0].size, 3);
         assert_eq!(cs[1].size, 2);
         assert_eq!(cs[0].component_id, 1);
         assert_eq!(cs[1].component_id, 2);
+    }
+
+    #[test]
+    fn a_size_bound_keeps_each_components_rank_in_the_whole_partition() {
+        // {a,b,c} (size 3), {x,y} (size 2) and {z} (size 1)
+        let g = build(
+            &["a", "b", "c", "x", "y", "z"],
+            vec![
+                edge("a", "b", "references"),
+                edge("b", "c", "references"),
+                edge("x", "y", "references"),
+            ],
+        );
+        let cs = find_components(&g, Some(2));
+        let kept: Vec<(u32, usize)> = cs.iter().map(|c| (c.component_id, c.size)).collect();
+        assert_eq!(kept, vec![(2, 2), (3, 1)]);
     }
 
     #[test]

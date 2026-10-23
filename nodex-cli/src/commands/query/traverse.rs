@@ -199,16 +199,19 @@ pub(crate) fn run_neighborhood(
 
 pub(crate) fn run_components(
     context: &super::QueryContext<'_>,
+    max_size: Option<usize>,
     limit: Option<usize>,
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(context.root)?;
-    if let Some(n) = limit {
-        reject_zero_usize(n, "--limit")?;
+    for (value, flag) in [(max_size, "--max-size"), (limit, "--limit")] {
+        if let Some(n) = value {
+            reject_zero_usize(n, flag)?;
+        }
     }
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items = nodex_core::query::structure::find_components(graph);
+    let items = nodex_core::query::structure::find_components(graph, max_size);
     context.emit_read_with(
         ItemsEnvelope::capped(items, limit),
         warnings,
