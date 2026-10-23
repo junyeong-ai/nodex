@@ -8,6 +8,8 @@
 //! Pure transformation of [`crate::config::Config`] into
 //! `serde_json::Value`. No file I/O, no validation side effects.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -395,7 +397,7 @@ pub struct EnumsManifest {
     /// global+override fold would be wrong in both directions: it would
     /// impose an override's narrowing on kinds it never covered and
     /// hide the global vocabulary the un-overridden kinds keep.
-    pub fields: std::collections::BTreeMap<String, Vec<String>>,
+    pub fields: BTreeMap<String, Vec<String>>,
     /// The per-kind declared enum overrides (`enums_for`) for every kind
     /// a `[[schema.overrides]]` block covers. Combined with the top-level
     /// `kinds` / `statuses` vocabularies, a consumer reconstructs the
@@ -409,9 +411,8 @@ pub struct EnumsManifest {
     /// it would publish `per_kind` as required and a typed client
     /// generated from the schema would reject the (valid) override-free
     /// payload where the field is absent.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub per_kind:
-        std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_kind: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -503,7 +504,7 @@ pub fn export_enums(config: &Config) -> EnumsManifest {
     // `check` enforces (`effective_enums_for` = these overrides plus the
     // implicit kind/status backfill), so the manifest can never disagree
     // with `check` about which values a kind accepts.
-    let per_kind: std::collections::BTreeMap<_, _> = config
+    let per_kind: BTreeMap<_, _> = config
         .schema
         .overrides
         .iter()
@@ -919,12 +920,12 @@ fn inline_value(
     }
 }
 
-// ─── envelope-schema diff (the release contract gate) ──────────────────
+// ─── contract diffs (the release contract gate) ────────────────────────
 
-/// Classified delta between two envelope-schema payloads (the `.data`
-/// of two `nodex export envelope-schema` runs).
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct EnvelopeSchemaDiff {
+/// Classified delta between two published contract manifests: two
+/// envelope-schema payloads or two commands manifests.
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct ContractDiff {
     pub breaking: Vec<ContractChange>,
     pub additive: Vec<ContractChange>,
 }
@@ -971,11 +972,8 @@ const METADATA_KEYWORDS: &[&str] = &[
 /// count change, or any unclassifiable keyword change. Additive: a key
 /// added, a property added, an enum value removed, `required` gaining
 /// a member, `additionalProperties` loosening from `false`.
-pub fn compute_envelope_schema_diff(baseline: &Value, head: &Value) -> EnvelopeSchemaDiff {
-    let mut diff = EnvelopeSchemaDiff {
-        breaking: vec![],
-        additive: vec![],
-    };
+pub fn compute_envelope_schema_diff(baseline: &Value, head: &Value) -> ContractDiff {
+    let mut diff = ContractDiff::default();
     let empty = Map::new();
     let baseline_commands = baseline
         .get("per_command")
@@ -1029,6 +1027,241 @@ pub fn compute_envelope_schema_diff(baseline: &Value, head: &Value) -> EnvelopeS
     diff
 }
 
+/// Classify every difference between two commands manifests (the `.data` of
+/// two `nodex export commands` runs) by whether an invocation the baseline
+/// accepted still parses. Breaking: a leaf, positional, flag or short
+/// spelling removed; a positional or flag that became required, or one added
+/// as required; a flag that changed whether it takes a value, or stopped
+/// repeating. Additive: a leaf, an optional positional or flag, a requirement
+/// relaxed, a flag that may now repeat. A leaf flag that became global is not
+/// removed. As `compute_envelope_schema_diff` fails closed, a payload whose
+/// `commands` list is absent or malformed is breaking, and so is one that
+/// records no flag grammar (`global_flags`), whose flags are then left
+/// uncompared rather than read as a leaf without flags.
+pub fn compute_commands_diff(baseline: &Value, head: &Value) -> ContractDiff {
+    let mut diff = ContractDiff::default();
+    let (Some(before_leaves), Some(after_leaves)) = (leaves_of(baseline), leaves_of(head)) else {
+        diff.breaking.push(change(
+            "commands",
+            "commands",
+            "commands list absent or malformed",
+        ));
+        return diff;
+    };
+    let records_flags = |payload: &Value| payload.get("global_flags").is_some_and(Value::is_array);
+    let globals = match (records_flags(baseline), records_flags(head)) {
+        (true, true) => {
+            let before = flags_of(baseline.get("global_flags"));
+            let after = flags_of(head.get("global_flags"));
+            diff_flags("global", &before, &after, &BTreeMap::new(), &mut diff);
+            Some(after)
+        }
+        (before, after) => {
+            let side = match (before, after) {
+                (false, false) => "either payload",
+                (false, true) => "the baseline",
+                _ => "the head",
+            };
+            diff.breaking.push(change(
+                "commands",
+                "global_flags",
+                format!("flag grammar absent from {side}"),
+            ));
+            None
+        }
+    };
+    for (key, before) in &before_leaves {
+        let Some(after) = after_leaves.get(key) else {
+            diff.breaking.push(change(key, "leaf", "command removed"));
+            continue;
+        };
+        diff_positionals(key, before, after, &mut diff);
+        if let Some(after_global) = &globals {
+            diff_flags(
+                key,
+                &flags_of(before.get("flags")),
+                &flags_of(after.get("flags")),
+                after_global,
+                &mut diff,
+            );
+        }
+    }
+    for key in after_leaves.keys() {
+        if !before_leaves.contains_key(key) {
+            diff.additive.push(change(key, "leaf", "command added"));
+        }
+    }
+    diff
+}
+
+/// Each leaf keyed by its schema key, or `None` when the list is absent or
+/// an entry carries no key.
+fn leaves_of(payload: &Value) -> Option<BTreeMap<String, &Value>> {
+    payload
+        .get("commands")?
+        .as_array()?
+        .iter()
+        .map(|entry| Some((entry.get("schema")?.as_str()?.to_string(), entry)))
+        .collect()
+}
+
+/// Flags keyed by the spelling an invocation uses: `--long`, or `-s` for a
+/// flag with no long form.
+fn flags_of(flags: Option<&Value>) -> BTreeMap<String, &Value> {
+    flags
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|flag| {
+            let spelling = match flag.get("long").and_then(Value::as_str) {
+                Some(long) => format!("--{long}"),
+                None => format!("-{}", flag.get("short")?.as_str()?),
+            };
+            Some((spelling, flag))
+        })
+        .collect()
+}
+
+fn flag_bool(flag: &Value, key: &str) -> bool {
+    flag.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn diff_flags(
+    command: &str,
+    before: &BTreeMap<String, &Value>,
+    after: &BTreeMap<String, &Value>,
+    after_global: &BTreeMap<String, &Value>,
+    diff: &mut ContractDiff,
+) {
+    for (spelling, flag) in before {
+        let location = format!("flags/{spelling}");
+        match after.get(spelling).or_else(|| after_global.get(spelling)) {
+            None => diff
+                .breaking
+                .push(change(command, &location, "flag removed")),
+            Some(now) => diff_flag(command, &location, flag, now, diff),
+        }
+    }
+    for (spelling, flag) in after {
+        if before.contains_key(spelling) {
+            continue;
+        }
+        let location = format!("flags/{spelling}");
+        if flag_bool(flag, "required") {
+            diff.breaking
+                .push(change(command, &location, "required flag added"));
+        } else {
+            diff.additive.push(change(command, &location, "flag added"));
+        }
+    }
+}
+
+fn diff_flag(
+    command: &str,
+    location: &str,
+    before: &Value,
+    after: &Value,
+    diff: &mut ContractDiff,
+) {
+    if flag_bool(before, "takes_value") != flag_bool(after, "takes_value") {
+        let message = if flag_bool(after, "takes_value") {
+            "flag now takes a value"
+        } else {
+            "flag no longer takes a value"
+        };
+        diff.breaking.push(change(command, location, message));
+    }
+    match (
+        flag_bool(before, "repeatable"),
+        flag_bool(after, "repeatable"),
+    ) {
+        (true, false) => diff
+            .breaking
+            .push(change(command, location, "flag no longer repeatable")),
+        (false, true) => diff
+            .additive
+            .push(change(command, location, "flag now repeatable")),
+        _ => {}
+    }
+    match (flag_bool(before, "required"), flag_bool(after, "required")) {
+        (false, true) => diff
+            .breaking
+            .push(change(command, location, "flag now required")),
+        (true, false) => diff
+            .additive
+            .push(change(command, location, "flag no longer required")),
+        _ => {}
+    }
+    let short = |flag: &Value| {
+        flag.get("short")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    match (short(before), short(after)) {
+        (Some(was), now) if now.as_deref() != Some(was.as_str()) => diff.breaking.push(change(
+            command,
+            location,
+            format!("short spelling -{was} removed"),
+        )),
+        (None, Some(now)) => diff.additive.push(change(
+            command,
+            location,
+            format!("short spelling -{now} added"),
+        )),
+        _ => {}
+    }
+}
+
+fn diff_positionals(command: &str, before: &Value, after: &Value, diff: &mut ContractDiff) {
+    let list = |entry: &Value| {
+        entry
+            .get("positionals")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (before, after) = (list(before), list(after));
+    let name = |positional: &Value| {
+        positional
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    for (index, positional) in before.iter().enumerate() {
+        let location = format!("positionals/{}", name(positional));
+        let Some(now) = after.get(index) else {
+            diff.breaking
+                .push(change(command, &location, "positional removed"));
+            continue;
+        };
+        match (
+            flag_bool(positional, "required"),
+            flag_bool(now, "required"),
+        ) {
+            (false, true) => {
+                diff.breaking
+                    .push(change(command, &location, "positional now required"))
+            }
+            (true, false) => {
+                diff.additive
+                    .push(change(command, &location, "positional no longer required"))
+            }
+            _ => {}
+        }
+    }
+    for positional in after.iter().skip(before.len()) {
+        let location = format!("positionals/{}", name(positional));
+        if flag_bool(positional, "required") {
+            diff.breaking
+                .push(change(command, &location, "required positional added"));
+        } else {
+            diff.additive
+                .push(change(command, &location, "optional positional added"));
+        }
+    }
+}
+
 fn change(command: &str, location: &str, message: impl Into<String>) -> ContractChange {
     ContractChange {
         command: command.to_string(),
@@ -1042,7 +1275,7 @@ fn diff_schema(
     location: &str,
     before: &Value,
     after: &Value,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     if before == after {
         return;
@@ -1103,7 +1336,7 @@ fn diff_properties(
     before: Option<&Value>,
     after: Option<&Value>,
     required_after: Option<&Value>,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     let empty = Map::new();
     let b = before.and_then(Value::as_object).unwrap_or(&empty);
@@ -1151,7 +1384,7 @@ fn diff_definitions(
     location: &str,
     before: Option<&Value>,
     after: Option<&Value>,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     let empty = Map::new();
     let b = before.and_then(Value::as_object).unwrap_or(&empty);
@@ -1194,7 +1427,7 @@ fn diff_required(
     location: &str,
     before: Option<&Value>,
     after: Option<&Value>,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     let (Some(b), Some(a)) = (
         before.map_or(Some(vec![]), string_set),
@@ -1237,7 +1470,7 @@ fn diff_enum(
     location: &str,
     before: Option<&Value>,
     after: Option<&Value>,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     let (Some(b), Some(a)) = (
         before.and_then(Value::as_array),
@@ -1272,7 +1505,7 @@ fn diff_additional_properties(
     location: &str,
     before: Option<&Value>,
     after: Option<&Value>,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     // An absent `additionalProperties` means `true` in JSON Schema.
     let permissive = Value::Bool(true);
@@ -1307,7 +1540,7 @@ fn diff_branches(
     keyword: &str,
     before: Option<&Value>,
     after: Option<&Value>,
-    diff: &mut EnvelopeSchemaDiff,
+    diff: &mut ContractDiff,
 ) {
     let (Some(b), Some(a)) = (
         before.and_then(Value::as_array),
@@ -2007,7 +2240,7 @@ mod tests {
     #[test]
     fn rules_manifest_emits_one_entry_per_body_line_block() {
         let mut c = Config::default();
-        let mut enums = std::collections::BTreeMap::new();
+        let mut enums = BTreeMap::new();
         enums.insert("g".into(), vec!["a".into()]);
         c.rules.body_line = vec![crate::config::BodyLineRuleConfig {
             name: "one".into(),
@@ -2603,7 +2836,7 @@ mod tests {
         let all_fields: Vec<String> = NODE_REF_FIELDS.iter().map(|s| (*s).to_string()).collect();
         let full = NodeListingEntry {
             node: NodeRefProjection::from_node_ref(spine_ref("doc-a"), &all_fields),
-            attrs: std::collections::BTreeMap::new(),
+            attrs: BTreeMap::new(),
         };
         // A `--fields id,kind` projection.
         let projected = NodeListingEntry {
@@ -2611,7 +2844,7 @@ mod tests {
                 spine_ref("doc-b"),
                 &["id".to_string(), "kind".to_string()],
             ),
-            attrs: std::collections::BTreeMap::new(),
+            attrs: BTreeMap::new(),
         };
         // A `--fields id,owner,priority` projection: spine `id` plus
         // declared non-spine fields under `attrs`.
@@ -3284,6 +3517,212 @@ mod tests {
             "{:?}",
             d.breaking
         );
+    }
+
+    // ─── compute_commands_diff ─────────────────────────────────────────
+
+    fn commands_payload(global_flags: Value, commands: Value) -> Value {
+        serde_json::json!({
+            "version": "0.15.0",
+            "global_flags": global_flags,
+            "commands": commands
+        })
+    }
+
+    fn flag(long: &str, takes_value: bool, repeatable: bool, required: bool) -> Value {
+        serde_json::json!({
+            "long": long,
+            "takes_value": takes_value,
+            "repeatable": repeatable,
+            "required": required
+        })
+    }
+
+    fn search_leaf() -> Value {
+        serde_json::json!({
+            "path": ["query", "search"],
+            "schema": "query.search",
+            "positionals": [{ "name": "keyword", "required": true }],
+            "flags": [
+                flag("kind", true, true, false),
+                { "long": "limit", "short": "n", "takes_value": true, "repeatable": false, "required": false }
+            ]
+        })
+    }
+
+    fn commands_of(leaf: Value) -> Value {
+        commands_payload(
+            serde_json::json!([flag("pretty", false, false, false)]),
+            serde_json::json!([leaf]),
+        )
+    }
+
+    fn located(changes: &[ContractChange]) -> Vec<(String, String, String)> {
+        changes
+            .iter()
+            .map(|c| (c.command.clone(), c.location.clone(), c.message.clone()))
+            .collect()
+    }
+
+    fn at(command: &str, location: &str, message: &str) -> (String, String, String) {
+        (command.into(), location.into(), message.into())
+    }
+
+    #[test]
+    fn commands_diff_is_empty_for_one_grammar() {
+        let d = compute_commands_diff(&commands_of(search_leaf()), &commands_of(search_leaf()));
+        assert!(d.breaking.is_empty() && d.additive.is_empty(), "{d:?}");
+    }
+
+    #[test]
+    fn commands_diff_breaks_on_every_invocation_the_head_refuses() {
+        let baseline = commands_of(search_leaf());
+        let mut head = search_leaf();
+        head["positionals"] = serde_json::json!([]);
+        head["flags"] = serde_json::json!([
+            flag("kind", false, false, true),
+            { "long": "limit", "takes_value": true, "repeatable": false, "required": false },
+            flag("format", true, false, true)
+        ]);
+        let d = compute_commands_diff(&baseline, &commands_of(head));
+        assert_eq!(
+            located(&d.breaking),
+            vec![
+                at("query.search", "positionals/keyword", "positional removed"),
+                at(
+                    "query.search",
+                    "flags/--kind",
+                    "flag no longer takes a value"
+                ),
+                at("query.search", "flags/--kind", "flag no longer repeatable"),
+                at("query.search", "flags/--kind", "flag now required"),
+                at("query.search", "flags/--limit", "short spelling -n removed"),
+                at("query.search", "flags/--format", "required flag added"),
+            ]
+        );
+        assert!(d.additive.is_empty(), "{d:?}");
+
+        let d = compute_commands_diff(
+            &baseline,
+            &commands_payload(serde_json::json!([]), serde_json::json!([])),
+        );
+        assert_eq!(
+            located(&d.breaking),
+            vec![
+                at("global", "flags/--pretty", "flag removed"),
+                at("query.search", "leaf", "command removed"),
+            ]
+        );
+    }
+
+    #[test]
+    fn commands_diff_adds_what_every_baseline_invocation_still_parses() {
+        let mut before = search_leaf();
+        before["flags"][0] = flag("kind", true, false, true);
+        let mut after = search_leaf();
+        after["positionals"] = serde_json::json!([
+            { "name": "keyword", "required": false },
+            { "name": "scope", "required": false }
+        ]);
+        after["flags"] = serde_json::json!([
+            flag("kind", true, true, false),
+            { "long": "limit", "short": "n", "takes_value": true, "repeatable": false, "required": false },
+            flag("offset", true, false, false)
+        ]);
+        let mut head = commands_of(after);
+        head["commands"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "path": ["query", "tags"], "schema": "query.tags" }));
+        let d = compute_commands_diff(&commands_of(before), &head);
+        assert!(d.breaking.is_empty(), "{d:?}");
+        assert_eq!(
+            located(&d.additive),
+            vec![
+                at(
+                    "query.search",
+                    "positionals/keyword",
+                    "positional no longer required"
+                ),
+                at(
+                    "query.search",
+                    "positionals/scope",
+                    "optional positional added"
+                ),
+                at("query.search", "flags/--kind", "flag now repeatable"),
+                at("query.search", "flags/--kind", "flag no longer required"),
+                at("query.search", "flags/--offset", "flag added"),
+                at("query.tags", "leaf", "command added"),
+            ]
+        );
+    }
+
+    /// A flag every leaf now accepts still parses where the leaf used to
+    /// declare it.
+    #[test]
+    fn commands_diff_reads_a_flag_that_became_global_as_kept() {
+        let baseline = commands_of(search_leaf());
+        let mut leaf = search_leaf();
+        leaf["flags"].as_array_mut().unwrap().remove(0);
+        let head = commands_payload(
+            serde_json::json!([
+                flag("pretty", false, false, false),
+                flag("kind", true, true, false)
+            ]),
+            serde_json::json!([leaf]),
+        );
+        let d = compute_commands_diff(&baseline, &head);
+        assert!(d.breaking.is_empty(), "{d:?}");
+        assert_eq!(
+            located(&d.additive),
+            vec![at("global", "flags/--kind", "flag added")]
+        );
+    }
+
+    /// A manifest without `global_flags` says nothing about flags, so a leaf
+    /// in it carrying none is no evidence that the flags were absent.
+    #[test]
+    fn commands_diff_fails_closed_on_a_payload_without_a_flag_grammar() {
+        let mut baseline = commands_of(search_leaf());
+        let without = baseline.as_object_mut().unwrap();
+        without.remove("global_flags");
+        without["commands"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("flags");
+        let d = compute_commands_diff(&baseline, &commands_of(search_leaf()));
+        assert_eq!(
+            located(&d.breaking),
+            vec![at(
+                "commands",
+                "global_flags",
+                "flag grammar absent from the baseline"
+            )]
+        );
+        assert!(d.additive.is_empty(), "{d:?}");
+    }
+
+    #[test]
+    fn commands_diff_fails_closed_on_a_malformed_list() {
+        let baseline = commands_of(search_leaf());
+        for head in [
+            serde_json::json!({ "version": "0.15.0" }),
+            commands_payload(
+                serde_json::json!([]),
+                serde_json::json!([{ "path": ["build"] }]),
+            ),
+        ] {
+            let d = compute_commands_diff(&baseline, &head);
+            assert_eq!(
+                located(&d.breaking),
+                vec![at(
+                    "commands",
+                    "commands",
+                    "commands list absent or malformed"
+                )],
+                "{head}"
+            );
+        }
     }
 
     #[test]

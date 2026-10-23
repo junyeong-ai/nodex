@@ -1054,7 +1054,7 @@ nodex/
 | `reference_rewrite.rs` | resolver 일관 · fence 인식 본문 링크/id 참조 재작성 — `rename` 과 `retarget` 의 단일 엔진 |
 | `retarget.rs` | `retarget_document` — 한 node id 의 참조를 다른 id 로 정확 매칭 재지정 |
 | `mutate.rs` | `plan_file` → `narrow` → `write_plan` — 배치 재작성의 가드된 쓰기 경로: 모든 파일을 reader-follows / writer-skips symlink 규율로 계획하고, 배치 전체를 불변성 잠금에 한 번 판정해 잠긴 부분만 보류한 뒤, 남은 것을 root 안에서 atomic 하게 쓴다; `rename` / `retarget` / `migrate --apply` 가 통과 |
-| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `export_diagnostics()` + `compute_envelope_schema_diff` — authoritative manifests + release 컨트랙트 분류기 |
+| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `export_diagnostics()` + `compute_envelope_schema_diff` + `compute_commands_diff` — authoritative manifests + release 컨트랙트 분류기 |
 | `rules/` | `Rule` trait + 빌트인; `is_applicable` / `skip_reason` 가 이번 실행에서 판단하지 못한 등록 룰을 보고; `check` 가 `{violations, skipped_rules, rule_coverage}` 반환 |
 | `command_result.rs` | 모든 명령의 typed `data` payload (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — `export envelope-schema` 가 single SoT로 derive |
 | `output/` | `graph.json` + 결정적 `GRAPH.md` |

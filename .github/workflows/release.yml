@@ -221,9 +221,10 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Gate the release on the classified envelope-schema diff against the
-  # previous release's published schema asset, and publish the two
-  # config-independent manifests as pinnable contract artifacts. Only
+  # Gate the release on the classified diff of both contract manifests —
+  # the envelope schema and the command grammar — against the previous
+  # release's published assets, and publish the two config-independent
+  # manifests as pinnable contract artifacts. Only
   # these are published: schema/enums/rules depend on a project's
   # nodex.toml and would be misleading as release assets.
   contract:
@@ -257,7 +258,7 @@ jobs:
             shasum -a 256 "$manifest" > "$manifest.sha256"
           done
 
-      - name: Gate against the previous release's schema asset
+      - name: Gate against the previous release's contract manifests
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -286,9 +287,14 @@ jobs:
             cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # Every release that ships the envelope schema ships the commands
+          # manifest beside it, so a missing one fails the download.
           gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern 'nodex-envelope-schema-v*.json' --output baseline-envelope-schema.json
+          gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern 'nodex-commands-v*.json' --output baseline-commands.json
           set +e
-          ./target/release/contract-gate baseline-envelope-schema.json "nodex-envelope-schema-v${VERSION}.json" > contract-diff.json
+          ./target/release/contract-gate \
+            baseline-envelope-schema.json "nodex-envelope-schema-v${VERSION}.json" \
+            baseline-commands.json "nodex-commands-v${VERSION}.json" > contract-diff.json
           status=$?
           set -e
           cat contract-diff.json >> "$GITHUB_STEP_SUMMARY"
