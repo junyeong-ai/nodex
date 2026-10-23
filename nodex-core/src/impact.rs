@@ -2,8 +2,8 @@
 //!
 //! Combines the structural [`compute_diff`] with dependency lookups to
 //! answer "what could break if I merge this?" in one shot — a
-//! *modified* node is paired with its transitive dependents (the
-//! [`find_dependents`] walk over the after graph), a *removed* node with
+//! *modified* node is paired with its dependents within the requested
+//! hops (the [`find_dependents`] walk over the after graph), a *removed* node with
 //! the direct referrers that still point at it and now dangle
 //! (references the same change repointed elsewhere are correctly
 //! absent), and a *moved* node with both: what still depends on it where
@@ -40,12 +40,12 @@ pub enum ChangeKind {
 pub struct ImpactEntry {
     pub id: String,
     pub change: ChangeKind,
-    /// For a **modified** node: its transitive dependents in the *after*
-    /// graph. For a **removed** node: the documents in the *after* graph
+    /// For a **modified** node: its dependents in the *after* graph,
+    /// within the requested hops. For a **removed** node: the documents in the *after* graph
     /// that still reference its id and now dangle (each a direct,
     /// single-hop referrer) — references repointed elsewhere by the same
     /// change are correctly absent. For a **moved** node: both — its
-    /// transitive dependents where it now is, then the direct referrers
+    /// dependents where it now is, then the direct referrers
     /// still pointing at where it was; a document in both is listed once,
     /// under the edge that still binds it.
     pub dependents: Vec<DependentEntry>,
@@ -67,7 +67,7 @@ pub struct ImpactReport {
 }
 
 /// Analyse what changing `before` into `after` affects: each modified node
-/// paired with its transitive dependents, each removed node paired with
+/// paired with its dependents, each removed node paired with
 /// the documents that still dangle on its id in `after`, and each moved
 /// node paired with both.
 ///
