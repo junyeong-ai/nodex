@@ -5,39 +5,29 @@ description: >-
 
 inputs:
   targets:
-    description: Comma-separated target triples to install beside the host's.
+    description: Space-separated target triples to install beside the host's.
     required: false
     default: ""
   components:
-    description: Comma-separated components to install beside the pinned ones.
+    description: Space-separated components to install beside the pinned ones.
     required: false
     default: ""
 
 runs:
   using: composite
   steps:
-    - id: pin
-      name: Read the pinned toolchain
+    - name: Install the pinned toolchain
       shell: bash
+      env:
+        TARGETS: ${{ inputs.targets }}
+        COMPONENTS: ${{ inputs.components }}
       run: |
-        # rustup selects the pinned toolchain whatever a job installs, so a
-        # job naming a different one installs that one's std and then builds
-        # with this one. A host build never notices — the pin's std is there
-        # already — and a cross-compile fails with "can't find crate for
-        # `core`", which is how this was found. Reading the pin here is what
-        # makes "installed" and "built with" the same toolchain everywhere.
-        channel=$(sed -n \
-          's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p' \
-          rust-toolchain.toml | head -1)
-        if [ -z "$channel" ]; then
-          echo "::error::rust-toolchain.toml declares no readable channel" >&2
-          exit 1
-        fi
-        echo "channel=$channel" >> "$GITHUB_OUTPUT"
-        echo "Pinned toolchain: $channel"
-
-    - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-      with:
-        toolchain: ${{ steps.pin.outputs.channel }}
-        targets: ${{ inputs.targets }}
-        components: ${{ inputs.components }}
+        # Without a toolchain argument rustup acts on the active one, which
+        # `rust-toolchain.toml` names; a cross target added to any other
+        # toolchain fails with "can't find crate for `core`". `install` skips
+        # an existing toolchain whole, so targets and components are added
+        # on their own.
+        rustup toolchain install --profile minimal --no-self-update
+        if [ -n "$TARGETS" ]; then rustup target add $TARGETS; fi
+        if [ -n "$COMPONENTS" ]; then rustup component add $COMPONENTS; fi
+        rustc --version

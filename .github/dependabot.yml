@@ -8,6 +8,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
@@ -16,12 +18,15 @@ updates:
       include: scope
 
   # Cargo workspace dependencies. Grouped so routine compatible updates
-  # land in one PR rather than dozens; security-only updates still fire
-  # immediately because they're separated from the group by Dependabot.
+  # land in one PR rather than dozens. A release waits out the cooldown
+  # before a PR proposes it, so one yanked or compromised within days never
+  # lands; security updates ignore the cooldown and still fire immediately.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       cargo:
         patterns: ["*"]

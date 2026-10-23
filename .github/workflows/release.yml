@@ -16,6 +16,10 @@ concurrency:
 
 permissions: {}
 
+# A release restores nothing another run wrote, so no cache entry can reach
+# a published archive or its provenance attestation.
+cache-mode: none
+
 env:
   CARGO_TERM_COLOR: always
   BINARY: nodex
@@ -30,6 +34,8 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - id: resolve
         name: Resolve and verify version
@@ -67,6 +73,8 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    env:
+      VERSION: ${{ needs.verify_version.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,15 +106,13 @@ jobs:
             builder: cargo
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: ./.github/actions/rust-toolchain
+        uses: $/.github/actions/rust-toolchain
         with:
-          targets: ${{ matrix.builder == 'lipo' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: ${{ matrix.target }}
+          targets: ${{ matrix.builder == 'lipo' && 'aarch64-apple-darwin x86_64-apple-darwin' || matrix.target }}
 
       - name: Install musl toolchain
         if: contains(matrix.target, 'musl')
@@ -142,8 +148,7 @@ jobs:
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          version="${{ needs.verify_version.outputs.version }}"
-          archive="${BINARY}-v${version}-${{ matrix.target }}.tar.gz"
+          archive="${BINARY}-v${VERSION}-${{ matrix.target }}.tar.gz"
           tar -C "target/${{ matrix.target }}/release" -czf "$archive" "$BINARY"
           shasum -a 256 "$archive" > "$archive.sha256"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
@@ -152,8 +157,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $version = "${{ needs.verify_version.outputs.version }}"
-          $archive = "$env:BINARY-v$version-${{ matrix.target }}.zip"
+          $archive = "$env:BINARY-v$env:VERSION-${{ matrix.target }}.zip"
           Compress-Archive -Path "target/${{ matrix.target }}/release/$env:BINARY.exe" -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
           # Write the .sha256 as UTF-8 (no BOM) with exactly one trailing LF,
@@ -190,13 +194,16 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    env:
+      VERSION: ${{ needs.verify_version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Package skill tarball
         shell: bash
         run: |
-          version="${{ needs.verify_version.outputs.version }}"
-          archive="${BINARY}-skill-v${version}.tar.gz"
+          archive="${BINARY}-skill-v${VERSION}.tar.gz"
           tar -C .claude/skills -czf "$archive" nodex
           shasum -a 256 "$archive" > "$archive.sha256"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
@@ -229,13 +236,11 @@ jobs:
       VERSION: ${{ needs.verify_version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: ./.github/actions/rust-toolchain
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: contract-gate
+        uses: $/.github/actions/rust-toolchain
 
       - name: Build host binaries
         run: cargo build --release --locked --package nodex-cli
@@ -337,8 +342,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: staged
@@ -350,9 +353,22 @@ jobs:
           find staged -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' -o -name 'SHA256SUMS.txt' -o -name '*.json' \) -exec cp {} release/ \;
           ls -lh release
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          tag_name: v${{ needs.verify_version.outputs.version }}
-          files: release/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.verify_version.outputs.version }}
+        run: |
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --generate-notes
+
+  install_test:
+    name: Install test
+    needs: [verify_version, release]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/install-test.yml
+    with:
+      version: ${{ needs.verify_version.outputs.version }}

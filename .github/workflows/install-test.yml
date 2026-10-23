@@ -9,9 +9,12 @@ on:
       - "scripts/uninstall.sh"
       - "scripts/uninstall.ps1"
       - ".github/workflows/install-test.yml"
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  workflow_call:
+    inputs:
+      version:
+        description: Published release to install, without the leading `v`.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +25,7 @@ jobs:
   # sandboxed FAKE_HOME so we never touch the runner's real user profile.
   from_source:
     name: From-source install (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,8 +33,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Version precedence
         if: runner.os != 'Windows'
@@ -70,33 +76,29 @@ jobs:
           if (Test-Path (Join-Path $fake "bin\nodex.exe")) { throw "binary still present" }
           if (Test-Path (Join-Path $fake ".claude\skills\nodex")) { throw "skill still present" }
 
-  # Exercise the prebuilt-download path against the exact release the
-  # triggering tag-push Release run published. A dispatch-triggered dry run
-  # also concludes `success` but publishes nothing, so it must not trigger a
-  # test that would silently validate the previous release instead; the
-  # `head_branch` of a tag-triggered run is the tag itself.
+  # Exercise the prebuilt-download path against the release the calling
+  # Release run has just published.
   prebuilt:
     name: Prebuilt install (${{ matrix.os }})
-    if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
     env:
-      RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+      RELEASE_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install (bash, prebuilt)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           FAKE_HOME="$(mktemp -d)"
-          HOME="$FAKE_HOME" NODEX_YES=1 ./scripts/install.sh --version "${RELEASE_TAG#v}" --skill none --install-dir "$FAKE_HOME/bin"
+          HOME="$FAKE_HOME" NODEX_YES=1 ./scripts/install.sh --version "$RELEASE_VERSION" --skill none --install-dir "$FAKE_HOME/bin"
           "$FAKE_HOME/bin/nodex" --version
 
       - name: Install (powershell, prebuilt)
@@ -106,5 +108,5 @@ jobs:
           $fake = Join-Path ([IO.Path]::GetTempPath()) ("nodex-test-" + [Guid]::NewGuid().ToString("N").Substring(0,8))
           New-Item -ItemType Directory -Force -Path $fake | Out-Null
           $env:USERPROFILE = $fake
-          .\scripts\install.ps1 -Version ($env:RELEASE_TAG -replace '^v', '') -Skill none -InstallDir (Join-Path $fake "bin") -Yes
+          .\scripts\install.ps1 -Version $env:RELEASE_VERSION -Skill none -InstallDir (Join-Path $fake "bin") -Yes
           & (Join-Path $fake "bin\nodex.exe") --version
