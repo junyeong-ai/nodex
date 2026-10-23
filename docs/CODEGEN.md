@@ -9,9 +9,10 @@ derived from the Rust response types; the generic envelope is assembled in
 
 This guide is the recommended way to consume that schema. Skipping it
 and hand-rolling envelope types is supported but loses the contract
-gate; nodex's release CI diffs every release's envelope schema against
-the previous release's published asset and fails the release unless a
-classified change carries the promised minor-or-major bump, so
+gate; nodex's release CI diffs every release's envelope schema and
+command grammar against the previous release's published assets and
+fails the release unless a classified change carries the promised
+minor-or-major bump, so
 consumers without a regeneration step learn about drift at upgrade
 time, not runtime. Every release publishes
 `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json`

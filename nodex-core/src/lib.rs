@@ -47,11 +47,11 @@ pub use diff::{
 };
 pub use error::{Error, ParseError, Result};
 pub use export::{
-    CommandManifestEntry, CommandsManifest, ConfigManifest, ContractChange, EnumsManifest,
-    EnvelopeSchemaDiff, EnvelopeSchemaManifest, FlagEntry, IdentityManifest, PositionalEntry,
+    CommandManifestEntry, CommandsManifest, ConfigManifest, ContractChange, ContractDiff,
+    EnumsManifest, EnvelopeSchemaManifest, FlagEntry, IdentityManifest, PositionalEntry,
     RuleManifestEntry, RuleSource, RulesManifest, SchemaManifest, StatusesManifest,
-    compute_envelope_schema_diff, export_config, export_enums, export_envelope_schema,
-    export_rules, export_schema,
+    compute_commands_diff, compute_envelope_schema_diff, export_config, export_enums,
+    export_envelope_schema, export_rules, export_schema,
 };
 pub use git::{Before, RefState, Repository};
 pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
