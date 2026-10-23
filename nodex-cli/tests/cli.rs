@@ -15742,6 +15742,59 @@ fn impact_relations_are_the_after_refs_vocabulary() {
     );
 }
 
+/// A review list names what references the changed record; how far beyond
+/// that to walk is asked for, because a hub's closure over citations reaches
+/// most of a corpus.
+#[test]
+fn impact_names_direct_dependents_unless_asked_for_more_hops() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n",
+    )
+    .unwrap();
+    write_doc(root, "docs/a.md", "---\nid: a\ntitle: A\n---\n# A\n");
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\n---\n# B\n[a](a.md)\n",
+    );
+    write_doc(
+        root,
+        "docs/c.md",
+        "---\nid: c\ntitle: C\n---\n# C\n[b](b.md)\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A revised\n---\n# A\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "revise a"]);
+
+    let dependents_of_a = |extra: &[&str]| -> Vec<String> {
+        let data = run_json(nodex(root).args(["impact", "HEAD~1", "HEAD"]).args(extra));
+        data["impacted"]
+            .as_array()
+            .expect("impacted")
+            .iter()
+            .find(|entry| entry["id"] == "a")
+            .expect("a is impacted")["dependents"]
+            .as_array()
+            .expect("dependents")
+            .iter()
+            .map(|d| d["id"].as_str().expect("id").to_owned())
+            .collect()
+    };
+    assert_eq!(dependents_of_a(&[]), ["b"]);
+    assert_eq!(dependents_of_a(&["--depth", "2"]), ["b", "c"]);
+}
+
 /// A committed project whose plain `check` reads `HEAD` as its baseline, with
 /// the kind of `docs/a.md` locked from creation and changed since, so the
 /// verdict holds a finding only reading the baseline produces.
