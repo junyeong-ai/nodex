@@ -15965,12 +15965,23 @@ fn a_checkout_stays_held_while_the_git_a_killed_run_started_writes_it() {
     let tmp = scratch();
     let root = tmp.path();
     filtered_project(root);
+    // Only the first filter run holds, and it holds until the test releases
+    // it or ends, so the second check meets a held directory however slowly
+    // it starts.
     let signals = tempfile::TempDir::new().unwrap();
+    let held = signals.path().join("held");
     let started = signals.path().join("started");
+    let released = signals.path().join("released");
     git_runner(root)(&[
         "config",
         "filter.retitle.smudge",
-        &format!("touch '{}'; sleep 2; cat", started.display()),
+        &format!(
+            "if mkdir '{held}' 2>/dev/null; then touch '{started}'; \
+             while [ -d '{held}' ] && [ ! -e '{released}' ]; do sleep 0.05; done; fi; cat",
+            held = held.display(),
+            started = started.display(),
+            released = released.display(),
+        ),
     ]);
     #[expect(
         clippy::disallowed_methods,
@@ -15994,7 +16005,9 @@ fn a_checkout_stays_held_while_the_git_a_killed_run_started_writes_it() {
     killed.kill().unwrap();
     killed.wait().unwrap();
 
-    nodex(root).arg("check").assert().success();
+    let next = nodex(root).arg("check").assert();
+    fs::write(&released, "").unwrap();
+    next.success();
     assert!(checkouts(root).join("1").is_dir());
 }
 
