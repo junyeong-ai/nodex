@@ -4,9 +4,12 @@ Thin wrapper around core: arguments, orchestration and JSON output. `rename`,
 `migrate` and `retarget` compose core primitives in their command modules; guards,
 planning and content writes remain in core (`plan_file` / `narrow` / `stage_plan` /
 `write_plan`, `path_guard`, `reference_rewrite`). Rename's actual path move is
-`std::fs::rename` between guarded paths. Its preparation never edits the source;
-final destination content commits after the move and before inbound references.
-A failed destination commit reports a partial move and stops reference commits.
+`std::fs::rename` between guarded paths. Its preparation stages the final
+destination content (identity anchor and rebased references) and never edits the
+source; that content commits after the move and before inbound references. A
+failed destination commit reports a partial move (`id_stability: anchor_failed`
+when the previous id could not be kept) and stops reference commits; nothing is
+rolled back.
 
 ## Command and output boundaries
 
@@ -14,14 +17,11 @@ A failed destination commit reports a partial move and stops reference commits.
   `commands/<name>.rs` or its submodules own every command clap type and handler.
   Global `--jobs` configures the CLI pool; embeds choose their own Rayon policy.
 - `envelope.rs` is the shared encoder for nodex and contract-gate (path inclusion).
-  `format.rs` owns Envelope / ItemsEnvelope and typed error classification.
-  `emit_read*` merges binary compatibility; `emit_write` merges baseline advisories.
+  `format.rs` owns Envelope / ItemsEnvelope and typed error classification; which
+  emitter a command uses: `.claude/rules/json-output.md` (Adding Output).
   Batch writes use `emit_batch_write` and return their exit status to main so
   actual write failures keep their result and normal resource cleanup.
-  Snapshot queries use `commands/query/mod.rs::QueryContext::emit_read_with` to
-  attach probe metadata before the read emitter. Do not bypass it in a query leaf.
-- Queries verify snapshot content by default; `--allow-stale` is the explicit
-  membership-only mode. Node detail uses `NodeMetadata`, with bounded body reads
+- Node detail uses `NodeMetadata`, with bounded body reads
   through `--body-lines`. `retarget --supersede` composes lifecycle and resolved
   reference edits before the shared mutation gate. Policy-retained relation
   fields emit `reference_kept`; locks and failed writes retain their own advisories.
@@ -30,9 +30,9 @@ A failed destination commit reports a partial move and stops reference commits.
   explicit check where dry runs stay readable). Validate prerequisites and locate
   the write lock before acquiring it; `writes_documents` covers the first read
   through final write of mutating invocations.
-- `init` and export envelope-schema/commands/diagnostics load no project. Diff/
-  impact graph both refs under the after ref's config; staged check uses the index
-  config. These load `Config` from checkouts, not `load_project`: preflight is
+- `init` and export envelope-schema/commands/diagnostics load no project. Staged
+  check uses the index config, and diff/impact the after ref's (Git checkouts
+  below). These load `Config` from checkouts, not `load_project`: preflight is
   about the real working tree, so staged check asks it there.
 - Command errors are `anyhow::Result` preserving the typed core cause through
   context wrapping; main classifies by downcast, never message text. Contracts:

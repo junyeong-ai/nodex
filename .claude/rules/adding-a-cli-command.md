@@ -18,15 +18,10 @@ paths:
    `main.rs` never contains a command's CLI shape. A document-writing mode
    also joins `writes_documents` so `ProjectLock` covers the handler's first
    read through its final write; dry runs remain read-only.
-4. Snapshot query leaves use `QueryContext::emit_read_with` to retain probe
-   metadata. Other read commands use `format::emit_read*`, which
-   merges the binary-compat advisory, or `format::emit_write` for one
-   that writes documents, which merges the advisories of the
-   `BaselineProbe` its writes locked against (obtained from
-   `git_checkout::write_baseline`) — `println!` and its siblings fail
-   clippy (`disallowed-macros`). Where
-   `print_json` is called directly instead:
-   `.claude/rules/json-output.md`.
+4. Emit through the seam `.claude/rules/json-output.md` (Adding Output)
+   names for the command's plane; a writing command passes the
+   `BaselineProbe` its writes locked against (from
+   `git_checkout::write_baseline`).
 5. Register the command's data-payload schema in
    `nodex_core::export::per_command_schemas` under its dotted
    invocation path (e.g. `query.dependents`) — the
@@ -39,6 +34,7 @@ paths:
    any new error or warning code in its `published:` lists
    (`the_skill_names_every_published_vocabulary`); the behaviour sweep
    runs or exempts it (`every_command_is_swept_or_exempt`, then
-   `behaviour_sweep`'s snapshots of the command surface); and a real
+   `behaviour_sweep`'s snapshots of the command surface, judged with
+   `cargo insta review`); and a real
    output of it is validated against its schema
    (`every_command_real_output_conforms_to_its_per_command_schema`).

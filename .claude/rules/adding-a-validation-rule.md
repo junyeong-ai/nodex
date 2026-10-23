@@ -14,27 +14,20 @@ paths:
    the manifest.
 
    The population is what the rule's declared scope selects — its `kinds`
-   filter, its relation, the precondition its threshold needs — never the
-   offending subset and never the slice that moved on this run. Where the
-   violation loop already iterates exactly that population, count in it
+   filter, its relation, the precondition its threshold needs; what it never
+   counts: `.claude/rules/config-driven.md` (No silent vacuous passes). Where
+   the violation loop already iterates exactly that population, count in it
    (`required_field` counts the nodes it has a required set for). Where the
    guarded population is wider than what the loop touches, count the
    population: a `body_line` block guards documents of its kinds whether or
    not any line matched, `parse_failure` guards every document the build
-   attempted, and a diff-aware lock guards the records it is armed over —
-   which on a clean tree is the whole point, since the diff is empty and the
-   lock is not idle. Derive that wider count from the same predicates the
-   rule judges with (`Node::matches_kinds`, `Config::is_terminal`,
-   `rules::lock_holds`), never from a restatement of them: a reach that can
-   disagree with the verdict is worse than no reach at all. A diff-aware
-   rule subtracts
-   `GraphDiff::added_ids` first — a diff carries its per-node channels over
-   the ids both snapshots hold, so a record the baseline has no node for is
-   one the rule provably cannot fire for, and counting it claims a reach the
-   verdict can never match. Report those as `RuleRun::unjudged` rather than
-   dropping them — and any other unit the scope selects that the rule has
-   nothing to judge against, whichever way it judges: a reach alone says what
-   the rule stood over, never what it could reach.
+   attempted, and a diff-aware lock guards the records it is armed over, even
+   on a clean tree where the diff is empty. Derive that count from the
+   predicates the rule judges with (`Node::matches_kinds`,
+   `Config::is_terminal`, `rules::lock_holds`), never from a restatement of
+   them. A diff-aware rule subtracts `GraphDiff::added_ids` (its rustdoc says
+   why) and reports them, with any other selected unit it has nothing to
+   judge against, as `RuleRun::unjudged`.
    `Rule::severity` declares the default; `Rule::evaluate` applies configured warning
    promotion consistently. Consumers must not bypass it with direct `check` calls.
    `severity` is the closed `Error | Warning` enum — there is no Info
@@ -123,4 +116,8 @@ paths:
 6. Nothing to add in `export.rs`: `export_rules` derives entirely from
    `registered_rules` (a rule needing two snapshots always appears in the
    manifest, flagged `diff_aware` or `judges_steps`) — activity gating
-   happens at registration, nowhere else.
+   happens at registration, nowhere else. A rule driven by config values
+   overrides `Rule::params` to surface them on its manifest entry. Add the
+   rule, with its registration condition, to the built-in rule list in
+   `.claude/skills/nodex/reference/config.md`; no test ties that list to the
+   registry.
