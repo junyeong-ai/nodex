@@ -239,8 +239,10 @@ fn parse_fields_leniently(
         path: path.to_path_buf(),
         source,
     };
+    // Parsed one line down, where the block sits below its opening fence,
+    // so a YAML error names the file line.
     let value: yaml_serde::Value =
-        yaml_serde::from_str(yaml).map_err(|e| parse_err(ParseError::Yaml(e)))?;
+        yaml_serde::from_str(&format!("\n{yaml}")).map_err(|e| parse_err(ParseError::Yaml(e)))?;
     let mut mapping = match value {
         // An empty (or comments-only) block is a present-but-empty
         // frontmatter declaration — every field is simply absent.
@@ -593,6 +595,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A YAML error names the line of the file, as every other location does.
+    #[test]
+    fn a_yaml_error_names_the_file_line() {
+        let Err(Error::Parse {
+            source: ParseError::Yaml(err),
+            ..
+        }) = parse_frontmatter(Path::new("doc.md"), "---\nid: a\nstatus: [active\n---\n")
+        else {
+            panic!("an unclosed flow sequence fails the document");
+        };
+        assert_eq!(err.location().map(|at| at.line()), Some(4));
     }
 
     #[test]
