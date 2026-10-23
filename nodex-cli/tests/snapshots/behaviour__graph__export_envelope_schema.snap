@@ -1830,15 +1830,8 @@ exit: 0
       "export.commands": {
         "$defs": {
           "CommandManifestEntry": {
-            "description": "One CLI leaf: its invocation tokens, its `per_command` envelope-\nschema key (the dotted join of `path`), any flag-selected alternate\npayload shapes, and its positional arity.",
+            "description": "One CLI leaf: its invocation tokens, its `per_command` envelope-\nschema key (the dotted join of `path`), and its positional arity.",
             "properties": {
-              "modes": {
-                "description": "Flag-selected alternate payload shapes (e.g. `query.search-body`\nbehind `--body`).",
-                "items": {
-                  "$ref": "#/$defs/CommandMode"
-                },
-                "type": "array"
-              },
               "path": {
                 "description": "Invocation tokens, e.g. `[\"query\", \"search\"]`.",
                 "items": {
@@ -1860,27 +1853,6 @@ exit: 0
             "required": [
               "path",
               "schema"
-            ],
-            "type": "object"
-          },
-          "CommandMode": {
-            "description": "A second payload shape one leaf emits when any of `flags` is set.",
-            "properties": {
-              "flags": {
-                "description": "Long flag names (without `--`) that select this mode.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "schema": {
-                "description": "The mode's `per_command` envelope-schema key.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "schema",
-              "flags"
             ],
             "type": "object"
           },
@@ -5797,110 +5769,6 @@ exit: 0
           "total"
         ],
         "title": "ItemsEnvelopeShape",
-        "type": "object"
-      },
-      "query.search-body": {
-        "$defs": {
-          "BodyMatch": {
-            "properties": {
-              "line": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "text": {
-                "type": "string"
-              },
-              "truncated": {
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "line",
-              "text"
-            ],
-            "type": "object"
-          },
-          "BodySearchEntry": {
-            "description": "Common identifying view of a node embedded in every query result.\nFlattened by serde so the JSON shape is `{ id, title, kind, status,\npath, ...query-specific fields }` — uniform across every query.",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              },
-              "matches": {
-                "items": {
-                  "$ref": "#/$defs/BodyMatch"
-                },
-                "type": "array"
-              },
-              "path": {
-                "type": "string"
-              },
-              "status": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "title",
-              "kind",
-              "status",
-              "path",
-              "matches"
-            ],
-            "type": "object"
-          }
-        },
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/$defs/BodySearchEntry"
-            },
-            "type": "array"
-          },
-          "match_returned": {
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "match_total": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "returned": {
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "total": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "items",
-          "total",
-          "match_total"
-        ],
-        "title": "BodySearchResult",
         "type": "object"
       },
       "query.similar": {

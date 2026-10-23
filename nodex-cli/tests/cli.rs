@@ -12854,10 +12854,6 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ),
         ("query.dependents", vec!["query", "dependents", "spec"]),
         ("query.similar", vec!["query", "similar", "--id", "spec"]),
-        (
-            "query.search-body",
-            vec!["query", "search", "Spec", "--body"],
-        ),
     ];
     for (key, args) in &read_cases {
         let env = run_envelope(nodex(root).args(args));
@@ -25094,82 +25090,79 @@ fn queries_can_require_current_content_and_reject_drift_without_writing() {
 }
 
 #[test]
-fn body_search_reports_literal_matches_and_refuses_mixed_revisions() {
+fn nodes_body_contains_reads_the_governed_bodies_at_their_indexed_revision() {
     let tmp = scratch();
-    init_project(tmp.path());
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [statuses]\nallowed = [\"active\", \"superseded\"]\nterminal = [\"superseded\"]\n",
+    )
+    .unwrap();
     write_doc(
-        tmp.path(),
-        "docs/a.md",
-        "---\nid: a\ntitle: Storage\nstatus: active\n---\n# Storage\nOAuth 토큰 회전\n```text\noauth literal\n```\n",
+        root,
+        "docs/live.md",
+        "---\nid: live\nstatus: active\n---\nTraces go to LANGFUSE.\n",
     );
-    write_doc(tmp.path(), "docs/b.md", "---\nid: b\n---\nOAuth second\n");
-    nodex(tmp.path()).arg("build").assert().success();
-    let metadata = run_json(nodex(tmp.path()).args(["query", "search", "OAuth"]));
-    assert_eq!(metadata["total"], 0);
-    let body =
-        run_json(nodex(tmp.path()).args(["query", "search", "OAuth", "--body", "--limit", "1"]));
-    assert_eq!(body["total"], 2);
-    assert_eq!(body["returned"], 1);
-    assert_eq!(body["items"][0]["id"], "a");
-    assert_eq!(body["items"][0]["matches"][0]["line"], 2);
-    assert_eq!(body["items"][0]["matches"][0]["text"], "OAuth 토큰 회전");
-    assert_eq!(body["items"][0]["matches"][1]["line"], 4);
-    write_doc(tmp.path(), "docs/b.md", "---\nid: b\n---\nChanged\n");
-    let output = nodex(tmp.path())
-        .args(["query", "search", "OAuth", "--body", "--limit", "1"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(envelope["error"]["code"], "GRAPH_OUTDATED");
+    write_doc(
+        root,
+        "docs/old.md",
+        "---\nid: old\nstatus: superseded\nsuperseded_by: live\n---\nlangfuse, first cut\n",
+    );
+    write_doc(
+        root,
+        "docs/tagged.md",
+        "---\nid: tagged\nstatus: active\ntags: [langfuse]\n---\nNo mention here.\n",
+    );
+    write_doc(root, "notes/outside.md", "langfuse outside the scope\n");
+    nodex(root).arg("build").assert().success();
+
+    let ids = |extra: &[&str]| -> Vec<String> {
+        run_json(
+            nodex(root)
+                .args(["query", "nodes", "--body-contains", "Langfuse"])
+                .args(extra),
+        )["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| item["id"].as_str().expect("id").to_owned())
+            .collect()
+    };
+    assert_eq!(
+        ids(&[]),
+        ["live", "old"],
+        "body text of governed documents only"
+    );
+    assert_eq!(ids(&["--status", "active"]), ["live"]);
+
+    assert_eq!(
+        error_code(nodex(root).args(["query", "nodes", "--body-contains", ""])),
+        "CONFIG_ERROR"
+    );
+
+    write_doc(
+        root,
+        "docs/live.md",
+        "---\nid: live\nstatus: active\n---\nTraces moved elsewhere.\n",
+    );
+    assert_eq!(
+        error_code(nodex(root).args(["query", "nodes", "--allow-stale", "--body-contains", "x"])),
+        "GRAPH_OUTDATED",
+        "a document changed since the build is not searched as it now reads"
+    );
 }
 
 #[test]
-fn body_search_limits_preserve_totals_and_check_every_selected_revision() {
+fn a_zero_worker_pool_is_a_usage_error() {
     let tmp = scratch();
-    init_project(tmp.path());
-    write_doc(tmp.path(), "docs/z.md", "---\nid: z\n---\n토큰 마지막\n");
-    write_doc(
-        tmp.path(),
-        "docs/a.md",
-        "---\nid: a\n---\n토큰 한글😀\n토큰 두번째\n",
-    );
-    nodex(tmp.path()).arg("build").assert().success();
-    let args = [
-        "--jobs",
-        "2",
-        "query",
-        "search",
-        "토큰",
-        "--body",
-        "--max-matches",
-        "1",
-        "--max-line-chars",
-        "4",
-    ];
-    let result = run_json(nodex(tmp.path()).args(args));
-    assert_eq!(result["total"], 2);
-    assert_eq!(result["returned"], 1);
-    assert_eq!(result["match_total"], 3);
-    assert_eq!(result["match_returned"], 1);
-    assert_eq!(result["items"][0]["id"], "a");
-    assert_eq!(result["items"][0]["matches"][0]["text"], "토큰 한");
-    assert_eq!(result["items"][0]["matches"][0]["truncated"], true);
-    write_doc(tmp.path(), "docs/z.md", "---\nid: z\n---\nChanged\n");
-    let output = nodex(tmp.path()).args(args).output().unwrap();
+    let output = nodex(tmp.path())
+        .args(["--jobs", "0", "query", "nodes"])
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(2));
     let error: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(error["error"]["code"], "GRAPH_OUTDATED");
-    for invalid in [
-        vec!["--jobs", "0", "query", "nodes"],
-        vec!["query", "search", "x", "--max-matches", "1"],
-        vec!["query", "search", "x", "--body", "--max-line-chars", "0"],
-    ] {
-        let output = nodex(tmp.path()).args(invalid).output().unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        let error: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
-    }
+    assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
 }
 
 #[test]

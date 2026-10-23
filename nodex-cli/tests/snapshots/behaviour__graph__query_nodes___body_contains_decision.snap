@@ -7,14 +7,15 @@ exit: 0
   "data": {
     "items": [
       {
+        "id": "adr-alpha",
+        "kind": "adr",
+        "path": "docs/decisions/alpha.md",
+        "status": "superseded",
+        "title": "Alpha"
+      },
+      {
         "id": "adr-beta",
         "kind": "adr",
-        "matches": [
-          {
-            "line": 2,
-            "text": "# Beta"
-          }
-        ],
         "path": "docs/decisions/beta.md",
         "status": "active",
         "title": "Beta"
@@ -22,19 +23,12 @@ exit: 0
       {
         "id": "guide-index",
         "kind": "guide",
-        "matches": [
-          {
-            "line": 4,
-            "text": "The hub. It reaches [beta](decisions/beta.md), [gamma](decisions/gamma.md),"
-          }
-        ],
         "path": "docs/index.md",
         "status": "active",
         "title": "Index"
       }
     ],
-    "match_total": 2,
-    "total": 2
+    "total": 3
   },
   "ok": true,
   "snapshot": {

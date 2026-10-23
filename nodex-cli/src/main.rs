@@ -220,19 +220,7 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
     use std::collections::BTreeSet;
-
-    /// Resolve a manifest entry's `path` tokens to its clap leaf.
-    fn find_leaf<'a>(mut cmd: &'a clap::Command, path: &[String]) -> &'a clap::Command {
-        for token in path {
-            cmd = cmd
-                .get_subcommands()
-                .find(|sub| sub.get_name() == *token)
-                .unwrap_or_else(|| panic!("manifest path {path:?} names no clap subcommand"));
-        }
-        cmd
-    }
 
     /// The skill's entry point is what a session carries, and a compacted
     /// session carries only the first 5,000 tokens of it — so a body that
@@ -625,8 +613,7 @@ mod tests {
     /// and the envelope-schema registry must biject with it — so the
     /// grammar manifest, the clap tree, and the typed-codegen contract
     /// are provably in lockstep. A new leaf cannot ship without its
-    /// schema; a removed leaf cannot leave a stale entry; a flag-mode
-    /// declared in `FLAG_MODES` must name real flags on its leaf.
+    /// schema, and a removed leaf cannot leave a stale entry.
     #[test]
     fn every_cli_leaf_has_a_per_command_schema() {
         let manifest = commands::export::commands_manifest();
@@ -645,46 +632,20 @@ mod tests {
             );
         }
 
-        // Exact set equality, both directions: every declared schema
-        // (leaf or flag-mode) is registered, and every registered
-        // schema is declared by the grammar.
-        let mut declared: BTreeSet<String> = manifest
+        // Exact set equality, both directions: every leaf's schema is
+        // registered, and every registered schema is a leaf's.
+        let declared: BTreeSet<String> = manifest
             .commands
             .iter()
             .map(|entry| entry.schema.clone())
             .collect();
-        for entry in &manifest.commands {
-            for mode in &entry.modes {
-                declared.insert(mode.schema.clone());
-            }
-        }
         let envelope = nodex_core::export_envelope_schema(false)
             .expect("the default emission form performs no inlining");
         let registered: BTreeSet<String> = envelope.per_command.keys().cloned().collect();
         assert_eq!(
             declared, registered,
             "commands manifest and per_command registry must biject; register new leaves in \
-             nodex_core::export::per_command_schemas and flag-selected shapes in \
-             commands::export::FLAG_MODES"
+             nodex_core::export::per_command_schemas"
         );
-
-        // Every declared mode flag exists as a real clap arg on its leaf.
-        let cli = Cli::command();
-        for entry in &manifest.commands {
-            if entry.modes.is_empty() {
-                continue;
-            }
-            let leaf = find_leaf(&cli, &entry.path);
-            for mode in &entry.modes {
-                for flag in &mode.flags {
-                    assert!(
-                        leaf.get_arguments()
-                            .any(|arg| arg.get_long() == Some(flag.as_str())),
-                        "FLAG_MODES declares `--{flag}` on `{}` but the leaf has no such flag",
-                        entry.schema
-                    );
-                }
-            }
-        }
     }
 }

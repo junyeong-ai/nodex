@@ -47,8 +47,8 @@ pub use diff::{
 };
 pub use error::{Error, ParseError, Result};
 pub use export::{
-    CommandManifestEntry, CommandMode, CommandsManifest, ConfigManifest, ContractChange,
-    EnumsManifest, EnvelopeSchemaDiff, EnvelopeSchemaManifest, IdentityManifest, PositionalEntry,
+    CommandManifestEntry, CommandsManifest, ConfigManifest, ContractChange, EnumsManifest,
+    EnvelopeSchemaDiff, EnvelopeSchemaManifest, IdentityManifest, PositionalEntry,
     RuleManifestEntry, RuleSource, RulesManifest, SchemaManifest, StatusesManifest,
     compute_envelope_schema_diff, export_config, export_enums, export_envelope_schema,
     export_rules, export_schema,
@@ -73,12 +73,9 @@ pub use query::annotations::{
 pub use query::dependents::{DependentEntry, DependentsReport, find_dependents};
 pub use query::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
 pub use query::issues::{IssueReport, IssueSummary, UnresolvedEdge, find_issues};
-pub use query::listing::{NodeFilter, find_nodes, find_nodes_projected};
+pub use query::listing::{NodeFilter, find_nodes, find_nodes_containing, find_nodes_projected};
 pub use query::recent::{RecentEntry, RecentField, RecentOptions, RecentSince, find_recent};
-pub use query::search::{
-    BodyMatch, BodySearchEntry, BodySearchOptions, BodySearchResult, SearchComponents, SearchEntry,
-    search, search_bodies,
-};
+pub use query::search::{SearchComponents, SearchEntry, search};
 pub use query::similar::{
     SimilarityComponents, SimilarityEntry, SimilarityOptions, SimilarityTarget, compute_similarity,
 };

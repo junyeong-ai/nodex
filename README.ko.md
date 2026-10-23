@@ -413,7 +413,7 @@ flowchart LR
 ### 한 번 인덱스, 여러 번 조회
 
 - **빌드 아티팩트**: `graph.json` — Markdown 원본에서 파생한 스냅샷
-- **조회**: 재빌드 없이 `graph.json`을 읽는다. 기본 조회는 설정·범위·내용을 검증하며 변경 시 `GRAPH_OUTDATED`로 거부한다. `--allow-stale`는 경로·설정만 확인하는 스냅샷 조회를 명시적으로 허용하고 변경을 알린다. 없는 노드를 찾는 조회는 내용 검사로 확대한다. `query node --with-body`와 `query search --body`는 색인된 리비전과 일치하는 본문을 읽는다. unresolved-edge 검사는 추가로 파일시스템을 검사한다.
+- **조회**: 재빌드 없이 `graph.json`을 읽습니다. 기본 조회는 설정·범위·내용을 검증하며 변경 시 `GRAPH_OUTDATED`로 거부합니다. `--allow-stale`는 경로·설정만 확인하는 스냅샷 조회를 명시적으로 허용하고 변경을 알립니다. 없는 노드를 찾는 조회는 내용 검사로 확대합니다. `query node --with-body`는 색인된 리비전과 일치하는 본문을 읽습니다. unresolved-edge 검사는 추가로 파일시스템을 검사합니다.
 - **증분**: SHA256 per file. `--full` 로 강제 fresh build
 
 스냅샷 조회는 envelope `snapshot`에 검사 범위 `verification`
@@ -427,11 +427,7 @@ flowchart LR
 `nodex build --full`로 재생성합니다. `--allow-stale`도 스키마 호환성 검사를
 생략하지 않으며, 조회가 스냅샷을 자동 재생성하지는 않습니다.
 
-본문 검색의 `--max-matches N`은 전체 반환 일치 줄 수를,
-`--max-line-chars N`은 각 줄의 Unicode 문자 수를 제한합니다.
-`match_total`은 제한 전 일치 줄 수이며, 줄 수가 줄면 `match_returned`,
-텍스트가 잘리면 해당 줄에 `truncated: true`를 반환합니다. 제한 이후 대상도
-버전을 검사합니다. 전역 `--jobs N`으로 프로세스별 병렬 작업자 수를 정할 수
+전역 `--jobs N`으로 프로세스별 병렬 작업자 수를 정할 수
 있으며, 미지정 시 Rayon의 `RAYON_NUM_THREADS` 또는 사용 가능한 CPU 설정을 따릅니다.
 `check --content`는 한 호출 내 파싱을 재사용하며 제안 내용을 캐시에 저장하지 않습니다.
 
@@ -440,12 +436,6 @@ flowchart LR
 `nodex query <명령>`은 응답 전에 스냅샷의 설정·범위·내용을
 확인합니다. 변경은 `GRAPH_OUTDATED`, 읽기 실패는 `IO_ERROR`로 거절합니다.
 파일시스템 전체의 원자적 스냅샷을 보장하는 검사는 아닙니다.
-
-`nodex query search <검색어> --body`는 코드 블록을 포함한 정규화된 본문 행을
-검색합니다. 문서 id 순으로 본문 기준 1부터 시작하는 행 번호와 텍스트를 반환하며,
-`--limit`은 문서 수를 제한합니다. 검색한 파일은 색인된 revision과 일치해야 합니다.
-파싱 실패 문서는 제외하고 `scope_coverage` 경고로 알립니다. `--body`가 없으면
-기존처럼 id·제목·태그를 검색합니다.
 
 | Query | 결과 | 알고리즘 |
 |---|---|---|
@@ -564,12 +554,12 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex rename <old> <new> [--dry-run]` | 파일 이동 + 본문 링크 재작성 (resolver 일관 · 코드펜스 인식). 스캔이 admit 하지 않을 목적지는 거부 — 단 *tracked* 소스에만 적용; untracked 파일(scope 밖 또는 conditional exclude)은 게이트·id 앵커·재작성 없이 guarded plain move. 파일시스템이 tracked 문서로 alias 하는 철자(대소문자, 유니코드 정규화)는 정식 철자를 안내하며 거부. 본문이 immutability 락 상태인 참조 문서는 변조 대신 경고와 함께 skip — frozen 역사는 원래 철자를 유지. 이동이 할 말이 있는 참조는 각각 한 번씩 이름을 밝힘: 재지정을 포기한 것(끊어질 예정), 그리고 그대로 두었으나 이제 다른 문서를 가리키게 된 것 — 후자는 그래프가 유효한 채로 바뀌었을 때 나오는 유일한 보고. `--dry-run`은 쓰지 않고 같은 결과를 `completion: planned`로 보고 |
 | `nodex retarget <old-id> <new-id> [--supersede] [--dry-run]` | 해석된 문서 identity를 기준으로 frontmatter 관계와 Markdown 경로·wikilink·설정된 본문 참조를 `<new-id>`로 재지정. successor 문서는 skip 되어 자기 자신을 가리키지 않으며, 남겨둔 선행 문서 참조를 보고 — 승계 기록인 `supersedes` 만 제외. reference-unsafe 한 successor id(트림 불안정 / wikilink 메타문자)는 선제 거부하고, `body_immutable` — 또는 관계 필드를 잠근 `frontmatter_immutable` — 락 문서는 재작성 대신 경고와 함께 skip. `--supersede`는 생명주기 변경을 같은 제안에 포함. `--dry-run`은 쓰지 않고 계획한 결과를 보고 |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | 유효한 frontmatter 로 신규 문서 생성 — 사전 `nodex build` 불필요 (before-graph 를 워킹 트리에서 live 빌드). `--body` 는 markdown 본문 공급 (`check --content` 와 동일한 SOURCE 문법); `--field` 는 frontmatter 쌍 공급 (값은 YAML) — cross_field fixpoint 에 반영. 둘 중 하나라도 공급하면 strict gate 발동: 문서가 *도입* 하는 Error-severity check 위반은 `CONTENT_VIOLATIONS` 로 거부; 기본값만 쓰는 scaffold 는 advisory 와 함께 작성. 스캔이 admit 하지 않을 경로는 거부 — 빌드가 영원히 못 보는 write-only 파일 방지 |
-| `nodex query search <keyword> [--body [--max-matches N] [--max-line-chars N]] [--status x,y] [--limit N]` | id/title/tags 검색은 점수순, `--body`는 색인된 리비전의 본문 매칭 행을 id순으로 반환 |
+| `nodex query search <keyword> [--status x,y] [--limit N]` | id/title/tags 검색 결과를 점수순으로 반환. 본문 텍스트는 `query nodes --body-contains` 필터로 찾음 |
 | `nodex query backlinks <id> [--limit N]` | 대상으로 들어오는 모든 노드 |
 | `nodex query chain <id>` | 어느 멤버에서든 전체 supersession 계보 (오래된 → 최신) |
 | `nodex query orphans [--limit N]` | 어떤 문서의 레코드도 이름 짓지 않는 live 노드 — external incoming edge 0 이고, 자신을 `superseded_by` 로 지목하는 선행 문서도 없는 것(그래프가 반대 방향 엣지로 접는 유일한 authored 포인터) — `orphan_ok_kinds`, per-node `orphan_ok`, `orphan_grace_days` 밖 (self-link 미집계); `orphan` rule 이 guard 하는 것과 같은 모집단 |
 | `nodex query stale [--limit N]` | `reviewed` 가 `stale_days` 일 이상 지난 active 문서 (`reviewed` 없는 문서는 나오지 않음); `stale_days` 가 없으면 아무것도 나열하지 않고 `threshold_undeclared` 를 실음 |
-| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--missing F1,F2] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--where field=value` (반복 가능) 는 `--fields` 와 같은 vocabulary 의 scalar 필드에 대해 정확 일치로 좁힘 (`path` 포함; `tags` 같은 collection built-in 은 거부 — `--tag` 사용) — `cross_field` `when` predicate 와 동일한 read 로 매칭. `--fields` 는 결과를 projection: identity-spine 필드(`id,title,kind,status,path`)는 그 자리에, 프로젝트가 선언한 frontmatter 필드(기타 built-in, `attrs` 키)는 중첩 `attrs` 객체로 — 에이전트가 파일 재파싱 없이 문서 자체 frontmatter 를 한 번에 조회. 미선언 필드는 `CONFIG_ERROR`. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--missing F1,F2] [--body-contains TEXT] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). `--body-contains`는 본문에 TEXT가 들어 있는 문서만 남기며(대소문자 무시) 색인된 리비전을 읽음. 빈 필터 = 전체 노드. `--where field=value` (반복 가능) 는 `--fields` 와 같은 vocabulary 의 scalar 필드에 대해 정확 일치로 좁힘 (`path` 포함; `tags` 같은 collection built-in 은 거부 — `--tag` 사용) — `cross_field` `when` predicate 와 동일한 read 로 매칭. `--fields` 는 결과를 projection: identity-spine 필드(`id,title,kind,status,path`)는 그 자리에, 프로젝트가 선언한 frontmatter 필드(기타 built-in, `attrs` 키)는 중첩 `attrs` 객체로 — 에이전트가 파일 재파싱 없이 문서 자체 frontmatter 를 한 번에 조회. 미선언 필드는 `CONFIG_ERROR`. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body [--body-lines START:END]]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 색인된 리비전과 일치하는지 확인한 뒤 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
 | `nodex query covered-by <path>` | 이 경로나 이 경로를 담은 디렉터리를 `covers:`로 선언한 문서로, git drift가 측정하는 범위와 같음. 선언 값은 빌드와 같은 사다리로 읽으므로 `docs/x.md` 의 `covers: ["./src/a.rs"]` 는 `docs/src/a.rs` 를 가리킴; 인자로 주는 `<path>` 는 프레임이 없는 탐색어라 `./`, `..`, `\` 는 정규화됨 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules + rule_coverage 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화. 타입 리스팅과 violations 는 서로 다른 두 집합이 아니라 하나의 finding 집합에 대한 두 시선이다 — `orphans` 와 `stale` 은 각각 `violations` 안에 게이트 기록(`orphan`, `stale_review`)을 갖고, 게이트 기록이 있는 finding 은 그 violation 을 통해 **한 번만** 계상된다. 따라서 `summary.total` 은 보고서가 몇 번 언급했는지가 아니라 문제의 개수이고, `by_category` 는 계상된 finding 을 찾아낸 rule 로 키잉한다. 미해결 참조의 warning·error도 rule을 통해 집계하며 info는 policy row 이름으로 `total` 밖에 보고한다 |
@@ -585,7 +575,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex export rules` | 등록된 룰 매니페스트 — 현재 config 가 등록하는 모든 룰과 `id`, `severity`, `description`, `diff_aware` / `judges_steps`, per-rule `params` payload (등록된 룰도 실행 시 `skipped_rules` 로 빠질 수 있음) |
 | `nodex export envelope-schema [--inline-refs]` | 모든 CLI envelope shape 의 JSON Schema (draft 2020-12) — 타입드 다운스트림 consumer 의 codegen 컨트랙트; `--inline-refs` 는 per-command 스키마를 완전 자기 완결형 (`$ref`/`$defs` 없음) 으로 emit — `$ref` 를 못 따라가는 generator 용 |
 | `nodex export config` | 해석된 document-locating surface: scope, output, parser, scaffold 템플릿, 평가 순서의 identity rules + 코드 레벨 fallback (`fallback_kind`, `fallback_id_template`), 해석된 전역 `initial_status` (`[[statuses.flow]]` 가 지배하는 kind 는 그 flow 의 `initial` 에서 시작) |
-| `nodex export commands` | leaf 의 권위 목록: 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional(이름, 필수 여부), flag 로 선택되는 payload mode (예: `query.search-body`); flag 자체는 `--help` 에 있음 |
+| `nodex export commands` | leaf 의 권위 목록: 각 leaf 의 `path` 토큰, `per_command` 스키마 key, positional(이름, 필수 여부); flag 자체는 `--help` 에 있음 |
 | `nodex export diagnostics` | error-code / exit-code vocabulary — envelope `error.code` 닫힌 집합(각 `core`/`cli` origin 태그) + advisory `warnings[].code` + `0`/`1`/`2` exit-code 계약. 소비자가 prose 하드코딩 대신 exhaustive error enum 을 codegen |
 
 ### 문서 생성과 순위

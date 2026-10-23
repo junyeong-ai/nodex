@@ -342,14 +342,12 @@ not stale. `compute_divergence` Membership does not read document bytes; Content
 hashes them. `Snapshot::read_info` carries probe scope and coverage separately
 from successful parsing. `Snapshot::require` escalates only a missed lookup to
 Content before claiming NOT_FOUND; drift/read failure keeps its distinct remedy.
-`Snapshot::body` owns revision-checked canonical reads; body-search limits bound
-retained output, never the files whose revision must be checked.
+`Snapshot::body` owns revision-checked canonical reads.
 
 Queries never mutate documents but may measure filesystem and history through detectors.
 Naming: `find_*` traversal/filter, `compute_*` values, `search` text scoring;
 `*Filter` pure narrowing, `*Options` ranking/selection/output-retention controls.
-Metadata listings return full core results for CLI presentation caps; body search
-retains capped output in core (`BodySearchOptions`, `BodySearchResult`).
+Listings return full core results for CLI presentation caps.
 `*Outcome` carries in-process result + metadata, not a wire type; `*Result`,
 `*Report`, `*Manifest`, `*Ref`, `*Entry` / `*Group` describe serialized roles.
 Keep one concept stem across function/options/components/CLI args. Rule types end

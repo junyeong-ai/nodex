@@ -85,6 +85,14 @@ pub(crate) fn run_nodes(
     if let Some(n) = args.limit {
         reject_zero_usize(n, "--limit")?;
     }
+    // An empty TEXT is contained in every body, so it would narrow nothing
+    // while reading as a search that matched the whole corpus.
+    if args.body_contains.as_deref() == Some("") {
+        return Err(nodex_core::error::Error::Config(
+            "--body-contains needs non-empty text; omit it to list without reading bodies".into(),
+        )
+        .into());
+    }
 
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
@@ -111,7 +119,17 @@ pub(crate) fn run_nodes(
     } else {
         args.fields.iter().cloned().partition(|f| is_spine_field(f))
     };
-    let items = nodex_core::find_nodes_projected(graph, &filter, &spine_fields, &extra_fields);
+    let items = match args.body_contains.as_deref() {
+        Some(text) => nodex_core::find_nodes_containing(
+            &snapshot,
+            context.root,
+            &filter,
+            text,
+            &spine_fields,
+            &extra_fields,
+        )?,
+        None => nodex_core::find_nodes_projected(graph, &filter, &spine_fields, &extra_fields),
+    };
     context.emit_read_with(
         ItemsEnvelope::capped(items, args.limit),
         warnings,
@@ -133,11 +151,6 @@ pub(crate) fn run_search(
             .map(|status| status.trim().to_string())
             .collect()
     });
-    let options = nodex_core::BodySearchOptions {
-        limit: args.limit,
-        max_matches: args.max_matches.map(|value| value.get()),
-        max_line_chars: args.max_line_chars.map(|value| value.get()),
-    };
     // An empty keyword is a substring of every document, so it would
     // "match" the whole corpus at partial weight — the opposite of a
     // keyword search and a silent surprise, not an error the operator
@@ -160,41 +173,18 @@ pub(crate) fn run_search(
         reject_empty_csv_entries("--status", statuses)?;
         reject_unknown_vocabulary("--status", statuses, &config.statuses.allowed)?;
     }
-    if let Some(n) = options.limit {
+    if let Some(n) = args.limit {
         reject_zero_usize(n, "--limit")?;
     }
     let snapshot = context.load_graph(&config)?;
-    let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
-    if args.body {
-        let result = nodex_core::search_bodies(
-            &snapshot,
-            context.root,
-            keyword,
-            statuses.as_deref(),
-            options,
-        )?;
-        if !graph.parse_failures().is_empty() {
-            let paths: Vec<_> = graph
-                .parse_failures()
-                .iter()
-                .map(|failure| failure.path.as_str())
-                .collect();
-            warnings.push(nodex_core::Warning::new(
-                nodex_core::WarningCode::ScopeCoverage,
-                format!("body search could not include documents with parse failures: {paths:?}; run `nodex check`"),
-            ));
-        }
-        context.emit_read_with(result, warnings, &config, pretty);
-    } else {
-        let items = nodex_core::search(graph, &config.search.weights, keyword, statuses.as_deref());
-        context.emit_read_with(
-            ItemsEnvelope::capped(items, options.limit),
-            warnings,
-            &config,
-            pretty,
-        );
-    }
-
+    let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
+    let items = nodex_core::search(graph, &config.search.weights, keyword, statuses.as_deref());
+    context.emit_read_with(
+        ItemsEnvelope::capped(items, args.limit),
+        warnings,
+        &config,
+        pretty,
+    );
     Ok(())
 }
 

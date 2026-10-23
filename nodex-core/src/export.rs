@@ -598,29 +598,15 @@ pub struct CommandsManifest {
 }
 
 /// One CLI leaf: its invocation tokens, its `per_command` envelope-
-/// schema key (the dotted join of `path`), any flag-selected alternate
-/// payload shapes, and its positional arity.
+/// schema key (the dotted join of `path`), and its positional arity.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct CommandManifestEntry {
     /// Invocation tokens, e.g. `["query", "search"]`.
     pub path: Vec<String>,
     /// The leaf's `per_command` envelope-schema key (dotted `path`).
     pub schema: String,
-    /// Flag-selected alternate payload shapes (e.g. `query.search-body`
-    /// behind `--body`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modes: Vec<CommandMode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub positionals: Vec<PositionalEntry>,
-}
-
-/// A second payload shape one leaf emits when any of `flags` is set.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct CommandMode {
-    /// The mode's `per_command` envelope-schema key.
-    pub schema: String,
-    /// Long flag names (without `--`) that select this mode.
-    pub flags: Vec<String>,
 }
 
 /// One positional argument of a CLI leaf.
@@ -1451,7 +1437,7 @@ fn per_command_schemas() -> Map<String, Value> {
     use crate::query::detect::{OrphanEntry, StaleEntry};
     use crate::query::issues::IssueReport;
     use crate::query::recent::RecentEntry;
-    use crate::query::search::{BodySearchResult, SearchEntry};
+    use crate::query::search::SearchEntry;
     use crate::query::similar::SimilarityEntry;
     use crate::query::structure::{Component, Neighborhood};
     use crate::query::traverse::{BacklinkEntry, ChainEntry, CoveredByEntry, NodeEntry};
@@ -1466,7 +1452,6 @@ fn per_command_schemas() -> Map<String, Value> {
     // non-null.
     out.insert("query.nodes".into(), items_envelope::<NodeListingEntry>());
     out.insert("query.search".into(), items_envelope::<SearchEntry>());
-    out.insert("query.search-body".into(), schema_of::<BodySearchResult>());
     out.insert("query.backlinks".into(), items_envelope::<BacklinkEntry>());
     out.insert("query.chain".into(), items_envelope::<ChainEntry>());
     out.insert(
