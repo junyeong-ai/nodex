@@ -175,7 +175,9 @@ fn main() -> std::process::ExitCode {
     }
 
     let writes_documents = match &cli.command {
-        Command::Lifecycle { .. } | Command::Rename(_) | Command::Retarget(_) => true,
+        Command::Lifecycle { .. } => true,
+        Command::Rename(args) => !args.dry_run,
+        Command::Retarget(args) => !args.dry_run,
         Command::Migrate(args) => args.apply,
         Command::Scaffold(args) => !args.dry_run,
         _ => false,

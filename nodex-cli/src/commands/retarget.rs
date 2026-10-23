@@ -18,6 +18,9 @@ pub struct RetargetArgs {
     /// Supersede the predecessor and repoint its citations in one guarded batch.
     #[arg(long)]
     pub supersede: bool,
+    /// Print the plan as JSON without rewriting any file
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// The successor's own references to the predecessor, named as the sites
@@ -51,7 +54,15 @@ pub fn run(
         .into());
     }
 
-    let config = nodex_core::load_project_for_mutation(root)?;
+    let config = nodex_core::load_project(root)?;
+    // The version pin gates writing, not previewing: a dry run carries the
+    // advisory like any read.
+    let mut warnings = Vec::new();
+    if args.dry_run {
+        warnings.extend(nodex_core::binary_compat_warning(&config));
+    } else {
+        nodex_core::ensure_binary_compatible(&config)?;
+    }
     // Build to read each document's parsed relation fields. Both endpoints
     // must exist: repointing to or from an unknown id is a typo, not an
     // operation.
@@ -253,40 +264,48 @@ pub fn run(
         return Err(refusal.into());
     }
 
-    // Stage every write before committing any file. A staging failure leaves
-    // the tree untouched; a later commit failure preserves the partial result.
-    let mut staged = Vec::new();
-    for plan in &writable {
-        staged.push((
-            plan,
-            nodex_core::mutate::stage_plan(root, plan).with_context(|| {
-                format!(
-                    "the repoint in {} could not be staged, so nothing was written",
-                    nodex_core::path_guard::forward_string(&plan.rel_path)
-                )
-            })?,
-        ));
-    }
     let mut updated = Vec::new();
     let mut failures = Vec::new();
-    for (plan, staged) in staged {
-        let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-        match staged.commit() {
-            Ok(()) => updated.push(shown),
-            Err(e) => {
-                failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
-                skipped.push(format!(
-                    "{shown} references {} but could not be rewritten ({}); the reference keeps \
-                     its original target",
-                    args.old_id,
-                    nodex_core::error::chain(&e)
-                ));
+    if args.dry_run {
+        updated.extend(
+            writable
+                .iter()
+                .map(|plan| nodex_core::path_guard::forward_string(&plan.rel_path)),
+        );
+    } else {
+        // Stage every write before committing any file. A staging failure leaves
+        // the tree untouched; a later commit failure preserves the partial result.
+        let mut staged = Vec::new();
+        for plan in &writable {
+            staged.push((
+                plan,
+                nodex_core::mutate::stage_plan(root, plan).with_context(|| {
+                    format!(
+                        "the repoint in {} could not be staged, so nothing was written",
+                        nodex_core::path_guard::forward_string(&plan.rel_path)
+                    )
+                })?,
+            ));
+        }
+        for (plan, staged) in staged {
+            let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+            match staged.commit() {
+                Ok(()) => updated.push(shown),
+                Err(e) => {
+                    failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
+                    skipped.push(format!(
+                        "{shown} references {} but could not be rewritten ({}); the reference keeps \
+                         its original target",
+                        args.old_id,
+                        nodex_core::error::chain(&e)
+                    ));
+                }
             }
         }
     }
 
     let data = RetargetResult {
-        completion: nodex_core::WriteCompletion::of(true, !skipped.is_empty()),
+        completion: nodex_core::WriteCompletion::of(!args.dry_run, !skipped.is_empty()),
         failures,
         old_id: args.old_id,
         new_id: args.new_id,
@@ -295,7 +314,7 @@ pub fn run(
     };
     // The graph the rewrite was planned against carries what the walk could
     // not read: a reference behind a boundary is one this run did not repoint.
-    let mut warnings = outcome.warnings.clone();
+    warnings.extend(outcome.warnings.iter().cloned());
     warnings.extend(introduced.advisories());
     warnings.extend(
         skipped

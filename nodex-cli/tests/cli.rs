@@ -9257,6 +9257,71 @@ fn a_refused_rename_leaves_the_tree_untouched() {
     assert_eq!(after, before, "nothing was created or removed");
 }
 
+/// A preview answers with the result the write would report and leaves
+/// every file as it was, so an agent can read the plan before committing to it.
+#[test]
+fn rename_and_retarget_previews_report_the_write_and_make_none() {
+    let tmp = scratch();
+    let root = tmp.path();
+    init_project(root);
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: doc-a\ntitle: A\nkind: generic\nstatus: active\n---\n# A\n",
+    );
+    write_doc(
+        root,
+        "docs/c.md",
+        "---\nid: doc-c\ntitle: C\nkind: generic\nstatus: active\n---\n# C\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: doc-b\ntitle: B\nkind: generic\nstatus: active\nrelated: [doc-a]\n---\n\
+         # B\nSee [A](a.md).\n",
+    );
+    let tree = |root: &std::path::Path| {
+        let mut files: Vec<(PathBuf, Vec<u8>)> = walk_entries(&root.join("docs"))
+            .into_iter()
+            .filter(|path| path.is_file())
+            .map(|path| {
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    };
+
+    for (preview, apply) in [
+        (
+            vec!["rename", "docs/a.md", "docs/moved/a.md", "--dry-run"],
+            vec!["rename", "docs/a.md", "docs/moved/a.md"],
+        ),
+        (
+            vec!["retarget", "doc-a", "doc-c", "--dry-run"],
+            vec!["retarget", "doc-a", "doc-c"],
+        ),
+    ] {
+        let before = tree(root);
+        let planned = run_json(nodex(root).args(&preview));
+        assert_eq!(planned["completion"], "planned", "{preview:?}: {planned}");
+        assert_eq!(tree(root), before, "{preview:?} wrote nothing");
+
+        let applied = run_json(nodex(root).args(&apply));
+        assert_eq!(applied["completion"], "complete", "{apply:?}: {applied}");
+        assert_eq!(
+            planned["references_updated"], applied["references_updated"],
+            "{preview:?} names the files the write rewrote"
+        );
+        assert_eq!(
+            applied["references_updated"],
+            serde_json::json!(["docs/b.md"])
+        );
+        assert_eq!(planned["id_stability"], applied["id_stability"]);
+    }
+}
+
 /// A project set up before its first commit has recorded nothing to
 /// compare against — the same "no snapshot" state as a ref that predates
 /// the project, not a ref the operator spelled wrong. Refusing here would
@@ -15399,6 +15464,27 @@ fn meta_version_pin_warns_reads_but_blocks_mutations() {
                 .any(|x| warning_msg(x).is_some_and(|s| s.contains("meta.nodex_version")))),
         "dry-run scaffold must carry the advisory, not fail: {dry}"
     );
+    for (path, id) in [("docs/a.md", "doc-a"), ("docs/c.md", "doc-c")] {
+        write_doc(
+            tmp.path(),
+            path,
+            &format!("---\nid: {id}\ntitle: T\nkind: generic\nstatus: active\n---\n# T\n"),
+        );
+    }
+    for preview in [
+        ["rename", "docs/a.md", "docs/b.md", "--dry-run"],
+        ["retarget", "doc-a", "doc-c", "--dry-run"],
+    ] {
+        let env = run_envelope(nodex(tmp.path()).args(preview));
+        assert!(
+            env.get("warnings")
+                .and_then(Value::as_array)
+                .is_some_and(|w| w
+                    .iter()
+                    .any(|x| warning_msg(x).is_some_and(|s| s.contains("meta.nodex_version")))),
+            "{preview:?} must carry the advisory, not fail: {env}"
+        );
+    }
 
     // The actual write is refused on an incompatible binary.
     let output = nodex(tmp.path())

@@ -21,6 +21,9 @@ pub struct RenameArgs {
     pub old: String,
     /// Target path (relative to root).
     pub new: String,
+    /// Print the plan as JSON without moving or rewriting any file
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 pub fn run(
@@ -29,7 +32,15 @@ pub fn run(
     pretty: bool,
     today: NaiveDate,
 ) -> Result<std::process::ExitCode> {
-    let config = nodex_core::load_project_for_mutation(root)?;
+    let config = nodex_core::load_project(root)?;
+    // The version pin gates writing, not previewing: a dry run carries the
+    // advisory like any read.
+    let mut warnings = Vec::new();
+    if args.dry_run {
+        warnings.extend(nodex_core::binary_compat_warning(&config));
+    } else {
+        nodex_core::ensure_binary_compatible(&config)?;
+    }
 
     // The one canonical normalization every user-supplied document path
     // gets (symmetric with `check --content` and `scaffold`): fold `\`
@@ -405,70 +416,79 @@ pub fn run(
     }
 
     let destination_plan = writable.iter().find(|plan| plan.rel_path == new_rel);
-    let replacement = moved
-        .as_ref()
-        .filter(|_| !nodex_core::path_guard::is_symlink(&old_abs))
-        .and_then(|document| {
-            destination_plan
-                .map(|plan| plan.content.as_str())
-                .or(document.anchor.as_deref())
-                .map(|content| (content, document.original.as_str()))
-        })
-        .map(|(content, original)| {
-            nodex_core::path_guard::stage_in_root(root, &new_abs, content)
-                .map(|staged| (staged, original))
-        })
-        .transpose()?;
-    let mut staged = Vec::new();
-    for plan in &writable {
-        if plan.rel_path != new_rel {
-            staged.push((
-                plan,
-                nodex_core::mutate::stage_plan(root, plan).with_context(|| {
-                    format!(
-                        "the reference in {} could not be staged, so nothing was written",
-                        nodex_core::path_guard::forward_string(&plan.rel_path)
-                    )
-                })?,
-            ));
-        }
-    }
-    let original = moved
-        .as_ref()
-        .filter(|_| !nodex_core::path_guard::is_symlink(&old_abs))
-        .map(|document| document.original.as_str());
-    let destination_failure = commit_move(&old_abs, &new_abs, original, replacement)
-        .with_context(|| format!("could not move {old_path:?} to {new_path:?}"))?;
     let mut stability = moved.as_ref().map_or(IdStability::Unchanged, |document| {
         document.stability.clone()
     });
     let mut updated_files = Vec::new();
     let mut failures = Vec::new();
-    if let Some(error) = destination_failure {
-        if let IdStability::Anchored { id } = stability {
-            stability = IdStability::AnchorFailed { id };
-        }
-        failures.push(nodex_core::FileWriteFailure::of(new_rel, &error));
-        skipped.push(format!(
-            "{new_path} was moved but its prepared content could not be committed ({}); \
-             no reference rewrites were committed — inspect the destination and replan",
-            nodex_core::error::chain(&error)
-        ));
+    if args.dry_run {
+        updated_files.extend(
+            destination_plan
+                .into_iter()
+                .chain(writable.iter().filter(|plan| plan.rel_path != new_rel))
+                .map(|plan| nodex_core::path_guard::forward_string(&plan.rel_path)),
+        );
     } else {
-        if destination_plan.is_some() {
-            updated_files.push(nodex_core::path_guard::forward_string(new_rel));
+        let replacement = moved
+            .as_ref()
+            .filter(|_| !nodex_core::path_guard::is_symlink(&old_abs))
+            .and_then(|document| {
+                destination_plan
+                    .map(|plan| plan.content.as_str())
+                    .or(document.anchor.as_deref())
+                    .map(|content| (content, document.original.as_str()))
+            })
+            .map(|(content, original)| {
+                nodex_core::path_guard::stage_in_root(root, &new_abs, content)
+                    .map(|staged| (staged, original))
+            })
+            .transpose()?;
+        let mut staged = Vec::new();
+        for plan in &writable {
+            if plan.rel_path != new_rel {
+                staged.push((
+                    plan,
+                    nodex_core::mutate::stage_plan(root, plan).with_context(|| {
+                        format!(
+                            "the reference in {} could not be staged, so nothing was written",
+                            nodex_core::path_guard::forward_string(&plan.rel_path)
+                        )
+                    })?,
+                ));
+            }
         }
-        for (plan, staged) in staged {
-            let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
-            match staged.commit() {
-                Ok(()) => updated_files.push(shown),
-                Err(e) => {
-                    failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
-                    skipped.push(format!(
-                        "{shown} could not be rewritten ({}); its reference to the renamed file is \
-                         stale — repoint it manually",
-                        nodex_core::error::chain(&e)
-                    ));
+        let original = moved
+            .as_ref()
+            .filter(|_| !nodex_core::path_guard::is_symlink(&old_abs))
+            .map(|document| document.original.as_str());
+        let destination_failure = commit_move(&old_abs, &new_abs, original, replacement)
+            .with_context(|| format!("could not move {old_path:?} to {new_path:?}"))?;
+        if let Some(error) = destination_failure {
+            if let IdStability::Anchored { id } = stability {
+                stability = IdStability::AnchorFailed { id };
+            }
+            failures.push(nodex_core::FileWriteFailure::of(new_rel, &error));
+            skipped.push(format!(
+                "{new_path} was moved but its prepared content could not be committed ({}); \
+                 no reference rewrites were committed — inspect the destination and replan",
+                nodex_core::error::chain(&error)
+            ));
+        } else {
+            if destination_plan.is_some() {
+                updated_files.push(nodex_core::path_guard::forward_string(new_rel));
+            }
+            for (plan, staged) in staged {
+                let shown = nodex_core::path_guard::forward_string(&plan.rel_path);
+                match staged.commit() {
+                    Ok(()) => updated_files.push(shown),
+                    Err(e) => {
+                        failures.push(nodex_core::FileWriteFailure::of(&plan.rel_path, &e));
+                        skipped.push(format!(
+                            "{shown} could not be rewritten ({}); its reference to the renamed file is \
+                             stale — repoint it manually",
+                            nodex_core::error::chain(&e)
+                        ));
+                    }
                 }
             }
         }
@@ -479,7 +499,7 @@ pub fn run(
     // cross, a cache it could not load. A reference behind any of them is one
     // this rename did not repoint, and `total_updated: 0` over a corpus that
     // was never read is what a correct no-op rename looks like.
-    let mut warnings = before.warnings.clone();
+    warnings.extend(before.warnings.iter().cloned());
     if let IdStability::BareNoFrontmatter { warning } = &stability {
         warnings.push(nodex_core::Warning::new(
             nodex_core::WarningCode::BuildRecommended,
@@ -487,7 +507,7 @@ pub fn run(
         ));
     }
     warnings.extend(introduced.advisories());
-    let completion = nodex_core::WriteCompletion::of(true, !skipped.is_empty());
+    let completion = nodex_core::WriteCompletion::of(!args.dry_run, !skipped.is_empty());
     warnings.extend(
         skipped
             .into_iter()
