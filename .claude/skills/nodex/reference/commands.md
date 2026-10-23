@@ -83,7 +83,7 @@ nodex query node --path <file>
 ```
 `query node --with-body` compares the file's exact content revision with the indexed node before attaching text. `GRAPH_OUTDATED` requires rebuilding; metadata and body are never mixed across revisions.
 
-Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects positive, inclusive canonical body lines and returns `body_range: {start, end, total}`; invalid ranges are refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
+Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects the body between those inclusive file lines — the numbering every reported location uses — and returns `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
 
 ```bash
 nodex query backlinks <id> [--limit N]

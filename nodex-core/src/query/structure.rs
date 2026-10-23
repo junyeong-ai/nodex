@@ -267,6 +267,7 @@ mod tests {
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),
+            body_start_line: 1,
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],

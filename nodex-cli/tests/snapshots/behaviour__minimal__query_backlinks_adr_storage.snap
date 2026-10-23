@@ -9,7 +9,7 @@ exit: 0
       {
         "id": "guide-overview",
         "kind": "guide",
-        "location": "L4",
+        "location": "L16",
         "path": "docs/overview.md",
         "relation": "references",
         "status": "active",

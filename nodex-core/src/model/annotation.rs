@@ -24,7 +24,8 @@ pub struct RawAnnotation {
     pub name: String,
     /// The captured value of the configured `key` named capture.
     pub key: String,
-    /// 1-based line number inside the body (frontmatter excluded).
+    /// 1-based line: counted from the body's first line as extracted, from
+    /// the top of the file once `parse_document` returns it.
     pub line: usize,
 }
 
@@ -35,5 +36,6 @@ pub struct Annotation {
     pub source: String,
     pub name: String,
     pub key: String,
+    /// 1-based file line.
     pub line: usize,
 }

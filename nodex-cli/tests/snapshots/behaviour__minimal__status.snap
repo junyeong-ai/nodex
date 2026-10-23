@@ -7,9 +7,9 @@ exit: 0
   "data": {
     "graph_path": "_index/graph.json",
     "snapshot_nodex_version": "<version>",
-    "snapshot_schema_version": 16,
+    "snapshot_schema_version": 17,
     "state": "current",
-    "supported_schema_version": 16
+    "supported_schema_version": 17
   },
   "ok": true
 }

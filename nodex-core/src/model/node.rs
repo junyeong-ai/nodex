@@ -102,6 +102,11 @@ pub struct Node {
     /// ([`crate::parser::body::extract_structure`]).
     #[serde(default, skip_serializing_if = "crate::model::BodyStructure::is_empty")]
     pub body_structure: crate::model::BodyStructure,
+    /// The file line the body's first line is on: 1 without frontmatter,
+    /// the line after the closing fence otherwise. Every line the graph
+    /// reports counts from the top of the file; this is where the body's
+    /// own line count starts among them.
+    pub body_start_line: usize,
     /// SHA-256 hex of the exact bytes the parse consumed
     /// (pre-canonicalisation) — the digest the build cache keys on.
     #[serde(default)]
@@ -283,6 +288,7 @@ impl From<&Node> for NodeMetadata {
             body_hash: _,
             body_lines_hash: _,
             body_structure: _,
+            body_start_line: _,
             content_hash: _,
         } = node;
         Self {
@@ -338,6 +344,7 @@ mod tests {
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),
+            body_start_line: 1,
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],

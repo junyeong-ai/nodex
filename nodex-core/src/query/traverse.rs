@@ -4,12 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::NodeRef;
 
-/// Inclusive coordinates into the canonical body, with its full line count.
+/// The inclusive file lines returned, and the file lines the body spans.
 #[derive(Debug, serde::Serialize, JsonSchema)]
 pub struct BodyRange {
     pub start: usize,
     pub end: usize,
-    pub total: usize,
+    pub body_start: usize,
+    pub body_end: usize,
 }
 
 #[cfg(test)]
@@ -43,6 +44,7 @@ mod tests {
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),
+            body_start_line: 1,
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],
