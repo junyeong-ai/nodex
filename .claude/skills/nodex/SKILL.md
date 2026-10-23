@@ -4,6 +4,7 @@ description: >-
   Inspects, validates and edits Markdown document graphs governed by nodex.toml.
   Use for document lookup, relation traversal, proposed-content checks,
   guarded lifecycle or reference changes, and machine-readable CLI exports.
+  Use when the project holds a nodex.toml or the user mentions nodex.
 allowed-tools: Bash(nodex *)
 metadata:
   version: 0.61.0
@@ -41,6 +42,10 @@ reads; it does not establish content freshness. Body reads still verify revision
 
 A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 `GRAPH_MISSING` / `GRAPH_OUTDATED`; fix unreadable paths for `IO_ERROR`.
+`CONFIG_ERROR` also refuses an argument the configuration rules out (an undeclared
+kind, status, field, relation or annotation name, a `--body-lines` range outside
+the body, a zero cap, a scaffold with no path): check the values against
+`export enums` / `export config` before editing `nodex.toml`.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
 and `current`; rebuild with `--full` for a schema mismatch.
 Incompatible snapshot schemas also yield `GRAPH_OUTDATED`, naming the recorded
@@ -51,8 +56,9 @@ Before treating an empty answer or green check as complete, inspect
 Coverage is measured before report narrowing; `unjudged` means selected but not
 judged, not necessarily a broken document. Details: [check](reference/commands.md#check).
 
-To find governed documents by their text, use `nodex query nodes --body-contains
-"<text>" --status active`; superseded records stay out. It lists documents, not lines.
+To find documents by body text, use `nodex query nodes --body-contains "<text>"`;
+add `--status` with the project's non-terminal statuses (`export enums`) to leave
+retired records out. It lists documents, not lines.
 
 Similarity selects positive title-token, tag and graph-neighbour overlap. Kind,
 status and exact parent-directory filters narrow candidates before ranking.
@@ -61,11 +67,19 @@ choosing a lifecycle change; orphan status or an old review date is not a verdic
 
 ## Write and verify
 
+1. Hand edit: pipe the new bytes to `nodex check --content <path>=-`; write the
+   file only when `data.has_errors` is false, else fix the proposal and re-run.
+2. Tool write: run `scaffold`, `rename` or `retarget` with `--dry-run` first. It
+   runs the same gates and writes nothing (`scaffold` reports `written: false`,
+   `rename` and `retarget` `completion: planned`); read its warnings
+   (`file_skipped`, `reference_kept`, `document_evicted`), then run it without.
+3. After any write: `nodex check`, then `nodex build`.
+
 ```bash
-nodex check --content docs/a.md=-
+nodex check --content docs/a.md=- < proposal.md
 nodex check --content docs/a.md=- --content docs/b.md=b.md
-nodex scaffold --kind <kind> --title "<title>" --path docs/new.md
-nodex retarget <old-id> <new-id> --supersede
+nodex scaffold --kind <kind> --title "<title>" --path docs/new.md --dry-run
+nodex retarget <old-id> <new-id> --supersede --dry-run
 nodex check
 nodex build
 ```
@@ -80,18 +94,19 @@ before proposing an edit; protection constrains modification and does not prove
 historical target validity. See [source protection](reference/config.md#unresolved-reference-policy).
 
 Use `scaffold`, `rename`, `retarget` and `lifecycle` for guarded graph changes.
-`scaffold`, `rename` and `retarget` take `--dry-run`, which runs the same gates
-and writes nothing: `scaffold` reports `written: false`, `rename` and `retarget`
-`completion: planned`.
 Classification globs do not choose creation paths; scaffold needs `--path` or a
-`scaffold.paths` template. Default-only scaffold advises; authored content is gated.
-`migrate --apply` injects inferred defaults into bare Markdown.
+`scaffold.paths` template. Scaffold without `--body` / `--field` writes even when
+the new document has findings and reports them in `build_recommended` warnings, so
+run `nodex check` after it; with `--body` or `--field`, an introduced error refuses
+the write (`CONTENT_VIOLATIONS`). `migrate --apply` injects inferred defaults into
+bare Markdown.
 
-Writes refuse introduced errors and targeted baseline-lock drift. A frozen record
-can be corrected in its configured `append_section`; a changed decision takes
-supersession. Discover lock and relation policy from `export rules` / `export config`.
-Declared relations with `retarget = "keep"` remain historical citations; body links
-follow their own rewrite policy. Read `reference_kept` and `document_evicted`.
+Writes refuse introduced errors and targeted baseline-lock drift. A record under an
+`append_only` lock takes corrections in the section its `append_section` names; a
+`frozen` body takes none, and a changed decision takes supersession. Discover lock
+and relation policy from `export rules` / `export config`. Declared relations with
+`retarget = "keep"` remain historical citations; body links are repointed unless a
+lock holds them (`file_skipped`).
 
 Batch writes are not a filesystem transaction. Inspect `completion`, `failures`
 and warnings even on nonzero exits; successful earlier writes remain. Policy
@@ -114,11 +129,10 @@ history; a configured `rules.immutable_baseline` still supplies the lock baselin
 Read the [history-check semantics](reference/commands.md#check---since) before
 using them as a gate. `--content` excludes both flags.
 
-Exports are wrapped in `{ok,data}`. Generate clients from `export envelope-schema`;
-`--inline-refs` is for generators that do not follow `$ref`. Regenerate on upgrades
-and pin the binary with `--check-version <requirement>`. `[meta].nodex_version`
-warns on incompatible reads and refuses document writes. `--today YYYY-MM-DD`
-fixes date-relative judgments and scaffold dates; `-C` selects the project.
+`[meta].nodex_version` warns on incompatible reads and refuses document writes;
+dry runs stay reads. `--check-version <requirement>` refuses any command outside it.
+`--today YYYY-MM-DD` fixes date-relative judgments and scaffold dates; `-C` selects
+the project. Typed clients and drift gates: [export](reference/commands.md#export).
 
 ## Result contract
 
@@ -128,12 +142,14 @@ fixes date-relative judgments and scaffold dates; `-C` selects the project.
 ```
 
 Branch on typed codes and details, never message text. Empty warnings are omitted;
-error envelopes have no warnings. Help and version output are plain text.
-Exit 0 means success, 1 means check violations, and 2 means an error, actual batch
-write failures, or undelivered output. Read stdout even on exit 1 or 2.
+error envelopes have no warnings. Snapshot queries add `snapshot`, and a warning may
+carry typed `details`. Help and version output are plain text.
+Exit 0 means success, 1 means `check` found error-severity violations (warnings
+alone exit 0; `query issues` exits 0 whatever it lists), and 2 means an error,
+actual batch write failures, or undelivered output. Read stdout even on exit 1 or 2.
 
 Listings use `{items,total}` and add `returned` when capped; `similar` and `recent`
-count their selection. `node`, `issues`, `neighborhood` and `dependents` return
+report `total` as the number selected after `--limit`, never `returned`. `node`, `issues`, `neighborhood` and `dependents` return
 objects. `check --severity` filters presentation, never `has_errors` or the exit
 code. Snapshot metadata describes verification separately from parsing coverage.
 
@@ -178,7 +194,8 @@ named path for IO) · `build_recommended` (message names a required follow-up) �
 still answer for all judgments) · `baseline_inert` (a baseline/project/document
 was absent where the ref was asked; inspect what went ungated) ·
 `ranking_unscored` (target has no weighted similarity signals) ·
-`file_skipped` (held/failed edit or reference now naming another document; see Write seams) ·
+`file_skipped` (held/failed edit or reference now naming another document; see
+[rename / retarget](reference/commands.md#rename--retarget)) ·
 `reference_kept` (retarget preserved a policy-held or successor reference) ·
 `document_evicted` (a write removed other documents from scope, not disk) ·
 `history_unread` (step history could not be read; counted unjudged) ·

@@ -140,7 +140,7 @@ nodex query annotations [--name <block>] [--with-frontmatter f1,f2] [--min-count
 ```
 `--name` exact-matches a declared `[[annotations]]` block name (not a glob); an unknown name is `CONFIG_ERROR`. Results group by annotation `name`, then by capture `key`: `items[{name, entries[{key, count, sources}]}]`. `--with-frontmatter` enriches each source with selected node frontmatter (built-in or project-declared; unknown names rejected). `--min-count N` drops entries below the count and removes emptied groups — the natural primitive for promotion candidates and repeated topics.
 
-Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. The block `detection.superseded_reference_ok_annotation` names is the exception in what it holds: its key is the id of a target a document cites as history, which `superseded_reference` compares without resolving. A block declaring `[PROMOTES: <id>]` is queried as `nodex query annotations --name promotes`.
+Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. The block `detection.superseded_reference_ok_annotation` names is the exception in what it holds: its key is the id of a target a document cites as history, which `superseded_reference` compares without resolving. A block named `promotes` (matching, say, `[PROMOTES: <id>]`) is queried as `nodex query annotations --name promotes`.
 
 ## check
 
@@ -229,14 +229,9 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 
 `--force` preserves the existing identity unless `--id` explicitly replaces it. It still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
 
-`scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession.
+`scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession. `written` says whether the file was written (`false` under `--dry-run`).
 
-`migrate`, `rename` and `retarget` report `completion: planned | complete | partial`.
-`planned` is a dry run: `migrate` without `--apply`, or `rename` / `retarget --dry-run`. `partial` means a requested edit was held or failed;
-inspect warnings and `failures` before continuing. A no-op may be complete.
-Completion answers for the configured, readable corpus; scope warnings still matter.
-Actual write failures retain the `ok: true` result and exit 2. Policy holds alone
-exit 0. Read stdout even on nonzero exits; already-written files remain changed.
+Fill the placeholders scaffold writes for required fields: an empty built-in string such as `owner: ""` counts as present, so `required` does not flag it.
 
 ## rename / retarget
 
@@ -270,7 +265,7 @@ an alternate spelling is refused with the name to use.
 ```bash
 nodex retarget <old-id> <new-id> [--supersede] [--dry-run]
 ```
-Repoints references to `<old-id>` onto `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) project-declared frontmatter relations with `retarget = "repoint"`, and body references (Markdown paths, `[[wikilinks]]`, custom `link_patterns`). Declared fields with `retarget = "keep"` retain their targets and emit `reference_kept`; this policy does not govern body links. The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
+Repoints references to `<old-id>` onto `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) and project-declared frontmatter relations with `retarget = "repoint"`, and body references (Markdown paths, `[[wikilinks]]`, custom `link_patterns`). Declared fields with `retarget = "keep"` retain their targets and emit `reference_kept`; this policy does not govern body links. The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
 
 Matching is by **resolved document identity** — an id that merely appears in prose is never touched — and the successor document is skipped so nothing in it comes to name itself. Both ids must exist. A reference-unsafe successor id is refused: trim-unstable, or carrying a metacharacter of a syntax nodex writes (`[`, `]`, `|`, `` ` ``, line breaks).
 
@@ -278,10 +273,14 @@ A lock names a *part* of a document, so that is what it costs: a `body_immutable
 
 Envelope: `RetargetResult {old_id, new_id, references_updated, total_updated, completion, failures?}`. Path references are rendered relative to the citing document and checked by resolution before writing. `--supersede` plans the predecessor lifecycle change and reference edits together, so strict citation rules judge the complete proposal. The predecessor transition is a required plan: if it is held or cannot be staged, the operation refuses before writing any document. File commits retain the documented partial-write reporting.
 
-`migrate`, `rename` and `retarget` report actual write failures in `failures`
-with `path`, `code` and `message`; the field is omitted when empty. Planned
-policy holds remain warnings. After a partial write, recompute the plan before
-retrying against the current tree.
+`migrate`, `rename` and `retarget` report `completion: planned | complete | partial`.
+`planned` is a dry run: `migrate` without `--apply`, or `rename` / `retarget --dry-run`.
+`partial` means a requested edit was held or failed; a no-op may be complete.
+Completion answers for the configured, readable corpus; scope warnings still matter.
+Actual write failures are listed in `failures` (`path`, `code`, `message`; omitted
+when empty), keep the `ok: true` result and exit 2; policy holds alone remain
+warnings and exit 0. Read stdout even on nonzero exits: already-written files
+remain changed, so inspect the tree and recompute the plan before retrying.
 
 ## lifecycle
 
@@ -291,7 +290,7 @@ nodex lifecycle set       <id> --status <status>  # any value in statuses.allowe
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor + DAG
 ```
 
-`supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (`superseded` needs `superseded_by`; use `supersede`), and any other rule the project's own `check` would red, including effects on other documents. A violation the document already carried never refuses it.
+`supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (where the project requires `superseded_by` for `superseded`, as the `nodex init` template does, use `supersede`), and any other rule the project's own `check` would red, including effects on other documents; the refusal is `CONTENT_VIOLATIONS`. A violation the document already carried never refuses it.
 
 Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc. `set` and `supersede` write `updated: <today>`, unless the document's kind forbids `updated` (`[[schema.overrides]] forbidden`).
 
@@ -319,7 +318,7 @@ nodex export commands            # every leaf, its positionals and its flags
 nodex export diagnostics         # error / warning / exit-code vocabularies
 ```
 
-External lints consume these instead of re-parsing `nodex.toml`. `envelope-schema`, `commands` and `diagnostics` read no `nodex.toml`, not even a broken one, so they can be invoked anywhere; the `version` field in their output is the source of truth for downstream drift gates.
+External lints consume these instead of re-parsing `nodex.toml`. Generate typed clients from `export envelope-schema` and regenerate them on every upgrade. `envelope-schema`, `commands` and `diagnostics` read no `nodex.toml`, not even a broken one, so they can be invoked anywhere; the `version` field in their output is the source of truth for downstream drift gates.
 
 `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
