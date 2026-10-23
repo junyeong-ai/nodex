@@ -7,7 +7,7 @@ description: >-
   Use when the project holds a nodex.toml or the user mentions nodex.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.61.0
+  version: 0.61.1
 ---
 
 # nodex
