@@ -53,9 +53,9 @@ pub(crate) struct Cli {
 
 /// Top-level subcommand. Each variant is a single-argument forward to
 /// the matching `commands::<name>::run` — every command's CLI shape
-/// lives in its own file (`nodex-cli/CLAUDE.md` rule "main.rs never
-/// contains a command's CLI shape"), so this enum stays a thin
-/// dispatch table.
+/// lives in its own file (`.claude/rules/adding-a-cli-command.md`:
+/// "main.rs never contains a command's CLI shape"), so this enum stays a
+/// thin dispatch table.
 #[derive(Subcommand)]
 enum Command {
     /// Create a nodex.toml in current directory

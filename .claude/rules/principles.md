@@ -10,7 +10,7 @@ A script that compares command output asserts each command succeeded before comp
 
 ## Root-Cause First
 
-Temporary patches, symptomatic fixes, and workarounds are forbidden. Analyze the root cause, then solve it in a way that is long-term flexible, extensible, and maintainable. Backward-compatibility shims, deprecated code retention, and TODO/FIXME/HACK comments are forbidden.
+Temporary patches, symptomatic fixes, and workarounds are forbidden. Analyze the root cause and fix it where it originates, so every path that reaches it is fixed: a fix that stays maintainable as the code grows, sized to the requirement in hand rather than to ones nobody has stated. Backward-compatibility shims, deprecated code retention, and TODO/FIXME/HACK comments are forbidden.
 
 A decision read in more than one place is read through one function — whether a lock is armed (`Config::lock_arms`), where a governed kind starts (`Config::initial_status_for`). A new reader calls the seam that exists; a fix that finds a second derivation routes every reader through one seam in the same change, because two derivations that agree today are one edit away from disagreeing silently.
 

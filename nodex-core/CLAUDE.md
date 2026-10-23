@@ -34,14 +34,8 @@ in `.claude/rules/` rather than being copied here.
   edits, but commits can still fail: batches are not filesystem transactions.
   Preserve successful writes and report per-file failures with partial completion.
   `migrate --apply` commits each independent migration and continues after skips.
-- CLI `rename` stages the final destination content (identity anchor and rebased
-  references) before moving the untouched source, verifies the moved source's
-  revision, then commits that content before inbound-reference edits. A failed
-  move leaves source content untouched. If the destination rewrite fails after
-  the move, report the surviving move as partial, stop inbound commits, and report
-  `anchor_failed` when the previous id could not be fixed. No automatic rollback
-  or multi-file atomicity is promised. Sequencing: `nodex-cli/src/commands/rename.rs`;
-  primitive guarantees: `src/path_guard.rs` and `src/mutate.rs` rustdoc.
+  Primitive guarantees: `src/path_guard.rs` and `src/mutate.rs` rustdoc; the CLI
+  rename sequencing built on them: `nodex-cli/CLAUDE.md`.
 
 ## Git binding
 
@@ -89,7 +83,6 @@ safety: `src/git.rs` rustdoc.
   a write; duplicated findings still introduce another violation. Without a
   configured baseline, authored bytes compare against the working tree.
   Configured locks use the baseline probe for authored content and transformations.
-  All document writes except config-derived `migrate` take this gate.
   Default-only scaffold advises on findings owned by its new node; supplying
   body/fields is strict. Findings owned by other nodes or no node always refuse
   (`Introduced::owned_by_others`), irrespective of a finding's display path.
@@ -127,8 +120,6 @@ safety: `src/git.rs` rustdoc.
   before any `--since` report narrowing. Counting conventions and new-rule
   procedure: `.claude/rules/config-driven.md` (No silent vacuous passes) and
   `.claude/rules/adding-a-validation-rule.md`.
-  Diff-aware rules explicitly subtract `GraphDiff::added_ids`: `before_status`
-  and `before_kind` fall back to the supplied current value for absent records.
 - `rules::Since::Baseline` arms locks without narrowing. `Since::Narrowed` asks
   each rule's `touched_by` per finding. The default is `GraphDiff::touched_ids`
   (record, authored edge or annotation); node-less findings remain. Orphan widens
@@ -193,12 +184,15 @@ safety: `src/git.rs` rustdoc.
   `src/parser/frontmatter.rs` rustdoc.
 - Parser entries canonicalize BOM and CRLF/CR to LF; body scans share the fence-
   aware `parser::body::iter_body_lines`. Body-derived data is extracted once at
-  build time; rules do not re-read body bytes. Extractors count body lines;
-  `parse_document` moves them to file lines through `Node::body_start_line`, the
-  one numbering reported or accepted. Logic about the body itself converts back. Config kind filters with empty =
-  unrestricted use `model::kind_allowed` / `Node::matches_kinds`; overrides use
-  membership and cannot have empty kinds. Lock membership uses `rules::lock_holds`
-  plus `Config::lock_arms`. Link patterns require exactly one capture group.
+  build time; rules do not re-read body bytes.
+- Extractors count body lines; `parse_document` shifts them to file lines by
+  `Node::body_start_line - 1`, the one numbering reported or accepted. Code that
+  indexes the body itself (diff's annotation keys, `--body-lines`) subtracts the
+  same offset.
+- Config kind filters with empty = unrestricted use `model::kind_allowed` /
+  `Node::matches_kinds`; overrides use membership and cannot have empty kinds.
+  Lock membership is `rules::lock_holds`, which applies a block's kind filter and
+  `Config::lock_arms`.
 - `builder::build`, `build_with_overlay`, `build_of_ref` couple content source to
   persistence via private `BuildMode`. Only WorkingTree persists cache.json;
   Overlay is read-only and substitutes proposed bytes; Ref reads/writes no disk
@@ -250,10 +244,8 @@ safety: `src/git.rs` rustdoc.
   target-side signals only; a candidate lacking one measures zero. A target with
   no weighted signal ranks nothing and reports the unscored population. Source:
   `src/query/similar.rs`.
-- `stale_days` / `git_drift_threshold`: omitted = disabled; zero rejected. Init's
-  visible config sets startup choices, not serde defaults that erase "disabled".
-  `orphan_grace_days` is a duration and permits zero. Orphan also exempts terminal
-  records, configured orphan-ok kinds and per-node orphan_ok.
+- Init's visible config sets startup choices, not serde defaults that erase a
+  threshold's "disabled" (omitted `stale_days` / `git_drift_threshold`).
 - Terminal status narrows maintenance subjects, never evidence edges. Stale,
   drift, orphan and superseded-reference exempt retired subjects; backlinks,
   unresolved-reference and cycles still read their edges. A live record cited
@@ -334,7 +326,7 @@ safety: `src/git.rs` rustdoc.
 Snapshot readers validate `SnapshotHeader` before decoding graph data, independent
 of JSON field order or the foreign payload's shape. Schema mismatch is typed
 `GraphSchemaMismatch` (`GRAPH_OUTDATED`); invalid JSON or malformed current-schema data
-remains `PARSE_ERROR`. `--allow-stale` never bypasses schema compatibility.
+remains `PARSE_ERROR`.
 
 `src/status.rs` owns graph.json reads. `load_graph` advises on membership/config
 drift; `load_current_graph` requires config, membership and exact content.

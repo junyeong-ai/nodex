@@ -1,6 +1,10 @@
 ---
 paths:
   - "nodex-cli/**/*.rs"
+  - "nodex-core/src/export.rs"
+  - "nodex-core/src/warning.rs"
+  - "nodex-core/src/command_result.rs"
+  - "nodex-core/src/status.rs"
 ---
 
 # JSON Output Contract
@@ -30,4 +34,4 @@ Error:   {"ok": false, "error": {"code": "CODE", "message": "..."}}
 
 ## Adding Output
 
-Snapshot query leaves emit through `QueryContext::emit_read_with` (`commands/query/mod.rs`), which attaches `snapshot` metadata before delegating to the read emitter. Other commands emit through `nodex-cli/src/format.rs`: `emit_read` / `emit_read_with` for a command that reads the project (merges the binary-compat advisory), `emit_write` for one that writes documents (merges the unenforced-baseline advisory). Call `print_json(&Envelope::…)` directly only where there is no loaded working-tree `Config` to hand `emit_read` — `init`, the config-free exports, and `diff` / `impact`, whose working-tree config is best-effort. Never `println!` raw text from commands; clippy's `disallowed-macros` (`clippy.toml`) refuses the print macros workspace-wide.
+Snapshot query leaves emit through `QueryContext::emit_read_with` (`commands/query/mod.rs`), which attaches `snapshot` metadata before delegating to the read emitter. Other commands emit through `nodex-cli/src/format.rs`: `emit_read` / `emit_read_with` for a command that reads the project (merges the binary-compat advisory), `emit_write` for one that writes documents (merges the `BaselineProbe` advisories: a configured baseline that could not engage, and the baseline build's own warnings). Call `print_json(&Envelope::…)` directly only where there is no loaded working-tree `Config` to hand `emit_read` — `init`, the config-free exports, and `diff` / `impact`, whose working-tree config is best-effort. Never `println!` raw text from commands; clippy's `disallowed-macros` (`clippy.toml`) refuses the print macros workspace-wide.
