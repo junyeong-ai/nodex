@@ -82,6 +82,16 @@ const PER_FIXTURE: &[(&str, &[&str])] = &[
     ("graph", &["query", "similar", "--id", "adr-alpha"]),
     ("graph", &["query", "search", "beta"]),
     ("graph", &["query", "covered-by", "nodex.toml"]),
+    (
+        "graph",
+        &[
+            "rename",
+            "docs/decisions/gamma.md",
+            "docs/decisions/delta.md",
+            "--dry-run",
+        ],
+    ),
+    ("graph", &["retarget", "adr-gamma", "adr-beta", "--dry-run"]),
 ];
 
 /// Every invocation the sweep runs against `fixture`.
@@ -118,21 +128,17 @@ const EXEMPT: &[(&[&str], &str)] = &[
     ),
     (&["impact"], "takes two git refs, as `diff` does"),
     (
-        &["rename"],
-        "mutates the tree; the post-state belongs to a mutation corpus that snapshots files, not envelopes",
-    ),
-    (&["retarget"], "mutates the tree, as `rename` does"),
-    (
         &["lifecycle", "supersede"],
-        "mutates frontmatter, as `rename` does",
+        "mutates frontmatter and has no preview; the post-state belongs to a mutation corpus \
+         that snapshots files, not envelopes",
     ),
     (
         &["lifecycle", "set"],
-        "mutates frontmatter, as `rename` does",
+        "mutates frontmatter, as `lifecycle supersede` does",
     ),
     (
         &["lifecycle", "review"],
-        "mutates frontmatter, as `rename` does",
+        "mutates frontmatter, as `lifecycle supersede` does",
     ),
 ];
 

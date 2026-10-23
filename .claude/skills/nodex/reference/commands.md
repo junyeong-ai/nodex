@@ -250,8 +250,10 @@ exit 0. Read stdout even on nonzero exits; already-written files remain changed.
 ## rename / retarget
 
 ```bash
-nodex rename <old-path> <new-path>
+nodex rename <old-path> <new-path> [--dry-run]
 ```
+`--dry-run` runs every guard and gate the write would and reports the same result with `completion: planned`, writing nothing; `retarget --dry-run` does the same for a repoint.
+
 Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning.
 
 A markdown link destination *spells* a path rather than being one, so `rename` repoints what the destination **names**: `[x](old&#x2e;md)` and `[x](a\(1\).md)` are edges like any other and move with the file. It writes back the spelling the parser reads as the new path — plain where that works (byte-for-byte the author's style), pointy `<…>` or backslash-escaped where the name needs it, so a move to `docs/new one.md` repoints rather than leaving the link behind. A reference no spelling survives (a wikilink whose new target carries `]`) is left untouched and visible, surfacing as an unresolved edge rather than being mangled.
@@ -275,7 +277,7 @@ an alternate spelling is refused with the name to use.
 `rename` also names every reference it leaves something to say about, once each. Two kinds: one it had a replacement for and **declined to write** (no spelling the move could accept — it goes on naming what it named, and the next build reports the unresolved edge, which `check` and `query issues` report according to configured severity — a project whose `[[detection.unresolved_policy]]` calls that cause an error is one whose write gate refuses the move outright, leaving no warning to read), and one it left standing that **now names somebody else** (the move took the rung out from under it, or carried the referring document to where the same spelling means something different). The second is the one nothing downstream would mention: the graph it produces is valid, so only the command that made it can say so.
 
 ```bash
-nodex retarget <old-id> <new-id> [--supersede]
+nodex retarget <old-id> <new-id> [--supersede] [--dry-run]
 ```
 Repoints references to `<old-id>` onto `<new-id>`: the id-valued frontmatter relation fields (`supersedes` / `implements` / `related` / `superseded_by`) project-declared frontmatter relations with `retarget = "repoint"`, and body references (Markdown paths, `[[wikilinks]]`, custom `link_patterns`). Declared fields with `retarget = "keep"` retain their targets and emit `reference_kept`; this policy does not govern body links. The first three accept a string or an array; `superseded_by` is a single-id scalar, so `superseded_by: [id]` is a `field_parse` error.
 

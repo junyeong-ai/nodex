@@ -1,0 +1,23 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "completion": "planned",
+    "new_id": "adr-beta",
+    "old_id": "adr-gamma",
+    "references_updated": [
+      "docs/index.md"
+    ],
+    "total_updated": 1
+  },
+  "ok": true,
+  "warnings": [
+    {
+      "code": "scope_coverage",
+      "message": "\"docs/legacy.md\" has kind \"generic\" but no identity.kind_rules glob matches it; add a rule covering this path (map it to \"generic\" explicitly if intended)"
+    }
+  ]
+}
