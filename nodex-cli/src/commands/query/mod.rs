@@ -16,7 +16,7 @@ use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecentField};
 /// [`run`].
 #[derive(Subcommand)]
 pub enum QueryCommand {
-    /// Keyword search in metadata, or canonical body lines with --body
+    /// Keyword search over id, title and tags
     Search(SearchArgs),
     /// Show nodes linking to target
     Backlinks {
@@ -133,22 +133,13 @@ pub enum QueryCommand {
 #[derive(Args)]
 pub struct SearchArgs {
     pub keyword: String,
-    /// Search body lines instead of title/id/tags; return matching lines in id order.
-    #[arg(long)]
-    pub body: bool,
     /// Filter by status (comma-separated)
     #[arg(long)]
     pub status: Option<String>,
-    /// Cap returned documents after metadata ranking or body-search id sorting.
-    /// `total` reports every matching document, `returned` the cap.
+    /// Cap returned documents after ranking. `total` reports every matching
+    /// document, `returned` the cap.
     #[arg(long)]
     pub limit: Option<usize>,
-    /// Cap returned matching lines across documents; every selected revision is still checked.
-    #[arg(long, requires = "body")]
-    pub max_matches: Option<std::num::NonZeroUsize>,
-    /// Cap each returned line in Unicode characters and mark shortened text.
-    #[arg(long, requires = "body")]
-    pub max_line_chars: Option<std::num::NonZeroUsize>,
 }
 
 /// Args for `query nodes` — the generic listing's predicate flags plus
@@ -188,6 +179,10 @@ pub struct NodesArgs {
     /// Require each field to be absent (CSV); e.g. --missing reviewed --status active.
     #[arg(long, value_delimiter = ',')]
     pub missing: Vec<String>,
+    /// Narrow to documents whose body contains TEXT (case-insensitive), read
+    /// at the revision the snapshot indexed.
+    #[arg(long, value_name = "TEXT")]
+    pub body_contains: Option<String>,
 }
 
 /// Args for `query similar`. Exactly one of `--id` (existing node) or

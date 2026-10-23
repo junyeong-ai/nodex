@@ -424,14 +424,8 @@ After the graph is built, `_index/graph.json` is written. Backlinks are derived 
 content before answering. Drift fails with `GRAPH_OUTDATED`; unreadable files fail
 with `IO_ERROR`. This is a probe of the working tree, not a filesystem transaction.
 
-`nodex query search <keyword> --body` searches canonical body lines, including code
-blocks. Hits carry one-based body line numbers and text, in node-id order; `--limit`
-caps documents. Each searched file must match its indexed revision. Documents with
-parse failures are omitted with a `scope_coverage` warning. Without `--body`, search
-continues to match id, title and tags.
-
 - **Build artifact**: `graph.json` — a derived snapshot of the Markdown sources
-- **Queries** read `graph.json` without rebuilding. By default they verify configuration, scope membership and content, refusing drift with `GRAPH_OUTDATED`. `--allow-stale` explicitly permits snapshot reads with membership-only verification and drift advisories; missed lookups still probe content. `query node --with-body` and `query search --body` read revision-checked bodies. unresolved-edge checks additionally probe the filesystem
+- **Queries** read `graph.json` without rebuilding. By default they verify configuration, scope membership and content, refusing drift with `GRAPH_OUTDATED`. `--allow-stale` explicitly permits snapshot reads with membership-only verification and drift advisories; missed lookups still probe content. `query node --with-body` reads revision-checked bodies. unresolved-edge checks additionally probe the filesystem
 - **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build
 
 Snapshot queries include envelope `snapshot` with `verification` (`membership`,
@@ -445,9 +439,6 @@ schema yields `GRAPH_OUTDATED` with the recorded and supported versions; run
 `nodex build --full` in that project to regenerate it. `--allow-stale` does not
 bypass schema compatibility. Queries never rebuild snapshots automatically.
 
-Body search accepts `--max-matches N` across documents and `--max-line-chars N`
-per line. Results carry `match_total`, optional `match_returned` when capped, and
-`truncated: true` on shortened lines. Limits bound output, not revision checks.
 For hooks and concurrent invocations, global `--jobs N` limits parallel workers
 per process; otherwise Rayon uses `RAYON_NUM_THREADS` or available CPUs.
 `check --content` reuses unchanged parses within the invocation without persisting
@@ -458,7 +449,6 @@ proposals or replacing content-hash validation.
 | Query | Result | Algorithm |
 |---|---|---|
 | `search <kw>` | id/title/tag matches with score | Substring match, scored |
-| `search <kw> --body` | Matching body lines, sorted by id | Revision-checked literal substring search |
 | `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking |
 | `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup |
 | `chain <id>` | Supersession chain | Full lineage from any member, oldest → newest |
@@ -580,12 +570,12 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `nodex rename <old> <new> [--dry-run]` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — but only for a *tracked* source; an untracked file (outside scope, or conditionally excluded) gets a plain guarded move with no gate, id anchoring, or rewriting. A source spelling the filesystem aliases onto a tracked document (letter case, Unicode normalization) is refused with the canonical spelling. A referencing doc whose body is immutability-locked is skipped with a warning instead of defaced — frozen history keeps its original spelling. Every reference the move leaves something to say about is named once: one it declined to repoint (it will dangle), and one it left standing that now names somebody else — the second is the only report a valid-but-changed graph gets. `--dry-run` reports the same result as `completion: planned` without writing |
 | `nodex retarget <old-id> <new-id> [--supersede] [--dry-run]` | Repoint resolved references, including Markdown paths, onto `<new-id>`; the successor doc is skipped so nothing there names itself, and it reports the predecessor references it kept — every one but `supersedes`, which is the succession record. A reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused up front, and a doc locked by `body_immutable` — or by a `frontmatter_immutable` block covering a relation field — is skipped with a warning instead of rewritten. `--supersede` composes the lifecycle change in the guarded proposal. `--dry-run` reports the planned result without writing |
 | `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | Create new document with valid frontmatter — no prior `nodex build` needed (the before-graph is built live from the working tree). `--body` supplies the markdown body (same SOURCE grammar as `check --content`); `--field` supplies frontmatter pairs (value is YAML) that feed the cross_field fixpoint. Supplying either engages the strict gate: an Error-severity check violation the document introduces refuses with `CONTENT_VIOLATIONS`; default-only scaffolds write with advisories. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
-| `nodex query search <keyword> [--body [--max-matches N] [--max-line-chars N]] [--status x,y] [--limit N]` | id/title/tag matches ranked by score, or revision-checked body lines sorted by id with `--body` |
+| `nodex query search <keyword> [--status x,y] [--limit N]` | id/title/tag matches ranked by score; body text is the `query nodes --body-contains` filter |
 | `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
 | `nodex query chain <id>` | Full supersession lineage from any member (oldest → newest) |
 | `nodex query orphans [--limit N]` | Live nodes no other document's record names — zero external incoming edges, and no predecessor naming it as `superseded_by` (the one authored pointer the graph folds into an edge the other way) — outside `orphan_ok_kinds`, per-node `orphan_ok` and `orphan_grace_days` (self-links don't count); the same population the `orphan` rule guards |
 | `nodex query stale [--limit N]` | Active docs whose `reviewed` date is `stale_days` or more days old (a doc with no `reviewed` is not listed); without `stale_days` it lists nothing and carries `threshold_undeclared` |
-| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--missing F1,F2] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). Empty filter returns every node in id order. `--where field=value` (repeatable) narrows by exact field equality over the scalar fields of the same vocabulary as `--fields` (`path` included; a collection built-in like `tags` is rejected — use `--tag`), matched with the same read as a `cross_field` `when` predicate. `--fields` projects the result: the named identity-spine fields (`id,title,kind,status,path`) in place, and any project-declared frontmatter field (other built-ins, `attrs` keys) under a nested `attrs` object — so an agent pulls a document's own frontmatter in one listing instead of reparsing files; an undeclared field is a `CONFIG_ERROR`. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
+| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--missing F1,F2] [--body-contains TEXT] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). `--body-contains` keeps documents whose body contains TEXT (case-insensitive), read at the indexed revision. Empty filter returns every node in id order. `--where field=value` (repeatable) narrows by exact field equality over the scalar fields of the same vocabulary as `--fields` (`path` included; a collection built-in like `tags` is rejected — use `--tag`), matched with the same read as a `cross_field` `when` predicate. `--fields` projects the result: the named identity-spine fields (`id,title,kind,status,path`) in place, and any project-declared frontmatter field (other built-ins, `attrs` keys) under a nested `attrs` object — so an agent pulls a document's own frontmatter in one listing instead of reparsing files; an undeclared field is a `CONFIG_ERROR`. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
 | `nodex query node <id> \| --path <file> [--with-body [--body-lines START:END]]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
 | `nodex query covered-by <path>` | Docs whose `covers:` frontmatter names this path or a directory holding it, the reach git drift measures. The declaring value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`; the `<path>` argument is a needle with no frame, so `./`, `..` and `\` in it normalise away |
 | `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules + per-rule coverage. Resolves `rules.immutable_baseline` exactly as a default `check`, so immutability violations surface here without `--since`. The typed listings and the violations are two views of one set of findings: `orphans` and `stale` each carry a gate record in `violations` (`orphan`, `stale_review`), and a finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions, and `by_category` keys each counted finding by the rule that found it. Unresolved warning and error findings follow the same rule-based counting; info rows are reported under their policy name outside `total` |
@@ -601,7 +591,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `nodex export rules` | Registered-rules manifest — every rule the current config registers, with `id`, `severity`, `description`, `diff_aware` / `judges_steps` and a per-rule `params` payload (a registered rule can still report itself in `skipped_rules` when it runs) |
 | `nodex export envelope-schema [--inline-refs]` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers; `--inline-refs` emits each per-command schema fully self-contained (no `$ref`/`$defs`) for `$ref`-naive generators |
 | `nodex export config` | Resolved document-locating surface: scope, output, parser, scaffold templates, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at that flow's `initial`) |
-| `nodex export commands` | The authoritative list of leaves: every leaf's `path` tokens, its `per_command` schema key, its positionals (name, required) and flag-selected payload modes (e.g. `query.search-body`); flags themselves are in `--help` |
+| `nodex export commands` | The authoritative list of leaves: every leaf's `path` tokens, its `per_command` schema key, and its positionals (name, required); flags themselves are in `--help` |
 | `nodex export diagnostics` | Error-code and exit-code vocabularies — the closed sets of envelope `error.code` values (each tagged `core`/`cli` origin) and advisory `warnings[].code` values, plus the `0`/`1`/`2` exit-code contract, so a consumer codegens an exhaustive error enum instead of hard-coding it from prose |
 
 ### Creation and ranking
@@ -832,7 +822,7 @@ nodex export enums                          # kinds + statuses + per-field enums
 nodex export rules                          # active rules (built-in + config-driven) with `params`
 nodex export envelope-schema [--inline-refs]  # JSON Schema for every CLI envelope shape (typed-codegen contract)
 nodex export config                         # resolved scope / output / parser / scaffold / identity surface + fallbacks
-nodex export commands                       # every leaf, its positionals and payload modes (flags: --help)
+nodex export commands                       # every leaf and its positionals (flags: --help)
 nodex export diagnostics                     # error-code + warning-code + exit-code vocabularies (closed sets, for codegen)
 ```
 

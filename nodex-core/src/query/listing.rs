@@ -12,7 +12,9 @@
 //! - `find_nodes` here is the predicate listing — every result matches
 //!   every named predicate, no ranking, no implicit policy. The spec
 //!   is a pure predicate (`NodeFilter`); presentation capping
-//!   (`--limit`) is the CLI envelope's concern, not the query's
+//!   (`--limit`) is the CLI envelope's concern, not the query's.
+//!   [`find_nodes_containing`] narrows the same listing by body text,
+//!   which the graph does not hold, so it reads each candidate's file
 //!
 //! Every graph CLI has this primitive (SQL `SELECT WHERE`, Cypher
 //! `MATCH (n) WHERE`, kubectl `get` with `--field-selector`). Keeping
@@ -138,6 +140,46 @@ pub fn find_nodes_projected(
     spine_fields: &[String],
     extra_fields: &[String],
 ) -> Vec<NodeListingEntry> {
+    matching(graph, filter)
+        .into_iter()
+        .map(|n| NodeListingEntry::project(n, spine_fields, extra_fields))
+        .collect()
+}
+
+/// [`find_nodes_projected`] narrowed to the documents whose canonical body
+/// contains `text`, compared case-insensitively. Each candidate is read at the
+/// revision the snapshot indexed ([`crate::Snapshot::body`]), so a document
+/// changed since the build refuses the answer instead of being searched as it
+/// now reads.
+pub fn find_nodes_containing(
+    snapshot: &crate::Snapshot,
+    root: &std::path::Path,
+    filter: &NodeFilter,
+    text: &str,
+    spine_fields: &[String],
+    extra_fields: &[String],
+) -> crate::Result<Vec<NodeListingEntry>> {
+    use rayon::prelude::*;
+    let needle = text.to_lowercase();
+    let candidates = matching(snapshot.graph(), filter);
+    let contains: Vec<bool> = candidates
+        .par_iter()
+        .map(|node| {
+            snapshot
+                .body(root, &node.id)
+                .map(|body| body.to_lowercase().contains(&needle))
+        })
+        .collect::<crate::Result<_>>()?;
+    Ok(candidates
+        .into_iter()
+        .zip(contains)
+        .filter(|(_, contains)| *contains)
+        .map(|(node, _)| NodeListingEntry::project(node, spine_fields, extra_fields))
+        .collect())
+}
+
+/// Every node `filter` selects, sorted by id.
+fn matching<'g>(graph: &'g Graph, filter: &NodeFilter) -> Vec<&'g crate::model::Node> {
     let mut matched: Vec<&crate::model::Node> = graph
         .nodes()
         .values()
@@ -145,9 +187,6 @@ pub fn find_nodes_projected(
         .collect();
     matched.sort_by(|a, b| a.id.cmp(&b.id));
     matched
-        .into_iter()
-        .map(|n| NodeListingEntry::project(n, spine_fields, extra_fields))
-        .collect()
 }
 
 #[cfg(test)]

@@ -51,6 +51,9 @@ Before treating an empty answer or green check as complete, inspect
 Coverage is measured before report narrowing; `unjudged` means selected but not
 judged, not necessarily a broken document. Details: [check](reference/commands.md#check).
 
+To find governed documents by their text, use `nodex query nodes --body-contains
+"<text>" --status active`; superseded records stay out. It lists documents, not lines.
+
 Similarity selects positive title-token, tag and graph-neighbour overlap. Kind,
 status and exact parent-directory filters narrow candidates before ranking.
 No result proves semantic duplication or its absence. Read candidates before

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use std::path::Path;
 
-use nodex_core::export::{CommandManifestEntry, CommandMode, CommandsManifest, PositionalEntry};
+use nodex_core::export::{CommandManifestEntry, CommandsManifest, PositionalEntry};
 
 use crate::format::{Envelope, emit_read, print_json};
 
@@ -30,16 +30,6 @@ pub enum ExportCommand {
     /// Emit the error-code and exit-code vocabularies (closed sets, for codegen)
     Diagnostics,
 }
-
-/// Flag-selected alternate payload shapes: `(leaf schema key, mode
-/// schema key, long flags selecting the mode)`. clap cannot express
-/// "these flags switch the leaf to a second payload schema", so the
-/// knowledge lives in exactly this table — published through the
-/// commands manifest and locked by the
-/// `every_cli_leaf_has_a_per_command_schema` bijection test (every
-/// flag must exist on its leaf; every schema key must exist in the
-/// envelope-schema registry).
-const FLAG_MODES: &[(&str, &str, &[&str])] = &[("query.search", "query.search-body", &["body"])];
 
 pub fn run(root: &Path, cmd: ExportCommand, pretty: bool) -> Result<()> {
     // `envelope-schema`, `commands`, and `diagnostics` are pure
@@ -123,14 +113,6 @@ fn collect_leaves(
 
 fn leaf_entry(leaf: &clap::Command, path: &[String]) -> CommandManifestEntry {
     let schema = path.join(".");
-    let modes = FLAG_MODES
-        .iter()
-        .filter(|(owner, _, _)| *owner == schema)
-        .map(|(_, mode_schema, flags)| CommandMode {
-            schema: (*mode_schema).to_string(),
-            flags: flags.iter().map(|f| (*f).to_string()).collect(),
-        })
-        .collect();
     let positionals = leaf
         .get_positionals()
         .map(|arg| PositionalEntry {
@@ -141,7 +123,6 @@ fn leaf_entry(leaf: &clap::Command, path: &[String]) -> CommandManifestEntry {
     CommandManifestEntry {
         path: path.to_vec(),
         schema,
-        modes,
         positionals,
     }
 }

@@ -34,13 +34,7 @@ paths:
    any CLI leaf without a schema and any schema key without a leaf,
    so the typed-codegen contract cannot drift from the command
    surface.
-6. A second flag-selected response shape (one leaf, two payload
-   schemas — e.g. `query search --body` → `query.search-body`)
-   must additionally be declared in `commands/export.rs::FLAG_MODES`:
-   the table feeds both the published commands manifest and the
-   bijection test, which verifies the declared flags exist on the
-   leaf.
-7. Close the leaf into the tests that enumerate the command surface,
+6. Close the leaf into the tests that enumerate the command surface,
    each of which fails naming what is missing: `SKILL.md` names it, and
    any new error or warning code in its `published:` lists
    (`the_skill_names_every_published_vocabulary`); the behaviour sweep

@@ -61,30 +61,21 @@ content drift refuses with `GRAPH_OUTDATED`; probe I/O errors remain `IO_ERROR`.
 No rebuild is performed. Files may change after the probe.
 
 ```bash
-nodex query search <kw> [--body [--max-matches N] [--max-line-chars N]] [--status x,y] [--limit N]
+nodex query search <kw> [--status x,y] [--limit N]
 ```
-id / title / tags are score-then-id ranked. `--body` searches revision-checked
-canonical body lines instead and sorts matching documents by id.
-
-`query search <keyword> --body` selects the `query.search-body` envelope schema:
-`{items, total, returned?, match_total, match_returned?}`, with each item carrying
-the node spine and `matches: [{line, text, truncated?}]`. Lines are one-based within the canonical body, code blocks
-included. Results sort by id; `--status` selects indexed statuses and `--limit`
-caps documents. `--max-matches` caps returned lines across documents;
-`--max-line-chars` caps each line in Unicode characters and sets `truncated: true`.
-`match_total` counts all matching lines before output limits, and `match_returned`
-appears when fewer are returned. Limits retain the id/line-order prefix and never
-stop validation. Every selected readable node must match its indexed revision,
-including nodes outside the returned cap. Parse failures are disclosed as omitted.
+id / title / tags are score-then-id ranked. Document text is a `query nodes`
+filter, `--body-contains`.
 
 ```bash
 nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags]
-                  [--where F=V ...] [--missing F1,F2] [--limit N] [--fields id,title,...]
+                  [--where F=V ...] [--missing F1,F2] [--body-contains TEXT]
+                  [--limit N] [--fields id,title,...]
 ```
 Generic listing: AND across categories, OR within. Empty filter = all nodes in id order. Tag matching is case-insensitive.
 `--fields` projects: spine fields (`id`, `title`, `kind`, `status`, `path`) in place; any project-declared field (other built-ins, `attrs` keys) under a nested `attrs` object. An undeclared field is `CONFIG_ERROR`.
 `--missing F1,F2` selects documents missing every named field, using schema presence semantics; nonempty collections, objects, `false` and `0` are present.
 `--where field=value` (repeatable) narrows by exact equality over the same vocabulary's scalar fields, `path` included. A collection built-in like `tags` is rejected — use `--tag`.
+`--body-contains TEXT` keeps the documents whose body (frontmatter excluded) contains TEXT, case-insensitively. It reads each document the other filters select at the revision the snapshot indexed, so a document changed since the build refuses with `GRAPH_OUTDATED`, `--allow-stale` included. It answers which documents; read or search those files for the lines.
 
 ```bash
 nodex query node <id> [--with-body [--body-lines START:END]]
@@ -332,7 +323,7 @@ External lints consume these instead of re-parsing `nodex.toml`. `envelope-schem
 
 `export config` shows post-default resolved values (an omitted `scope.include` reads `["**/*.md"]`) plus the code-level fallbacks `identity.fallback_kind` / `identity.fallback_id_template` and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at the flow's `initial`). Derive artifact paths from `data.output.dir` instead of hardcoding `_index`.
 
-`export commands` entries carry `{path, schema}` plus `modes` / `positionals` only when applicable: `schema` is the `per_command` envelope-schema key, `modes` names flag-selected alternate shapes (`query.search-body` behind `--body`).
+`export commands` entries carry `{path, schema}` plus `positionals` when the leaf takes any: `schema` is the `per_command` envelope-schema key.
 
 `export rules` `RuleManifestEntry`: `{id, source: builtin|config, severity, description, diff_aware, judges_steps, params}`. `diff_aware` needs a baseline diff to fire and declines into `skipped_rules` without one; `judges_steps` reads git's history a commit at a time. A lock can require both. `params` carries the rule's configured values and is deliberately free-form, so adding a built-in does not reshape the manifest.
 

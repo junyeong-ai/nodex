@@ -66,7 +66,6 @@ const PER_FIXTURE: &[(&str, &[&str])] = &[
     ("graph", &["export", "envelope-schema"]),
     ("graph", &["export", "commands"]),
     ("graph", &["export", "diagnostics"]),
-    ("graph", &["query", "search", "beta", "--body"]),
     ("minimal", &["query", "node", "guide-overview"]),
     ("minimal", &["query", "backlinks", "adr-storage"]),
     ("minimal", &["query", "neighborhood", "guide-overview"]),
@@ -81,6 +80,7 @@ const PER_FIXTURE: &[(&str, &[&str])] = &[
     ("graph", &["query", "dependents", "adr-beta"]),
     ("graph", &["query", "similar", "--id", "adr-alpha"]),
     ("graph", &["query", "search", "beta"]),
+    ("graph", &["query", "nodes", "--body-contains", "decision"]),
     ("graph", &["query", "covered-by", "nodex.toml"]),
     (
         "graph",

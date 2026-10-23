@@ -57,14 +57,6 @@ exit: 0
         "schema": "impact"
       },
       {
-        "modes": [
-          {
-            "flags": [
-              "body"
-            ],
-            "schema": "query.search-body"
-          }
-        ],
         "path": [
           "query",
           "search"
