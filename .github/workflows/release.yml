@@ -365,10 +365,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ needs.verify_version.outputs.version }}
         run: |
-          gh release create "$TAG" release/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --generate-notes
+          # A re-run after a publish that failed partway finds the release
+          # already created and replaces its assets.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --generate-notes
+          fi
 
   install_test:
     name: Install test
