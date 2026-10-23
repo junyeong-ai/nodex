@@ -1,9 +1,11 @@
 //! The immutability baseline: how a ref's project is located and read, the
 //! same way by `check` and by the write seams.
 
+#[cfg(unix)]
+use crate::support::envelope_of;
 use crate::support::{
-    LOCKED_PROJECT_CONFIG, envelope_of, git_runner, init_project, nodex, run_envelope, run_json,
-    scratch, snapshot_lock_project, walk_entries, warning_msg, write_doc,
+    LOCKED_PROJECT_CONFIG, git_runner, init_project, nodex, run_envelope, run_json, scratch,
+    snapshot_lock_project, walk_entries, warning_msg, write_doc,
 };
 use assert_cmd::Command;
 use serde_json::Value;
