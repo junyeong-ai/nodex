@@ -65,6 +65,7 @@ const SHARED: &[&[&str]] = &[
 const PER_FIXTURE: &[(&str, &[&str])] = &[
     ("graph", &["export", "envelope-schema"]),
     ("graph", &["export", "commands"]),
+    ("graph", &["export", "diagnostics"]),
     ("graph", &["query", "search", "beta", "--body"]),
     ("minimal", &["query", "node", "guide-overview"]),
     ("minimal", &["query", "backlinks", "adr-storage"]),
@@ -133,10 +134,6 @@ const EXEMPT: &[(&[&str], &str)] = &[
         &["lifecycle", "review"],
         "mutates frontmatter, as `rename` does",
     ),
-    (
-        &["export", "diagnostics"],
-        "reports the host toolchain, so its answer is a property of the machine rather than of the graph",
-    ),
 ];
 
 fn corpus_root() -> PathBuf {
@@ -165,33 +162,50 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-/// Stand-in for the staging directory in snapshot bodies. The path is a
-/// fresh tempdir per observation, so it is the one part of an envelope
-/// that is genuinely different every run; pinning it would pin the
-/// filesystem rather than the behaviour. Everything else is pinned
-/// verbatim — this is the only normalisation the sweep performs.
+/// Stand-ins for the two values in a snapshot body that belong to the run
+/// rather than to the behaviour: the staging directory, a fresh tempdir per
+/// observation, and the binary's version, which every release changes.
+/// Everything else is pinned verbatim.
 const STAGED: &str = "<staged>";
+const VERSION: &str = "<version>";
 
-/// Run one command against a staged fixture and return its envelope as
-/// the snapshot body: exit code, then pretty JSON so a diff lands on the
-/// field that changed rather than on one long line.
-fn observe(dir: &Path, argv: &[&str]) -> String {
+/// One command's answer: the snapshot body, and the code of the error
+/// envelope the command printed, if it printed one.
+struct Observation {
+    body: String,
+    error: Option<String>,
+}
+
+/// Run one command against a staged fixture. The snapshot body is the exit
+/// code, then pretty JSON so a diff lands on the field that changed rather
+/// than on one long line.
+fn observe(dir: &Path, argv: &[&str]) -> Observation {
     let mut cmd = Command::cargo_bin("nodex").expect("nodex binary");
     cmd.arg("-C").arg(dir).arg("--today").arg(TODAY).args(argv);
     let out = cmd.output().expect("command ran");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let body = match serde_json::from_str::<Value>(stdout.trim()) {
-        Ok(v) => serde_json::to_string_pretty(&v).expect("re-encode"),
+    let envelope = serde_json::from_str::<Value>(stdout.trim()).ok();
+    let error = envelope
+        .as_ref()
+        .and_then(|v| v.pointer("/error/code"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let body = match &envelope {
+        Some(v) => serde_json::to_string_pretty(v).expect("re-encode"),
         // Not JSON: the envelope contract is itself the thing that broke,
         // so pin the raw bytes rather than hiding them behind a parse error.
-        Err(_) => stdout.into_owned(),
+        None => stdout.into_owned(),
     };
     let body = normalise(&body, dir);
-    format!("exit: {}\n{body}\n", out.status.code().unwrap_or(-1))
+    Observation {
+        body: format!("exit: {}\n{body}\n", out.status.code().unwrap_or(-1)),
+        error,
+    }
 }
 
 /// Replace the staging path — including the symlink-resolved spelling
-/// macOS hands back for `/var` — with [`STAGED`].
+/// macOS hands back for `/var` — with [`STAGED`], and the version string
+/// with [`VERSION`].
 fn normalise(body: &str, dir: &Path) -> String {
     let mut out = body.to_string();
     let mut locations = vec![dir.to_string_lossy().into_owned()];
@@ -214,7 +228,10 @@ fn normalise(body: &str, dir: &Path) -> String {
     for s in spellings {
         out = out.replace(&s, STAGED);
     }
-    out
+    out.replace(
+        &format!("\"{}\"", env!("CARGO_PKG_VERSION")),
+        &format!("\"{VERSION}\""),
+    )
 }
 
 #[test]
@@ -238,14 +255,18 @@ fn behaviour_sweep() {
 
         for argv in invocations_for(fixture) {
             let name = format!("{}__{}", fixture, argv.join("_").replace(['-', '/'], "_"));
-            let observed = observe(dir.path(), argv);
-            assert!(
-                !observed.contains("\"INVALID_ARGUMENT\""),
+            let Observation {
+                body: observed,
+                error,
+            } = observe(dir.path(), argv);
+            assert_ne!(
+                error.as_deref(),
+                Some("INVALID_ARGUMENT"),
                 "{name} pins a clap usage error — the argv is malformed, which is a \
                  property of this file rather than of the fixture: {observed}"
             );
             assert!(
-                !observed.contains("\"NOT_FOUND\"") || argv.contains(&"no-such-id"),
+                error.as_deref() != Some("NOT_FOUND") || argv.contains(&"no-such-id"),
                 "{name} pins a lookup miss — the subject it names is not in this \
                  fixture, so the pin records the miss instead of the command: {observed}"
             );

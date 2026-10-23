@@ -1,0 +1,114 @@
+---
+source: nodex-cli/tests/behaviour.rs
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "error_codes": [
+      {
+        "code": "ALREADY_EXISTS",
+        "origin": "core"
+      },
+      {
+        "code": "CONFIG_ERROR",
+        "origin": "core"
+      },
+      {
+        "code": "CONTENT_VIOLATIONS",
+        "origin": "core"
+      },
+      {
+        "code": "CYCLE_DETECTED",
+        "origin": "core"
+      },
+      {
+        "code": "DUPLICATE_ID",
+        "origin": "core"
+      },
+      {
+        "code": "GIT_ERROR",
+        "origin": "core"
+      },
+      {
+        "code": "GRAPH_MISSING",
+        "origin": "core"
+      },
+      {
+        "code": "GRAPH_OUTDATED",
+        "origin": "core"
+      },
+      {
+        "code": "INTERNAL_ERROR",
+        "origin": "cli"
+      },
+      {
+        "code": "INVALID_ARGUMENT",
+        "origin": "cli"
+      },
+      {
+        "code": "INVALID_TRANSITION",
+        "origin": "core"
+      },
+      {
+        "code": "IO_ERROR",
+        "origin": "core"
+      },
+      {
+        "code": "NOT_FOUND",
+        "origin": "core"
+      },
+      {
+        "code": "PARSE_ERROR",
+        "origin": "core"
+      },
+      {
+        "code": "PATH_ESCAPES_ROOT",
+        "origin": "core"
+      },
+      {
+        "code": "SYMLINK_TARGET",
+        "origin": "core"
+      },
+      {
+        "code": "VERSION_MISMATCH",
+        "origin": "core"
+      },
+      {
+        "code": "WRITE_CONFLICT",
+        "origin": "core"
+      }
+    ],
+    "exit_codes": [
+      {
+        "code": 0,
+        "meaning": "completed without a command error or batch write failure; policy holds and scope advisories may remain"
+      },
+      {
+        "code": 1,
+        "meaning": "check found error-severity violations"
+      },
+      {
+        "code": 2,
+        "meaning": "error envelope (config, parse, IO, version, CLI-arg, runtime), batch write failures in a result envelope, or output stdout would not take (a pipe closed early, a full disk)"
+      }
+    ],
+    "version": "<version>",
+    "warning_codes": [
+      "baseline_inert",
+      "binary_compat",
+      "build_recommended",
+      "cache",
+      "document_evicted",
+      "file_skipped",
+      "gate_suppression",
+      "history_unread",
+      "ranking_unscored",
+      "reference_kept",
+      "scope_coverage",
+      "snapshot_divergence",
+      "threshold_undeclared"
+    ]
+  },
+  "ok": true
+}
