@@ -6569,7 +6569,7 @@ exit: 0
         "type": "object"
       }
     },
-    "version": "0.60.0"
+    "version": "<version>"
   },
   "ok": true
 }
