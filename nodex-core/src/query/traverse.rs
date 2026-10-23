@@ -210,6 +210,40 @@ mod tests {
         let fork = chain_of(&["a", "x", "y"], &[("x", "a"), ("y", "a")], "a");
         assert_eq!(fork, vec!["a", "x", "y"], "fork keeps both tips");
     }
+
+    #[test]
+    fn a_directory_covers_the_paths_beneath_it_by_whole_components() {
+        let mut doc = node("doc");
+        doc.path = PathBuf::from("docs/doc.md");
+        let mut nodes = IndexMap::new();
+        nodes.insert("doc".to_string(), doc);
+        let edges = ["src/auth/", "lib/one.rs"]
+            .into_iter()
+            .map(|raw| Edge {
+                references: Vec::new(),
+                source: "doc".into(),
+                target: ResolvedTarget::unresolved(raw, crate::model::UnresolvedCause::Missing),
+                relation: "covers".into(),
+                location: "frontmatter".into(),
+            })
+            .collect();
+        let graph = Graph::new(
+            nodes,
+            edges,
+            vec![],
+            vec![],
+            vec![],
+            crate::model::GraphMeta::default(),
+        );
+        let covered = |needle: &str| !find_covered_by(&graph, needle, &[]).is_empty();
+
+        assert!(covered("src/auth"), "the directory itself");
+        assert!(covered("src/auth/login.rs"), "a file beneath it");
+        assert!(covered("src/auth/oauth/token.rs"), "any depth beneath it");
+        assert!(covered("lib/one.rs"), "a covered file");
+        assert!(!covered("src/authz.rs"), "a sibling sharing the prefix");
+        assert!(!covered("src"), "the directory holding the covered one");
+    }
 }
 
 /// Find all nodes that link TO the given node — "backlinks" in the
@@ -452,7 +486,9 @@ pub struct OutgoingEdgeRef {
 
 /// Reverse lookup: which doc nodes cover the given source-code path?
 /// Reads `covers` edges from the graph (frontmatter-declared coverage
-/// of out-of-graph artefacts).
+/// of out-of-graph artefacts). An entry covers the path it names and,
+/// when that path is a directory, everything beneath it — the reach git
+/// drift measures for the same entry.
 ///
 /// Both the query input and each `covers` entry are run through the
 /// same path normalisation (forward slashes, leading `./` stripped,
@@ -474,7 +510,10 @@ pub fn find_covered_by(
         .filter_map(|edge| Some((edge, graph.node(&edge.source)?)))
         .filter(|(edge, source)| match &edge.target {
             ResolvedTarget::Resolved { id } => graph.node(id).is_some_and(|target| {
-                normalize_query_path(&crate::path_guard::forward_string(&target.path)) == needle
+                reaches(
+                    &normalize_query_path(&crate::path_guard::forward_string(&target.path)),
+                    &needle,
+                )
             }),
             // What the covering document's own text could name, by the
             // ladder the build binds with — the frame a `covers` value
@@ -489,7 +528,8 @@ pub fn find_covered_by(
                     extensions,
                     crate::model::edge::is_document_ref_relation(&edge.relation),
                 )
-                .contains(&needle)
+                .iter()
+                .any(|covered| reaches(covered, &needle))
             }
         })
         .map(|(edge, source)| CoveredByEntry {
@@ -497,6 +537,17 @@ pub fn find_covered_by(
             relation: edge.relation.clone(),
         })
         .collect()
+}
+
+/// Whether a `covers` entry naming `covered` reaches `needle`: the path
+/// itself, or one inside it. Compared by whole components, so `src/auth`
+/// does not reach `src/authz.rs`.
+fn reaches(covered: &str, needle: &str) -> bool {
+    match needle.strip_prefix(covered) {
+        Some("") => true,
+        Some(rest) => !covered.is_empty() && rest.starts_with('/'),
+        None => false,
+    }
 }
 
 /// Canonicalise the *needle* for equality comparison: forward slashes,

@@ -460,7 +460,7 @@ flowchart LR
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) |
 | `dependents <id>` | 의존 사슬이 그 노드에 닿는 모든 노드 | incoming edge 역방향 BFS, `--depth` / `--relations` 로 제한 |
 | `annotations` | 블록·키별로 묶은 본문 마커 | 추출된 annotation 선형 스캔 |
-| `covered-by <path>` | `covers:` 선언 문서 | linear scan |
+| `covered-by <path>` | 이 경로나 이 경로를 담은 디렉터리를 `covers:`로 선언한 문서 | linear scan |
 | `issues` | orphans + stale + unresolved + violations + skipped_rules + rule_coverage | 위 + 해석된 `rules.immutable_baseline` 아래에서의 `check` 합성 |
 
 **인접 인덱스 노트**: resolved edge 만 인덱싱됩니다. `Unresolved { raw, cause }` edge 는 그래프에 존재하지만 (`query issues` 로 나열 가능) `incoming_indices` 에는 나타나지 않습니다.
@@ -569,7 +569,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query stale [--limit N]` | `reviewed` 가 `stale_days` 일 이상 지난 active 문서 (`reviewed` 없는 문서는 나오지 않음); `stale_days` 가 없으면 아무것도 나열하지 않고 `threshold_undeclared` 를 실음 |
 | `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--missing F1,F2] [--limit N] [--fields id,title,...]` | 모든 술어를 만족하는 노드 (카테고리간 AND, 카테고리내 OR). 빈 필터 = 전체 노드. `--where field=value` (반복 가능) 는 `--fields` 와 같은 vocabulary 의 scalar 필드에 대해 정확 일치로 좁힘 (`path` 포함; `tags` 같은 collection built-in 은 거부 — `--tag` 사용) — `cross_field` `when` predicate 와 동일한 read 로 매칭. `--fields` 는 결과를 projection: identity-spine 필드(`id,title,kind,status,path`)는 그 자리에, 프로젝트가 선언한 frontmatter 필드(기타 built-in, `attrs` 키)는 중첩 `attrs` 객체로 — 에이전트가 파일 재파싱 없이 문서 자체 frontmatter 를 한 번에 조회. 미선언 필드는 `CONFIG_ERROR`. 태그 매칭은 대소문자 무시 (모든 tag-소비 surface 동일 fold) |
 | `nodex query node <id> \| --path <file> [--with-body [--body-lines START:END]]` | 노드 상세 + incoming + outgoing. `--path` 는 editor / IDE 통합을 위한 역참조 — `./`, 절대경로(프로젝트 루트 하위)도 normalise. `--with-body` 는 색인된 리비전과 일치하는지 확인한 뒤 canonical body 텍스트를 첨부 (body 없는 문서는 `""`, 미요청 시 키 부재) — agent 의 별도 파일 read 를 절약 |
-| `nodex query covered-by <path>` | `covers:` 로 선언한 문서. 선언 값은 빌드와 같은 사다리로 읽으므로 `docs/x.md` 의 `covers: ["./src/a.rs"]` 는 `docs/src/a.rs` 를 가리킴; 인자로 주는 `<path>` 는 프레임이 없는 탐색어라 `./`, `..`, `\` 는 정규화됨 |
+| `nodex query covered-by <path>` | 이 경로나 이 경로를 담은 디렉터리를 `covers:`로 선언한 문서로, git drift가 측정하는 범위와 같음. 선언 값은 빌드와 같은 사다리로 읽으므로 `docs/x.md` 의 `covers: ["./src/a.rs"]` 는 `docs/src/a.rs` 를 가리킴; 인자로 주는 `<path>` 는 프레임이 없는 탐색어라 `./`, `..`, `\` 는 정규화됨 |
 | `nodex query issues` | orphans + stale + unresolved + violations + skipped_rules + rule_coverage 통합. 기본 `check` 와 동일하게 `rules.immutable_baseline` 을 해석하므로 immutability 위반이 `--since` 없이도 표면화. 타입 리스팅과 violations 는 서로 다른 두 집합이 아니라 하나의 finding 집합에 대한 두 시선이다 — `orphans` 와 `stale` 은 각각 `violations` 안에 게이트 기록(`orphan`, `stale_review`)을 갖고, 게이트 기록이 있는 finding 은 그 violation 을 통해 **한 번만** 계상된다. 따라서 `summary.total` 은 보고서가 몇 번 언급했는지가 아니라 문제의 개수이고, `by_category` 는 계상된 finding 을 찾아낸 rule 로 키잉한다. 미해결 참조의 warning·error도 rule을 통해 집계하며 info는 policy row 이름으로 `total` 밖에 보고한다 |
 | `nodex query similar [--id <id> \| --title "<t>"] [--kind K --parent-dir D --status S --limit N --min-score S]` | 제목·태그·그래프 이웃이 실제로 겹치는 후보만 반환한다. `--kind`, `--status`, `--parent-dir`는 점수와 독립적인 후보 필터이며 parent-dir는 정확한 부모 경로다. 새 문서의 태그는 `--title`과 `--tags a,b`로 제공한다. 컴포넌트는 타깃에 비교할 집합이 없으면 생략하고 후보의 집합이 없으면 0으로 계산한다. 의미상 중복 여부는 읽고 판단한다. |
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | 최근 윈도우 |
