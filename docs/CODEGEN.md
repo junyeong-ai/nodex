@@ -63,9 +63,9 @@ uv add --dev datamodel-code-generator
 ### Generate
 
 One extraction + one codegen per command you consume; the root model
-name comes from `--class-name`, because every listing schema's own
-`title` is the generic `ItemsEnvelopeShape` and would give each
-command's root model the same name:
+name comes from `--class-name`, because listing schemas share a generic
+`title` (`ItemsEnvelopeShape`, or `DetectionListing` for `orphans` and
+`stale`) that would give their root models the same name:
 
 ```bash
 nodex export envelope-schema > _generated/nodex_envelope_schema.json
@@ -206,7 +206,7 @@ the consuming code:
 project/
 ├── _generated/
 │   ├── README.md                    # "do not edit; regen via just <recipe>"
-│   ├── nodex-envelope-schema.json   # committed: the full export, unmodified (drift reference)
+│   ├── <full export>.json           # committed: the full export, unmodified (drift reference)
 │   ├── <command>.schema.json        # committed: extracted per-command schema
 │   └── <command>.<py|ts>            # committed: codegen output
 ├── scripts/   (Python) | tools/   (TS)
