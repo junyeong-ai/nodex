@@ -202,56 +202,56 @@ impl BaselineBinding {
                  baseline"
             ))
         };
-        let source_state = repository
+        let (source, source_carries) = match repository
             .ref_state(&baseline)
-            .map_err(|e| unreadable(e.to_string()))?;
-        if matches!(source_state, RefState::Unborn) {
-            if requires_history {
-                return Err(unreadable(
-                    "the selected lock policy requires recorded commits".into(),
+            .map_err(|e| unreadable(e.to_string()))?
+        {
+            RefState::Unborn => {
+                if requires_history {
+                    return Err(unreadable(
+                        "the selected lock policy requires recorded commits".into(),
+                    ));
+                }
+                return Ok(Self::inert(
+                    baseline,
+                    "no ref in the repository names a commit, so there is nothing to compare \
+                     against"
+                        .into(),
                 ));
             }
-            return Ok(Self::inert(
-                baseline,
-                "no ref in the repository names a commit, so there is nothing to compare against"
-                    .into(),
-            ));
-        }
-        if matches!(source_state, RefState::Unresolvable) {
-            return Err(unreadable("git resolves no such ref".into()));
-        }
-        let source = repository
-            .commit(&baseline)
-            .map_err(|e| unreadable(e.to_string()))?;
-        let selected = match config.rules.immutable_baseline_mode {
-            crate::config::ImmutableBaselineMode::Ref => source,
+            RefState::Unresolvable => return Err(unreadable("git resolves no such ref".into())),
+            RefState::WithoutProject(commit) => (commit, false),
+            RefState::CarriesProject(commit) => (commit, true),
+        };
+        let (selected, carries) = match config.rules.immutable_baseline_mode {
+            crate::config::ImmutableBaselineMode::Ref => (source, source_carries),
             crate::config::ImmutableBaselineMode::MergeBase => {
                 let head = repository
                     .head()
                     .map_err(|e| unreadable(e.to_string()))?
                     .ok_or_else(|| unreadable("HEAD names no commit".into()))?;
-                repository
+                let base = repository
                     .unique_merge_base(&[head, source])
-                    .map_err(|e| unreadable(e.to_string()))?
+                    .map_err(|e| unreadable(e.to_string()))?;
+                let carries = repository
+                    .carries_project(&base)
+                    .map_err(|e| unreadable(e.to_string()))?;
+                (base, carries)
             }
         };
-        match repository.ref_state(&selected) {
-            Ok(RefState::CarriesProject) => Ok(Self {
-                binding: Binding::Bound {
-                    repository,
-                    baseline: selected,
-                },
-            }),
-            Ok(RefState::WithoutProject) => {
-                let reason = format!(
-                    "selected commit {selected} does not carry {:?}",
-                    crate::path_guard::forward_string(repository.prefix())
-                );
-                Ok(Self::inert(baseline, reason))
-            }
-            Ok(_) => Err(unreadable("the selected commit cannot be read".into())),
-            Err(e) => Err(unreadable(e.to_string())),
+        if !carries {
+            let reason = format!(
+                "selected commit {selected} does not carry {:?}",
+                crate::path_guard::forward_string(repository.prefix())
+            );
+            return Ok(Self::inert(baseline, reason));
         }
+        Ok(Self {
+            binding: Binding::Bound {
+                repository,
+                baseline: selected,
+            },
+        })
     }
 
     fn inert(baseline: String, reason: String) -> Self {
