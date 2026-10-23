@@ -459,7 +459,7 @@ proposals or replacing content-hash validation.
 | `similar` | Score-ranked candidates | Title-token, tag and graph-neighbour Jaccard overlap |
 | `components` | Connected component partition | Undirected BFS, deterministic ordering |
 | `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) |
-| `dependents <id>` | Every node whose dependency chain reaches it | Reverse BFS over incoming edges, bounded by `--depth` / `--relations` |
+| `dependents <id>` | The nodes that reference it, or with `--depth N` every node within N hops | Reverse BFS over incoming edges (default 1 hop), narrowed by `--relations` |
 | `annotations` | Body markers grouped by block and key | Linear scan over extracted annotations |
 | `covered-by <path>` | Docs covering this path or a directory holding it | Linear scan over `covers:` frontmatter |
 | `issues` | Orphans + stale + unresolved + rule violations + skipped rules + rule coverage | Composes the above + `check` under the resolved `rules.immutable_baseline` |
@@ -583,7 +583,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
 | `nodex query components [--limit N]` | Partition the graph into connected components (undirected, largest first) |
 | `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected) |
-| `nodex query dependents <id> [--depth N --relations a,b]` | Transitive reverse traversal — every node that depends on `<id>` |
+| `nodex query dependents <id> [--depth N --relations a,b]` | Reverse traversal — the nodes that depend on `<id>` within N hops (default 1) |
 | `nodex query annotations [--name <name>] [--min-count N] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--name` exact-matches one declared `[[annotations]]` block name (not a glob; unknown name → `CONFIG_ERROR`); `--min-count` keeps only keys with at least N occurrences; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
 | `nodex lifecycle <action> <id> [--to id \| --status s]` | Transition: `supersede --to <new>`, `set --status <s>` (any allowed status), `review` |
 | `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |

@@ -134,7 +134,7 @@ pub(crate) fn run_covered_by(
 pub(crate) fn run_dependents(
     context: &super::QueryContext<'_>,
     id: &str,
-    depth: Option<u32>,
+    depth: u32,
     relations: Vec<String>,
     pretty: bool,
 ) -> Result<()> {
@@ -145,9 +145,7 @@ pub(crate) fn run_dependents(
     // traversal would never expand past the seed and report zero
     // dependents regardless of the corpus, which the operator never
     // asked for.
-    if let Some(d) = depth {
-        reject_zero_u32(d, "--depth")?;
-    }
+    reject_zero_u32(depth, "--depth")?;
     if !relations.is_empty() {
         let known = config.known_relations();
         let unknown: Vec<&str> = relations
@@ -168,7 +166,7 @@ pub(crate) fn run_dependents(
     let report = snapshot.require(
         context.root,
         &config,
-        nodex_core::query::dependents::find_dependents(graph, id, depth, &relations),
+        nodex_core::query::dependents::find_dependents(graph, id, Some(depth), &relations),
     )?;
     context.emit_read_with(report, warnings, &config, pretty);
     Ok(())

@@ -450,7 +450,7 @@ flowchart LR
 | `similar` | 점수 정렬 후보 | 제목 토큰·태그·그래프 이웃의 Jaccard 겹침 |
 | `components` | 연결 컴포넌트 분할 | undirected BFS, 결정적 정렬 |
 | `neighborhood <id>` | N홉 내 노드 | bounded BFS (undirected) |
-| `dependents <id>` | 의존 사슬이 그 노드에 닿는 모든 노드 | incoming edge 역방향 BFS, `--depth` / `--relations` 로 제한 |
+| `dependents <id>` | 그 노드를 참조하는 노드, `--depth N`이면 N홉 안의 모든 노드 | incoming edge 역방향 BFS(기본 1홉), `--relations`로 좁힘 |
 | `annotations` | 블록·키별로 묶은 본문 마커 | 추출된 annotation 선형 스캔 |
 | `covered-by <path>` | 이 경로나 이 경로를 담은 디렉터리를 `covers:`로 선언한 문서 | linear scan |
 | `issues` | orphans + stale + unresolved + violations + skipped_rules + rule_coverage | 위 + 해석된 `rules.immutable_baseline` 아래에서의 `check` 합성 |
@@ -567,7 +567,7 @@ Error code 는 typed `nodex_core::error::Error` 의 `downcast_ref` 로 도출 �
 | `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | 최근 윈도우 |
 | `nodex query components [--limit N]` | 연결 컴포넌트 분할 (undirected, 큰 것부터) |
 | `nodex query neighborhood <id> [--depth N]` | `<id>` 의 N홉 이웃 (undirected) |
-| `nodex query dependents <id> [--depth N --relations a,b]` | `<id>` 에 transitive하게 의존하는 모든 노드 (역방향 traversal) |
+| `nodex query dependents <id> [--depth N --relations a,b]` | `<id>`에 N홉 안에서 의존하는 노드 (역방향 traversal, 기본 1홉) |
 | `nodex query annotations [--name <name>] [--min-count N] [--with-frontmatter f1,f2,...]` | `[[annotations]]` 본문 마커를 capture key 별로 그룹핑; `--name` 은 선언된 `[[annotations]]` 블록 이름과 정확히 일치(글롭 아님; 미지의 이름 → `CONFIG_ERROR`); `--min-count N` 은 N 회 이상 등장한 key 만 유지; `--with-frontmatter` 는 선택한 frontmatter 필드(빌트인 / 프로젝트 선언)를 각 source 에 enrich — consumer 가 파일 재독을 피할 수 있게 함 |
 | `nodex lifecycle <action> <id> [--to id \| --status s]` | 상태 전이: `supersede --to <new>`, `set --status <s>` (프로젝트가 허용하는 모든 status), `review` |
 | `nodex export schema` | 프로젝트 frontmatter 의 JSON Schema (draft 2020-12) |

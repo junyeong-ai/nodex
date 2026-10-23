@@ -18470,7 +18470,7 @@ fn query_annotations_with_frontmatter_rejects_unknown_field() {
 // ─── query dependents ───────────────────────────────────────────────
 
 #[test]
-fn query_dependents_returns_transitive_reverse_chain() {
+fn query_dependents_follows_the_reverse_chain_to_the_depth_asked() {
     let tmp = scratch();
     init_project(tmp.path());
     // c → b → a via `implements` frontmatter. From a's perspective:
@@ -18492,7 +18492,7 @@ fn query_dependents_returns_transitive_reverse_chain() {
     );
     nodex(tmp.path()).arg("build").assert().success();
 
-    let data = run_json(nodex(tmp.path()).args(["query", "dependents", "doc-a"]));
+    let data = run_json(nodex(tmp.path()).args(["query", "dependents", "doc-a", "--depth", "2"]));
     let deps = data["dependents"].as_array().expect("dependents array");
     let by_id: std::collections::HashMap<&str, &Value> = deps
         .iter()
@@ -18507,7 +18507,7 @@ fn query_dependents_returns_transitive_reverse_chain() {
 }
 
 #[test]
-fn query_dependents_depth_bound_stops_expansion() {
+fn query_dependents_names_direct_dependents_unless_asked_for_more_hops() {
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -18527,10 +18527,11 @@ fn query_dependents_depth_bound_stops_expansion() {
     );
     nodex(tmp.path()).arg("build").assert().success();
 
-    let data = run_json(nodex(tmp.path()).args(["query", "dependents", "doc-a", "--depth", "1"]));
+    let data = run_json(nodex(tmp.path()).args(["query", "dependents", "doc-a"]));
+    assert_eq!(data["max_depth"], 1);
     let deps = data["dependents"].as_array().expect("dependents array");
     let ids: Vec<&str> = deps.iter().filter_map(|d| d["id"].as_str()).collect();
-    assert_eq!(ids, vec!["doc-b"], "depth=1 must exclude doc-c");
+    assert_eq!(ids, vec!["doc-b"], "the default must exclude doc-c");
 }
 
 #[test]

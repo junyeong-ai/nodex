@@ -116,13 +116,14 @@ pub enum QueryCommand {
         #[arg(long, default_value_t = 1)]
         min_count: usize,
     },
-    /// Every node whose dependency chain ultimately reaches `<id>`
-    /// (transitive reverse traversal, follows incoming edges only).
+    /// Every node whose dependency chain reaches `<id>` within `--depth`
+    /// hops (reverse traversal, follows incoming edges only).
     Dependents {
         id: String,
-        /// Maximum hops to expand. Omit for unbounded.
-        #[arg(long)]
-        depth: Option<u32>,
+        /// Expand to N hops (default 1: the documents that reference `<id>`
+        /// directly)
+        #[arg(long, default_value_t = 1)]
+        depth: u32,
         /// Restrict to specific edge relations (comma-separated).
         /// Defaults to "every known relation".
         #[arg(long, value_delimiter = ',')]
