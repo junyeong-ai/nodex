@@ -147,6 +147,7 @@ mod tests {
             content_hash: String::new(),
             body_lines_hash: vec![],
             body_structure: Default::default(),
+            body_start_line: 1,
         }
     }
 

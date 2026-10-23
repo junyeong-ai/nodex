@@ -178,6 +178,43 @@ fn appended_occurrences_do_not_inherit_the_protection_of_duplicate_relations() {
     assert_eq!(node["outgoing"].as_array().unwrap().len(), 3);
 }
 
+/// A citation is protected by its place in the committed body, so a field
+/// added above the body moves it down the file without moving it out.
+#[test]
+fn a_committed_citation_stays_protected_below_a_grown_frontmatter() {
+    let dir = project(
+        &CONFIG.replace("frozen", "append_only"),
+        "[original](same.md)\n",
+    );
+    let root = dir.path();
+    write(
+        root,
+        "record.md",
+        "---\nid: record\nkind: record\nstatus: draft\nowner: team\n---\n[original](same.md)\n[again](same.md)\n",
+    );
+    let report = issues(root);
+    let same = report["unresolved_edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["raw_target"] == "same.md")
+        .unwrap();
+    let sources: Vec<(u64, &str)> = same["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| {
+            (
+                source["reference"]["location"]["start_line"]
+                    .as_u64()
+                    .unwrap(),
+                source["protection"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(sources, [(7, "protected"), (8, "unprotected")]);
+}
+
 #[test]
 fn appended_markdown_dependencies_are_new_citations() {
     let config = CONFIG.replace("frozen", "append_only");

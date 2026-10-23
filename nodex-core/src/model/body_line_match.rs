@@ -25,7 +25,8 @@ pub struct RawBodyLineMatch {
     /// stem `Annotation.name` uses, so the two symmetric match structs
     /// name the producing block identically.
     pub name: String,
-    /// 1-based line number inside the body (frontmatter excluded).
+    /// 1-based line: counted from the body's first line as extracted, from
+    /// the top of the file once `parse_document` returns it.
     pub line: usize,
     /// Named-capture values, keyed by capture name.
     pub captures: BTreeMap<String, String>,
@@ -39,6 +40,7 @@ pub struct BodyLineMatch {
     /// The `[[rules.body_line]].name` whose pattern matched (symmetric
     /// with [`crate::model::Annotation::name`]).
     pub name: String,
+    /// 1-based file line.
     pub line: usize,
     pub captures: BTreeMap<String, String>,
 }

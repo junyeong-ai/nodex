@@ -227,8 +227,9 @@ impl ReferenceSyntax {
     }
 }
 
-/// The parser-owned source of an authored reference. Body lines are one-based,
-/// and `end_line` includes the definition or code span supplying its meaning.
+/// The parser-owned source of an authored reference. Body lines are one-based
+/// file lines, and `end_line` includes the definition or code span supplying
+/// its meaning.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReferenceLocation {

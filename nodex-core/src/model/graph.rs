@@ -271,7 +271,7 @@ fn build_body_line_indices(matches: &[BodyLineMatch]) -> BTreeMap<String, Vec<us
 /// shape of `graph.json` bumps this; readers refuse any file whose
 /// recorded version does not equal `SCHEMA_VERSION`, with
 /// `nodex build --full` as the escape hatch.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Serialise meta + nodes + edges + annotations + body-line matches +
 /// parse failures with a schema-version envelope. Indices are derived
@@ -379,7 +379,7 @@ mod tests {
         // `node.id` would be findable by key but panic on its own-id
         // traversal. Reject it as a parse error, not a panic on user data.
         let raw = format!(
-            r#"{{"schema_version": {SCHEMA_VERSION}, "nodes": {{"a": {{"id": "b", "path": "a.md", "title": "A", "kind": "generic", "status": "active"}}}}, "edges": []}}"#
+            r#"{{"schema_version": {SCHEMA_VERSION}, "nodes": {{"a": {{"id": "b", "path": "a.md", "title": "A", "kind": "generic", "status": "active", "body_start_line": 1}}}}, "edges": []}}"#
         );
         let err = serde_json::from_str::<Graph>(&raw).unwrap_err();
         let msg = err.to_string();

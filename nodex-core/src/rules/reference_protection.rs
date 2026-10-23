@@ -11,6 +11,8 @@ use super::DocumentPart;
 #[derive(Clone, Copy)]
 enum Limit {
     All,
+    /// The committed prefix of an `append_only` body, as the last file line
+    /// it covers.
     Prefix(usize),
     Unknown,
 }
@@ -231,7 +233,7 @@ fn body_limit(mode: BodyImmutableMode, hash: &str, lines: &[String], node: &Node
     if hash == node.body_hash {
         Limit::All
     } else if mode == BodyImmutableMode::AppendOnly && node.body_lines_hash.starts_with(lines) {
-        Limit::Prefix(lines.len())
+        Limit::Prefix(node.body_start_line + lines.len() - 1)
     } else {
         Limit::Unknown
     }

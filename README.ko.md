@@ -131,8 +131,7 @@ created: 2025-01-20
 현재 API 설계.
 ```
 
-…그리고 가이드는 본문 첫 줄에서 현재 결정으로 링크합니다(그래서 뒤의 백링크가
-`L2` 로 잡힙니다 — 본문 1번째 줄은 `# API Setup` 제목):
+…그리고 가이드는 제목 아래에서 현재 결정으로 링크합니다:
 
 ```markdown
 ---
@@ -213,10 +212,10 @@ $ nodex query chain adr-0001-rest-api --pretty
 ```jsonc
 $ nodex query backlinks adr-0002-graphql-api --pretty
 { "ok": true, "data": { "items": [
-  { "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L2", ... }
+  { "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L7", ... }
 ], "total": 1 }, "snapshot": {
   "verification": "content", "unbuildable": 0, "unfollowed": 0
-} }   //  가이드가 본문 2번째 줄에서 링크
+} }   //  가이드가 7번째 줄에서 링크
 ```
 
 **4. 전체 코퍼스 검증** — schema·cross-field·탐지 룰을 한 패스로:
@@ -362,11 +361,11 @@ Markdown 목적지는 URI 경로·query·fragment를 분리한 뒤 경로만 디
 
 ### 조회와 정책 계약
 
-Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석합니다. Wikilink와 설정된 패턴은 그래프 조회 규칙을 사용합니다. 엣지의 `references` 배열은 하나의 논리적 관계를 작성한 모든 위치의 source·syntax·디코딩된 target·location을 보존합니다. 본문 위치는 본문 기준 1부터 시작하는 `start_line`과 끝을 포함하는 `end_line`이며, 참조를 결정하는 정의나 코드 span도 포함합니다. 프런트매터 위치는 작성한 `field`를 담습니다. 미해결 참조 조회는 실제로 찾은 이름도 제공합니다. 조회의 `sources`와 참조 진단의 `details.sources`는 각 위치의 보호 여부와 잠금 규칙 ID를 제공합니다. 미해결 엣지의 `source_protection`은 모든 위치가 보호되면 `protected`, 하나라도 보호되지 않으면 `unprotected`, 나머지는 `unknown`입니다. 보호 여부는 대상이 과거에 유효했다는 증거가 아니며, 보호되지 않았다는 사실이 편집을 허용하지도 않습니다. 제안한 바이트는 `check --content`로 검사합니다. 사용자 frontmatter 속성은 속성으로 유지하며 명시된 관계 필드만 엣지를 만듭니다.
+Markdown 링크는 작성 문서의 디렉터리를 기준으로 해석합니다. Wikilink와 설정된 패턴은 그래프 조회 규칙을 사용합니다. 엣지의 `references` 배열은 하나의 논리적 관계를 작성한 모든 위치의 source·syntax·디코딩된 target·location을 보존합니다. 본문 위치는 파일 첫 줄을 1로 세는 `start_line`과 끝을 포함하는 `end_line`이며, 참조를 결정하는 정의나 코드 span도 포함합니다. 프런트매터 위치는 작성한 `field`를 담습니다. 미해결 참조 조회는 실제로 찾은 이름도 제공합니다. 조회의 `sources`와 참조 진단의 `details.sources`는 각 위치의 보호 여부와 잠금 규칙 ID를 제공합니다. 미해결 엣지의 `source_protection`은 모든 위치가 보호되면 `protected`, 하나라도 보호되지 않으면 `unprotected`, 나머지는 `unknown`입니다. 보호 여부는 대상이 과거에 유효했다는 증거가 아니며, 보호되지 않았다는 사실이 편집을 허용하지도 않습니다. 제안한 바이트는 `check --content`로 검사합니다. 사용자 frontmatter 속성은 속성으로 유지하며 명시된 관계 필드만 엣지를 만듭니다.
 
 기본 추론 id는 `{kind}-{path_slug}`로 반복 파일명을 구분합니다. 명시적 id와 설정된 템플릿이 우선합니다. `scaffold --force`는 `--id`로 명시적으로 바꾸지 않는 한 기존 id를 유지합니다.
 
-`query node`는 내부 해시를 제외한다. `--with-body --body-lines START:END`로 양의 정수·양끝 포함 본문 범위를 읽으면 `body_range: {start, end, total}`도 제공한다. `query nodes --missing reviewed`는 리뷰 날짜 부재를 찾는다. `query stale`과 `query orphans`는 `subjects`·`unjudged`를 제공하며 리뷰 날짜 부재를 오래됨이나 최신 리뷰로 간주하지 않는다.
+`query node`는 내부 해시를 제외합니다. `--with-body --body-lines START:END`는 양끝을 포함한 두 파일 줄 사이의 본문을 `body_range: {start, end, body_start, body_end}`와 함께 반환하며, 본문 밖에 걸친 범위는 거부합니다. `query nodes --missing reviewed`는 리뷰 날짜가 없는 문서를 찾습니다. `query stale`과 `query orphans`는 `subjects`·`unjudged`를 제공하며, 리뷰 날짜가 없는 문서를 오래된 문서로도 최근에 리뷰한 문서로도 간주하지 않습니다.
 
 `[rules] severity = { orphan = "error", unresolved_reference = "error" }`는 등록된 warning rule을 검사·export·쓰기 gate에서 일관되게 승격한다. 구조적 error는 약화할 수 없으며 미해결 정책 row는 자신의 severity를 사용한다. `init`은 정책 밖 미해결 참조도 error로 설정한다. 유사도는 비교 후보를 정렬하며 정확성이나 생명주기 변경의 근거를 확정하지 않는다.
 

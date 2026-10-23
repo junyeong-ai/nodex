@@ -95,19 +95,31 @@ pub(crate) fn run_node(
             None => body,
             Some((start, end)) => {
                 let lines: Vec<&str> = body.split_inclusive('\n').collect();
-                if end > lines.len() {
+                if lines.is_empty() {
+                    return Err(nodex_core::Error::Config(
+                        "--body-lines selects body lines, but the document has none".into(),
+                    )
+                    .into());
+                }
+                let body_start = graph
+                    .node(&resolved_id)
+                    .expect("require_node / node_by_path guarantees presence")
+                    .body_start_line;
+                let body_end = body_start + lines.len() - 1;
+                if start < body_start || end > body_end {
                     return Err(nodex_core::Error::Config(format!(
-                        "--body-lines ends at {end}, but the document has {} body lines",
-                        lines.len()
+                        "--body-lines {start}:{end} reaches outside the body, which spans \
+                         lines {body_start}:{body_end}"
                     ))
                     .into());
                 }
                 detail.body_range = Some(nodex_core::query::traverse::BodyRange {
                     start,
                     end,
-                    total: lines.len(),
+                    body_start,
+                    body_end,
                 });
-                lines[start - 1..end].concat()
+                lines[start - body_start..=end - body_start].concat()
             }
         });
     }

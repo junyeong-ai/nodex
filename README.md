@@ -133,8 +133,7 @@ created: 2025-01-20
 The current API design.
 ```
 
-…and the guide links to the current decision on its first body line (so a
-backlink later resolves to `L2` — body line 1 is the `# API Setup` heading):
+…and the guide links to the current decision under its heading:
 
 ```markdown
 ---
@@ -217,10 +216,10 @@ $ nodex query chain adr-0001-rest-api --pretty
 ```jsonc
 $ nodex query backlinks adr-0002-graphql-api --pretty
 { "ok": true, "data": { "items": [
-  { "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L2", ... }
+  { "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L7", ... }
 ], "total": 1 }, "snapshot": {
   "verification": "content", "unbuildable": 0, "unfollowed": 0
-} }   //  the guide links to it (body line 2)
+} }   //  the guide links to it on line 7
 ```
 
 **4. Validate the whole corpus** — schema, cross-field rules and the detection rules, all in one pass:
@@ -370,11 +369,11 @@ fragment. Heading-anchor validity remains outside the document graph.
 
 ### Query and policy contracts
 
-Markdown links resolve relative to their source document. Wikilinks and configured patterns use graph lookup. Each edge's `references` array retains source, syntax, decoded target and location for every authoring site of one logical relation. Body locations use one-based body-relative `start_line` and inclusive `end_line`, including definitions or code spans that determine the reference; frontmatter locations name the authored `field`. Unresolved listings also expose the sought lookup names. Their `sources`, and reference findings' `details.sources`, report each site's protection and constraining rule IDs. An unresolved edge's `source_protection` is `protected` only when every site is protected, `unprotected` when any is unprotected, and `unknown` otherwise. Protection does not establish historical target validity; unprotected does not authorize an edit. Gate proposed bytes with `check --content`. Custom frontmatter attributes remain attributes; only the documented relation fields create edges.
+Markdown links resolve relative to their source document. Wikilinks and configured patterns use graph lookup. Each edge's `references` array retains source, syntax, decoded target and location for every authoring site of one logical relation. Body locations give the one-based file lines `start_line` and inclusive `end_line`, including definitions or code spans that determine the reference; frontmatter locations name the authored `field`. Unresolved listings also expose the sought lookup names. Their `sources`, and reference findings' `details.sources`, report each site's protection and constraining rule IDs. An unresolved edge's `source_protection` is `protected` only when every site is protected, `unprotected` when any is unprotected, and `unknown` otherwise. Protection does not establish historical target validity; unprotected does not authorize an edit. Gate proposed bytes with `check --content`. Custom frontmatter attributes remain attributes; only the documented relation fields create edges.
 
 Default inferred ids use `{kind}-{path_slug}` to distinguish repeated filenames. Explicit ids and configured identity templates remain authoritative. `scaffold --force` preserves the existing identity unless `--id` explicitly replaces it.
 
-`query node` omits internal fingerprints. Use `--with-body --body-lines START:END` for positive, inclusive canonical body lines and `body_range: {start, end, total}`. `query nodes --missing reviewed` finds absent review metadata. `query stale` and `query orphans` disclose `subjects` and `unjudged`; missing review dates are unjudged, rather than stale or freshly reviewed.
+`query node` omits internal fingerprints. `--with-body --body-lines START:END` returns the body between those inclusive file lines, with `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `query nodes --missing reviewed` finds absent review metadata. `query stale` and `query orphans` disclose `subjects` and `unjudged`; missing review dates are unjudged, rather than stale or freshly reviewed.
 
 `[rules] severity = { orphan = "error", unresolved_reference = "error" }` promotes registered warning rules consistently in checks, exports and write gates. Structural errors cannot be weakened; unresolved-policy rows own their severity. `init` promotes unmatched unresolved references to errors. Similarity ranks comparison candidates; it does not establish correctness or authorize a lifecycle change.
 

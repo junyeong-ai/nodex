@@ -188,6 +188,10 @@ pub fn parse_frontmatter_with_relations(
     let body_hash = crate::hash::sha256_hex(body);
     let body_lines_hash: Vec<String> = body.lines().map(crate::hash::sha256_hex).collect();
     let body_structure = super::body::extract_structure(body);
+    let body_start_line = canonical[..canonical.len() - body.len()]
+        .matches('\n')
+        .count()
+        + 1;
 
     let node = Node {
         id: raw.id.unwrap_or_default(), // empty = needs inference
@@ -211,6 +215,7 @@ pub fn parse_frontmatter_with_relations(
         body_hash,
         body_lines_hash,
         body_structure,
+        body_start_line,
         content_hash: String::new(),
         parse_issues: raw.issues,
         inferred_fields,

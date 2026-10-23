@@ -9,7 +9,7 @@ exit: 0
       {
         "id": "guide-index",
         "kind": "guide",
-        "location": "L4",
+        "location": "L16",
         "path": "docs/index.md",
         "relation": "references",
         "status": "active",

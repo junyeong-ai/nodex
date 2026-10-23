@@ -69,7 +69,8 @@ pub enum QueryCommand {
         /// saving the agent a separate read round-trip.
         #[arg(long)]
         with_body: bool,
-        /// Inclusive canonical body-line range START:END (requires --with-body).
+        /// Inclusive file-line range START:END inside the body (requires
+        /// --with-body).
         #[arg(long, requires = "with_body", value_name = "START:END")]
         body_lines: Option<String>,
     },

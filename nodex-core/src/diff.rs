@@ -479,6 +479,7 @@ const FIELDS_EXCLUDED_FROM_FIELD_CHANGES: &[&str] = &[
     "body_hash",
     "body_lines_hash",
     "body_structure",
+    "body_start_line",
     "content_hash",
     "parse_issues",
     "inferred_fields",
@@ -593,6 +594,7 @@ mod tests {
             body_hash: String::new(),
             body_lines_hash: Vec::new(),
             body_structure: Default::default(),
+            body_start_line: 1,
             content_hash: String::new(),
             parse_issues: vec![],
             inferred_fields: vec![],
@@ -921,6 +923,7 @@ mod tests {
                 }],
                 definitions: vec![],
             },
+            body_start_line: 1,
             content_hash: "c".into(),
             parse_issues: vec![crate::model::FieldParseIssue {
                 field: "created".into(),

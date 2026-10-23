@@ -773,7 +773,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
     assert_eq!(
         each(&backlinks["items"], &["id", "relation", "location"]),
         [
-            json!({ "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L2" })
+            json!({ "id": "guide-docs-guides-api-setup", "relation": "references", "location": "L7" })
         ]
     );
     assert_eq!(backlinks["total"], 1);
@@ -25351,12 +25351,26 @@ fn ai_markdown_reference_identity_survives_namesakes_and_moves() {
         "start",
         "--with-body",
         "--body-lines",
-        "1:1",
+        "4:4",
     ]));
-    assert_eq!(detail["body_range"]["total"], 2);
-    assert_eq!(detail["body_range"]["start"], 1);
+    assert_eq!(
+        detail["body_range"],
+        serde_json::json!({ "start": 4, "end": 4, "body_start": 4, "body_end": 5 })
+    );
     assert!(!detail["body"].as_str().unwrap().contains("[explicit]"));
     assert!(detail["node"].get("body_lines_hash").is_none());
+    assert_eq!(
+        error_code(nodex(root).args([
+            "query",
+            "node",
+            "start",
+            "--with-body",
+            "--body-lines",
+            "3:4"
+        ])),
+        "CONFIG_ERROR",
+        "a range reaching into the frontmatter is refused"
+    );
 }
 
 #[test]

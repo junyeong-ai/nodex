@@ -157,7 +157,7 @@ exit: 1
       {
         "details": {
           "cause": "missing",
-          "location": "L5",
+          "location": "L14",
           "raw_target": "../does-not-exist.md",
           "relation": "references",
           "source_protection": "unprotected",
@@ -166,8 +166,8 @@ exit: 1
               "protection": "unprotected",
               "reference": {
                 "location": {
-                  "end_line": 5,
-                  "start_line": 5,
+                  "end_line": 14,
+                  "start_line": 14,
                   "type": "body"
                 },
                 "source": "adr-gamma",
@@ -179,7 +179,7 @@ exit: 1
           ],
           "type": "unresolved_reference"
         },
-        "message": "references reference \"../does-not-exist.md\" (L5) does not resolve: nothing in scope resolves this target",
+        "message": "references reference \"../does-not-exist.md\" (L14) does not resolve: nothing in scope resolves this target",
         "node_id": "adr-gamma",
         "path": "docs/decisions/gamma.md",
         "rule_id": "unresolved_reference",

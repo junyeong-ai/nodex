@@ -193,7 +193,9 @@ safety: `src/git.rs` rustdoc.
   `src/parser/frontmatter.rs` rustdoc.
 - Parser entries canonicalize BOM and CRLF/CR to LF; body scans share the fence-
   aware `parser::body::iter_body_lines`. Body-derived data is extracted once at
-  build time; rules do not re-read body bytes. Config kind filters with empty =
+  build time; rules do not re-read body bytes. Extractors count body lines;
+  `parse_document` moves them to file lines through `Node::body_start_line`, the
+  one numbering reported or accepted. Logic about the body itself converts back. Config kind filters with empty =
   unrestricted use `model::kind_allowed` / `Node::matches_kinds`; overrides use
   membership and cannot have empty kinds. Lock membership uses `rules::lock_holds`
   plus `Config::lock_arms`. Link patterns require exactly one capture group.

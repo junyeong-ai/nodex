@@ -329,7 +329,7 @@ pub(crate) fn parse_with_patterns(
     // (`kinds`) is applied by the builder during
     // materialisation; this pass extracts every match so a doc whose
     // kind changes does not require a body re-read.
-    let raw_annotations = body::extract_annotations_prepared(&body, &prepared.annotations);
+    let mut raw_annotations = body::extract_annotations_prepared(&body, &prepared.annotations);
 
     // 3b. Extract config-declared body-line pattern matches. Same
     // discipline as annotations — pattern matching only, no enum
@@ -337,8 +337,28 @@ pub(crate) fn parse_with_patterns(
     // against current enum config at check time, so the parser
     // stays a pure function of (body, pattern list) with no
     // rule-output coupling.
-    let raw_body_line_matches =
+    let mut raw_body_line_matches =
         body::extract_body_line_matches_prepared(&body, &prepared.body_line);
+
+    // 3c. The extractors read the body alone and count its lines from 1;
+    // every line the graph reports counts from the top of the file.
+    let preceding = node.body_start_line - 1;
+    for edge in &mut raw_edges {
+        if let crate::model::ReferenceLocation::Body {
+            start_line,
+            end_line,
+        } = &mut edge.location
+        {
+            *start_line += preceding;
+            *end_line += preceding;
+        }
+    }
+    for annotation in &mut raw_annotations {
+        annotation.line += preceding;
+    }
+    for found in &mut raw_body_line_matches {
+        found.line += preceding;
+    }
 
     // 4. Generate edges from frontmatter relations
     for target in &node.supersedes {

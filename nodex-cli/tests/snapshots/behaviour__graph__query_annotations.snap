@@ -13,7 +13,7 @@ exit: 0
             "key": "closed-command-sweep",
             "sources": [
               {
-                "line": 6,
+                "line": 16,
                 "path": "docs/notes.md",
                 "source": "guide-notes"
               }
@@ -24,7 +24,7 @@ exit: 0
             "key": "reference-date-as-input",
             "sources": [
               {
-                "line": 4,
+                "line": 14,
                 "path": "docs/notes.md",
                 "source": "guide-notes"
               }

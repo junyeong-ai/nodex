@@ -474,7 +474,7 @@ exit: 0
             "type": "object"
           },
           "ReferenceLocation": {
-            "description": "The parser-owned source of an authored reference. Body lines are one-based,\nand `end_line` includes the definition or code span supplying its meaning.",
+            "description": "The parser-owned source of an authored reference. Body lines are one-based\nfile lines, and `end_line` includes the definition or code span supplying\nits meaning.",
             "oneOf": [
               {
                 "properties": {
@@ -1547,6 +1547,7 @@ exit: 0
                 "type": "string"
               },
               "line": {
+                "description": "1-based file line.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -2585,6 +2586,7 @@ exit: 0
                 "type": "string"
               },
               "line": {
+                "description": "1-based file line.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
@@ -3876,7 +3878,7 @@ exit: 0
             "type": "object"
           },
           "ReferenceLocation": {
-            "description": "The parser-owned source of an authored reference. Body lines are one-based,\nand `end_line` includes the definition or code span supplying its meaning.",
+            "description": "The parser-owned source of an authored reference. Body lines are one-based\nfile lines, and `end_line` includes the definition or code span supplying\nits meaning.",
             "oneOf": [
               {
                 "properties": {
@@ -5131,8 +5133,18 @@ exit: 0
       "query.node": {
         "$defs": {
           "BodyRange": {
-            "description": "Inclusive coordinates into the canonical body, with its full line count.",
+            "description": "The inclusive file lines returned, and the file lines the body spans.",
             "properties": {
+              "body_end": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "body_start": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
               "end": {
                 "format": "uint",
                 "minimum": 0,
@@ -5142,17 +5154,13 @@ exit: 0
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
-              },
-              "total": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
               }
             },
             "required": [
               "start",
               "end",
-              "total"
+              "body_start",
+              "body_end"
             ],
             "type": "object"
           },
@@ -5372,7 +5380,7 @@ exit: 0
             "type": "object"
           },
           "ReferenceLocation": {
-            "description": "The parser-owned source of an authored reference. Body lines are one-based,\nand `end_line` includes the definition or code span supplying its meaning.",
+            "description": "The parser-owned source of an authored reference. Body lines are one-based\nfile lines, and `end_line` includes the definition or code span supplying\nits meaning.",
             "oneOf": [
               {
                 "properties": {
