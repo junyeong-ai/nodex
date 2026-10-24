@@ -2896,32 +2896,41 @@ fn a_kind_rule_an_earlier_one_covers_is_refused() {
 fn a_covered_kind_rule_is_refused_however_many_rules_precede_it() {
     // Each `**/<dir>/*.md` remembers whether its directory has been passed,
     // so an automaton of their union doubles with every glob it joins; a
-    // table of real length is still decided, not declined.
-    let rule = |glob: String| KindRule {
-        glob,
-        kind: "guide".into(),
-        may_be_empty: false,
+    // table of real length is still decided, not declined, and its refusal
+    // names only the rules that cover.
+    let rules = |extra: &[&str]| {
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "guide".into()];
+        config.identity.kind_rules = (0..24)
+            .map(|area| format!("**/area{area}/*.md"))
+            .chain(extra.iter().map(|glob| (*glob).to_string()))
+            .map(|glob| KindRule {
+                glob,
+                kind: "guide".into(),
+                may_be_empty: false,
+            })
+            .collect();
+        config.validate()
     };
-    let mut config = Config::default();
-    config.kinds.allowed = vec!["generic".into(), "guide".into()];
-    config.identity.kind_rules = (0..24)
-        .map(|area| rule(format!("**/area{area}/*.md")))
-        .collect();
-    config
-        .validate()
-        .expect("no rule of the table covers another");
-    config
-        .identity
-        .kind_rules
-        .push(rule("**/area7/index.md".into()));
-    let err = config.validate().expect_err("the last rule is covered");
+    rules(&[]).expect("no rule of the table covers another");
+    let alone = rules(&["**/area7/index.md"]).unwrap_err().to_string();
     assert!(
-        err.to_string()
-            .contains("identity.kind_rules[24] (glob \"**/area7/index.md\"")
-            && err
-                .to_string()
-                .contains("identity.kind_rules[7] (glob \"**/area7/*.md\""),
-        "{err}"
+        alone.contains(
+            "identity.kind_rules[24] (glob \"**/area7/index.md\", kind \"guide\") can never \
+             apply: identity.kind_rules[7] (glob \"**/area7/*.md\", kind \"guide\"), declared \
+             before it"
+        ),
+        "{alone}"
+    );
+    let between = rules(&["docs/a/**", "docs/b/**", "docs/{a,b}/*.md"])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        between.contains(
+            "can never apply: identity.kind_rules[24] (glob \"docs/a/**\", kind \"guide\") and \
+             identity.kind_rules[25] (glob \"docs/b/**\", kind \"guide\"), declared before it"
+        ),
+        "{between}"
     );
 }
 

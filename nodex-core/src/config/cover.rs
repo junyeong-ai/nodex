@@ -38,9 +38,10 @@ pub(super) struct Coverage<'a> {
 
 impl<'a> Coverage<'a> {
     /// The earlier entries that select every path `later` does, by position:
-    /// one that does so alone where there is one, every candidate otherwise,
-    /// and `None` while some path is left for `later`. `None` as a glob stands
-    /// for a declaration that selects every path.
+    /// one that does so alone where there is one, otherwise entries none of
+    /// which the others could do without, and `None` while some path is left
+    /// for `later`. `None` as a glob stands for a declaration that selects
+    /// every path.
     ///
     /// Decided over the languages globset compiles each glob to, so `docs/**`
     /// covers `docs/adr/*.md` while `docs/adr/0*.md` does not cover
@@ -57,11 +58,28 @@ impl<'a> Coverage<'a> {
         if !self.covers(&globs, later) {
             return None;
         }
-        let alone = earlier
+        if let Some((index, _)) = earlier
             .iter()
             .find(|(_, glob)| self.covers(&[*glob], later))
-            .map(|(index, _)| vec![*index]);
-        Some(alone.unwrap_or_else(|| earlier.iter().map(|(index, _)| *index).collect()))
+        {
+            return Some(vec![*index]);
+        }
+        let mut covering = earlier.to_vec();
+        let mut at = 0;
+        while at < covering.len() {
+            let rest: Vec<Option<&'a str>> = covering
+                .iter()
+                .enumerate()
+                .filter(|(position, _)| *position != at)
+                .map(|(_, (_, glob))| *glob)
+                .collect();
+            if self.covers(&rest, later) {
+                covering.remove(at);
+            } else {
+                at += 1;
+            }
+        }
+        Some(covering.into_iter().map(|(index, _)| index).collect())
     }
 
     fn covers(&mut self, earlier: &[Option<&'a str>], later: Option<&'a str>) -> bool {
