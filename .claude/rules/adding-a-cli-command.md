@@ -30,9 +30,9 @@ paths:
    so the typed-codegen contract cannot drift from the command
    surface.
 6. Close the leaf into the tests that enumerate the command surface,
-   each of which fails naming what is missing: `SKILL.md` names it, and
-   any new error or warning code in its `published:` lists
-   (`the_skill_names_every_published_vocabulary`); the behaviour sweep
+   each of which fails naming what is missing: `SKILL.md` and both READMEs
+   name it, and any new error or warning code in their `published:` lists
+   (`every_page_lists_the_published_vocabularies_whole`); the behaviour sweep
    runs or exempts it (`every_command_is_swept_or_exempt`, then
    `behaviour_sweep`'s snapshots of the command surface, judged with
    `cargo insta review`); and a real

@@ -391,7 +391,8 @@ mod tests {
         );
     }
 
-    /// The shipped skill names every vocabulary the binary publishes.
+    /// Every page that lists a vocabulary the binary publishes lists all of
+    /// it: the skill an agent reads, and the READMEs a person reads.
     ///
     /// `SKILL.md` tells its reader the binary is the source of truth and
     /// points at the generated manifests; this is that instruction enforced,
@@ -399,64 +400,70 @@ mod tests {
     /// version guards the other axis — which release the file describes — and
     /// cannot see this one: a code added and documented between releases
     /// leaves both versions equal and the file wrong, which is the ordinary
-    /// state of an edit and exactly what a release must not ship.
+    /// state of an edit and exactly what a release must not ship. The READMEs
+    /// explain the same codes to people, and a table missing a row presents
+    /// itself as complete just the same.
     ///
     /// Presence, not explanation. These are closed generated sets of exact
-    /// identifiers, and a consumer branches on them, so a name the skill
-    /// never mentions is one an agent reading the skill cannot know exists.
-    /// What each means is prose, and prose is reviewed, not asserted.
+    /// identifiers, and a consumer branches on them, so a name a page never
+    /// mentions is one its reader cannot know exists. What each means is
+    /// prose, and prose is reviewed, not asserted.
     ///
-    /// The haystack is the published list itself, delimited in the skill by
+    /// The haystack is the published list itself, delimited on each page by
     /// `<!-- published:… -->`. Any wider reading answers with prose: asked of
     /// the whole file, the question was satisfied by a sentence elsewhere —
-    /// which is how `GRAPH_OUTDATED` stayed off the error-code list while the
-    /// test passed — and asked of the enclosing section it is satisfied by the
-    /// paragraphs that explain the very codes the list is supposed to
-    /// enumerate. The list is what presents itself as complete, so the list is
-    /// what must be.
+    /// which is how `GRAPH_OUTDATED` stayed off the skill's error-code list
+    /// while the test passed — and asked of the enclosing section it is
+    /// satisfied by the paragraphs that explain the very codes the list is
+    /// supposed to enumerate. The list is what presents itself as complete, so
+    /// the list is what must be.
     #[test]
-    fn the_skill_names_every_published_vocabulary() {
-        let skill = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../.claude/skills/nodex/SKILL.md"
-        ))
-        .expect("the packaged skill is part of the repository");
-        let published = |name: &str| {
-            let open = format!("<!-- published:{name} -->");
-            let close = format!("<!-- /published:{name} -->");
-            let rest = skill
-                .split_once(&open)
-                .unwrap_or_else(|| panic!("SKILL.md must delimit the published {name} with {open}"))
-                .1;
-            rest.split_once(&close)
-                .unwrap_or_else(|| panic!("SKILL.md must close the published {name} with {close}"))
-                .0
-                .to_string()
-        };
-        let error_codes = published("error-codes");
-        let warning_codes = published("warning-codes");
-
+    fn every_page_lists_the_published_vocabularies_whole() {
         let diagnostics = nodex_core::export::export_diagnostics();
+        let invocations: Vec<String> = commands::export::commands_manifest()
+            .commands
+            .iter()
+            .map(|entry| format!("nodex {}", entry.path.join(" ")))
+            .collect();
         let mut missing: Vec<String> = Vec::new();
-        for code in &diagnostics.error_codes {
-            if !error_codes.contains(&code.code) {
-                missing.push(format!("error code {}", code.code));
+        for page in [".claude/skills/nodex/SKILL.md", "README.md", "README.ko.md"] {
+            let text = std::fs::read_to_string(format!("{}/../{page}", env!("CARGO_MANIFEST_DIR")))
+                .unwrap_or_else(|e| panic!("{page} is part of the repository: {e}"));
+            let published = |name: &str| {
+                let open = format!("<!-- published:{name} -->");
+                let close = format!("<!-- /published:{name} -->");
+                text.split_once(&open)
+                    .unwrap_or_else(|| {
+                        panic!("{page} must delimit the published {name} with {open}")
+                    })
+                    .1
+                    .split_once(&close)
+                    .unwrap_or_else(|| {
+                        panic!("{page} must close the published {name} with {close}")
+                    })
+                    .0
+            };
+            let error_codes = published("error-codes");
+            let warning_codes = published("warning-codes");
+            for code in &diagnostics.error_codes {
+                if !error_codes.contains(&code.code) {
+                    missing.push(format!("{page}: error code {}", code.code));
+                }
             }
-        }
-        for code in &diagnostics.warning_codes {
-            if !warning_codes.contains(code) {
-                missing.push(format!("warning code {code}"));
+            for code in &diagnostics.warning_codes {
+                if !warning_codes.contains(code) {
+                    missing.push(format!("{page}: warning code {code}"));
+                }
             }
-        }
-        for entry in &commands::export::commands_manifest().commands {
-            let invocation = format!("nodex {}", entry.path.join(" "));
-            if !skill.contains(&invocation) {
-                missing.push(invocation);
+            for invocation in &invocations {
+                if !text.contains(invocation) {
+                    missing.push(format!("{page}: {invocation}"));
+                }
             }
         }
         assert!(
             missing.is_empty(),
-            "SKILL.md does not name: {}",
+            "a page listing a published vocabulary leaves out: {}",
             missing.join(", ")
         );
     }
