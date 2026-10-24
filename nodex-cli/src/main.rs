@@ -315,12 +315,12 @@ mod tests {
             .get("description")
             .and_then(yaml_serde::Value::as_str)
             .expect("the skill declares a description");
-        // `description` and `when_to_use` share one listing budget; this
-        // skill folds both into `description`, so the whole of it counts.
+        // The spec's cap sits under the 1,536 a skill listing shares between
+        // `description` and `when_to_use`, so it is the one that binds.
+        let length = description.chars().count();
         assert!(
-            description.len() <= 1_536,
-            "description is {} chars; the skill listing truncates at 1,536",
-            description.len()
+            length <= 1_024,
+            "description is {length} chars; the Agent Skills spec caps it at 1,024"
         );
         // The release refuses a mismatch, which is one push too late: this is
         // the file a bump is easiest to forget, and `check.sh` is what runs
