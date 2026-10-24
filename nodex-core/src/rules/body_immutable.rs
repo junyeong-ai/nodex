@@ -149,8 +149,8 @@ impl Rule for BodyImmutableRule {
         ctx.since.is_some()
     }
 
-    fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
-        "no diff context — set `--since <ref>` or `rules.immutable_baseline`".to_string()
+    fn skip_reason(&self, ctx: &RuleContext<'_>) -> String {
+        super::lock_skip_reason(ctx.config)
     }
 
     fn subject_unit(&self) -> SubjectUnit {
@@ -467,6 +467,22 @@ mod tests {
             rule.skip_reason(&ctx(&graph, &config, None))
                 .contains("--since"),
             "skip reason must mention --since so operators know how to activate the rule"
+        );
+    }
+
+    #[test]
+    fn a_configured_baseline_that_supplied_none_points_at_why_not_at_the_key() {
+        let mut config = cfg(BodyImmutableMode::Frozen, vec![]);
+        config.rules.immutable_baseline = Some("origin/main".into());
+        let graph = build_graph(vec![make_node("a", "superseded", "generic")]);
+        let reason = rule_for(&config).skip_reason(&ctx(&graph, &config, None));
+        assert!(
+            reason.contains("\"origin/main\"") && reason.contains("baseline_inert"),
+            "{reason}"
+        );
+        assert!(
+            !reason.contains("set `rules.immutable_baseline`"),
+            "{reason}"
         );
     }
 
