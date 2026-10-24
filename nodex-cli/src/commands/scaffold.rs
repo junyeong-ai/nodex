@@ -31,14 +31,15 @@ pub struct ScaffoldArgs {
     /// Markdown body for the new document — `-` reads stdin, otherwise
     /// a file path resolved against the invoking directory (the same
     /// SOURCE grammar as `check --content`). Supplying it engages the
-    /// strict gate: a check violation the document introduces refuses
-    /// the scaffold instead of riding as a warning.
+    /// strict gate: an error-severity finding the document introduces
+    /// refuses the scaffold instead of riding as a warning.
     #[arg(long, value_name = "SOURCE")]
     pub body: Option<String>,
     /// Frontmatter field as KEY=VALUE (value is YAML; repeatable).
     /// Rendered after the identity lines. A key whose value has a
     /// canonical source — a dedicated flag, config derivation, or the
     /// structural filesystem path — is refused (the error names the set).
+    /// Supplying one engages the strict gate, as `--body` does.
     #[arg(long = "field", value_name = "KEY=VALUE", value_parser = parse_field)]
     pub fields: Vec<(String, String)>,
     /// Print the plan as JSON without writing the file
