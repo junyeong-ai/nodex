@@ -623,18 +623,27 @@ impl BaselineProbe {
                 judge(&standing.graph, ProjectFiles::working_tree(root))
             }
         };
-        // A lock's verdict is one word over two facts: the document already
-        // differs from its baseline, or this write is what would make it
-        // differ. The remedies are opposite — revert the drift, or do not make
-        // this write — so which it is comes from judging the project as it
-        // stands rather than from the lock having spoken. Read by record
-        // rather than by path, because a move is the write that changes the
-        // path while the record stays the one the lock was armed over.
-        let drifted: std::collections::BTreeSet<(&str, &str)> = standing
+        // Which `Cause` a lock's finding is comes from the project as it
+        // stands: whether the lock already refuses that part there. Read by
+        // record rather than by path, because a move is the write that changes
+        // the path while the record stays the one the lock was armed over.
+        let drifted: std::collections::BTreeSet<(&str, &str, Option<DocumentPart>)> = standing
             .iter()
             .filter(|v| locks.contains(&v.rule_id))
-            .filter_map(|v| Some((v.rule_id.as_str(), v.node_id.as_deref()?)))
+            .filter_map(|v| Some((v.rule_id.as_str(), v.node_id.as_deref()?, v.details.part())))
             .collect();
+        let cause = |violation: &crate::rules::Violation| {
+            if !locks.contains(&violation.rule_id) {
+                return Cause::Introduced;
+            }
+            let stands_refused = violation.node_id.as_deref().is_some_and(|id| {
+                drifted.contains(&(violation.rule_id.as_str(), id, violation.details.part()))
+            });
+            match stands_refused {
+                true => Cause::Drifted,
+                false => Cause::Changed,
+            }
+        };
         let delta = crate::rules::introduced_violations(delta, &standing);
         let violations = absolute.into_iter().chain(delta);
 
@@ -652,19 +661,17 @@ impl BaselineProbe {
             }) else {
                 continue;
             };
-            let is_lock = locks.contains(&violation.rule_id);
-            let stands_refused = violation
-                .node_id
-                .as_deref()
-                .is_some_and(|id| drifted.contains(&(violation.rule_id.as_str(), id)));
-            let refusal = refusals.by_path.entry(rel_path.clone()).or_default();
-            refusal.absolute |= is_lock;
-            refusal.drifted |= is_lock && stands_refused;
-            refusal.findings.push(violation.message.clone());
-            refusal
-                .locks
-                .entry(violation.details.part())
-                .or_insert(violation.rule_id);
+            let cause = cause(&violation);
+            refusals
+                .by_path
+                .entry(rel_path.clone())
+                .or_default()
+                .record(
+                    violation.details.part(),
+                    violation.rule_id,
+                    cause,
+                    violation.message,
+                );
         }
 
         // A path the proposal *empties* asks a question no rule answers: `check`
@@ -945,16 +952,36 @@ pub struct Refusals {
 /// smaller unit would be truthful.
 #[derive(Debug, Default)]
 pub struct Refusal {
-    locks: std::collections::BTreeMap<Option<DocumentPart>, String>,
-    /// Whether a lock is among the rules refusing — the one reading under
-    /// which a pre-existing drift is itself grounds to refuse any further
-    /// write, and the remedy is to revert it or supersede the record.
-    absolute: bool,
-    /// Whether that lock also refuses the document as it stands, which is
-    /// what decides the remedy: a drift to revert, or a write to abandon.
-    drifted: bool,
+    parts: std::collections::BTreeMap<Option<DocumentPart>, Refused>,
     /// What the refusing rules said, in `check`'s own words.
     findings: Vec<String>,
+}
+
+/// One part's refusal: the rule naming it, and why it refuses.
+#[derive(Debug)]
+struct Refused {
+    rule: String,
+    cause: Cause,
+}
+
+/// Why a rule refuses a part of the document a write proposes. A lock's
+/// verdict is one word over two facts whose remedies are opposite — a drift to
+/// revert, or a change the lock forbids — so the cause is read off the project
+/// as it stands beside the proposal, never off the lock having spoken. A lock
+/// arms over a record by the state its baseline holds, so between the two only
+/// the document differs: a lock that refuses the proposal and not the document
+/// as it stands is refusing what this write changes. Ordered by which decides
+/// the remedy when two rules refuse one part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Cause {
+    /// A lock the document as it stands already fails, which refuses every
+    /// write to it whatever the write changes.
+    Drifted,
+    /// A lock this write breaks by changing the part it freezes.
+    Changed,
+    /// A rule other than a lock, judging the document this write would
+    /// produce.
+    Introduced,
 }
 
 impl Refusals {
@@ -975,32 +1002,60 @@ impl Refusals {
 }
 
 impl Refusal {
-    /// Whether a lock is among the rules refusing, which decides whether a
-    /// seam may speak in a lock's voice at all.
-    pub fn absolute(&self) -> bool {
-        self.absolute
-    }
-
-    /// Whether that lock already refuses the document as it stands. Only then
-    /// does `check` name the finding, and only then is reverting a remedy: a
-    /// lock that refuses the proposal alone names a field this write would set
-    /// and the working tree does not carry.
-    pub fn drifted(&self) -> bool {
-        self.drifted
-    }
-
-    /// What the refusing rules said — the same words `check` uses, so a
-    /// seam's refusal names what to fix rather than restating the gate.
-    pub fn findings(&self) -> &[String] {
-        &self.findings
+    /// Why the write is refused and what clears it — the sentence every
+    /// writing command gives after naming itself, so the remedy is decided in
+    /// one place. A drift is reverted, a change a lock forbids is left
+    /// unmade, and any other rule's finding is what to fix. Only a lock speaks
+    /// in a lock's voice: telling an operator to revert a document that
+    /// matches its baseline, or that `check` reports a difference it does not,
+    /// sends them to the wrong remedy.
+    pub fn explain(&self) -> String {
+        let named = |cause: Cause| {
+            named_parts(
+                &self
+                    .parts
+                    .iter()
+                    .filter(|(_, refused)| refused.cause == cause)
+                    .filter_map(|(part, refused)| Some((part.clone()?, refused.rule.clone())))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let drifted = named(Cause::Drifted);
+        if !drifted.is_empty() {
+            return format!(
+                "the document already differs from its baseline in {drifted}, and a lock \
+                 refuses every write to a record that does not match its baseline, this one \
+                 included. `nodex check` reports the difference: revert it, and put a changed \
+                 decision in a successor that supersedes this record"
+            );
+        }
+        let changed = named(Cause::Changed);
+        let cause = match changed.is_empty() {
+            false => format!(
+                "this write would change {changed}, which the lock named freezes on this \
+                 record; the lock refuses the change itself, so there is nothing to revert"
+            ),
+            true => {
+                let rules: std::collections::BTreeSet<&str> = self
+                    .parts
+                    .values()
+                    .map(|refused| refused.rule.as_str())
+                    .collect();
+                format!(
+                    "the document this write would produce does not satisfy {}",
+                    rules.into_iter().collect::<Vec<_>>().join(", ")
+                )
+            }
+        };
+        format!("{cause} — {}", self.findings.join("; "))
     }
 
     /// One rule to name when a write is held back.
     pub fn lock(&self) -> &str {
-        self.locks
+        self.parts
             .values()
             .next()
-            .map(String::as_str)
+            .map(|refused| refused.rule.as_str())
             .expect("a refusal is recorded with its rule")
     }
 
@@ -1008,10 +1063,41 @@ impl Refusal {
     /// document-wide finding names none, so a write carrying one is never
     /// narrowed and is held back whole.
     fn parts(&self) -> BTreeMap<DocumentPart, String> {
-        self.locks
+        self.parts
             .iter()
-            .filter_map(|(part, lock)| Some((part.clone()?, lock.clone())))
+            .filter_map(|(part, refused)| Some((part.clone()?, refused.rule.clone())))
             .collect()
+    }
+
+    /// Record `rule`'s finding on `part`, keeping for each part the cause that
+    /// decides its remedy.
+    fn record(&mut self, part: Option<DocumentPart>, rule: String, cause: Cause, finding: String) {
+        self.findings.push(finding);
+        match self.parts.entry(part) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Refused { rule, cause });
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if cause < entry.get().cause {
+                    entry.insert(Refused { rule, cause });
+                }
+            }
+        }
+    }
+}
+
+/// Parts of a document, each named with the rule that names it — two locks
+/// can hold two parts of one document, and an operator sent to the wrong rule
+/// has nothing to read.
+pub fn named_parts(parts: &[(DocumentPart, String)]) -> String {
+    let named: Vec<String> = parts
+        .iter()
+        .map(|(part, lock)| format!("{part} ({lock})"))
+        .collect();
+    match named.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -1098,18 +1184,22 @@ pub struct Narrowing {
     pub held: Vec<HeldBack>,
 }
 
-/// What a baseline's locks cost one plan: the rule refusing its path, and the
+/// What a baseline's locks cost one plan: the rule refusing its path, the
 /// parts each lock names — empty where the finding is about the document and
-/// no part of the write can be held back on its own.
+/// no part of the write can be held back on its own — and why.
 struct Cost {
     lock: String,
     parts: BTreeMap<DocumentPart, String>,
+    reason: String,
 }
 
 /// A write a baseline did not let through whole.
 pub struct HeldBack {
     pub rel_path: PathBuf,
     pub kept: Kept,
+    /// Why, in the words a writing command refused outright would use
+    /// ([`Refusal::explain`]).
+    pub reason: String,
 }
 
 /// What a baseline kept back of one write.
@@ -1170,11 +1260,11 @@ pub fn narrow(
             let cost = refused.refusing(&plan.rel_path).map(|refusal| Cost {
                 lock: refusal.lock().to_string(),
                 parts: refusal.parts(),
+                reason: refusal.explain(),
             });
             (plan, cost)
         })
         .collect();
-    let held_parts = |cost: Cost| Kept::Parts(cost.parts.into_iter().collect());
     if planned.iter().all(|(_, cost)| cost.is_none()) {
         return Ok(Narrowing {
             writable: planned.into_iter().map(|(plan, _)| plan).collect(),
@@ -1206,13 +1296,15 @@ pub fn narrow(
                 if !cost.parts.is_empty() {
                     held.push(HeldBack {
                         rel_path: plan.rel_path,
-                        kept: held_parts(cost),
+                        kept: Kept::Parts(cost.parts.into_iter().collect()),
+                        reason: cost.reason,
                     });
                 }
             }
             None => held.push(HeldBack {
                 rel_path: plan.rel_path,
                 kept: Kept::Whole(cost.lock),
+                reason: cost.reason,
             }),
         }
     }

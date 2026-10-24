@@ -1719,7 +1719,7 @@ fn a_rename_refused_by_a_rule_that_is_not_a_lock_says_which_rule_and_what_it_sai
         "names the rule and what it said: {message}"
     );
     assert!(
-        !message.contains("baseline locks"),
+        !message.contains("the lock named") && !message.contains("reports the difference"),
         "no lock refused this: {message}"
     );
 }

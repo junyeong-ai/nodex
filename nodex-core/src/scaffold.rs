@@ -353,34 +353,12 @@ pub fn scaffold(
     // standing at the very path it is about to destroy.
     let proposed = crate::builder::build_with_overlay(root, config, &proposal)?;
     let refusals = probe.refusals(root, config, &proposal, today)?;
-    // The lock reads as a trailing clause, as it does at the lifecycle seam:
-    // it is usually a rule id, but it can also name a lock that could not be
-    // evaluated, and mid-sentence that implies a rule by that name exists.
-    // And, as there, only a lock may speak in a lock's voice — telling an
-    // operator to supersede a record over a finding about the document this
-    // write would produce sends them to the wrong remedy.
     let target = crate::path_guard::forward_string(&rel_path);
     if let Some(refusal) = refusals.refusing(&rel_path) {
-        let lock = refusal.lock();
-        return Err(Error::Config(
-            match (refusal.absolute(), refusal.drifted()) {
-                (true, true) => format!(
-                    "scaffold target {target:?} cannot be rewritten at \
-                 rules.immutable_baseline; supersede the record instead — {lock}"
-                ),
-                (true, false) => format!(
-                    "scaffold target {target:?} would leave a document its baseline locks — \
-                 {lock} — {finding}. The target as it stands is fine: the scaffold is what \
-                 would move the frozen field. Supersede the record instead",
-                    finding = refusal.findings().join("; ")
-                ),
-                (false, _) => format!(
-                    "scaffold target {target:?} would produce a document that does not satisfy \
-                 {lock} — {finding}",
-                    finding = refusal.findings().join("; ")
-                ),
-            },
-        ));
+        return Err(Error::Config(format!(
+            "scaffold of {target:?} cannot complete: {}",
+            refusal.explain()
+        )));
     }
     if let Some(lock) = probe.frozen_record_lost(&rel_path, &proposed.graph, config) {
         return Err(Error::Config(format!(

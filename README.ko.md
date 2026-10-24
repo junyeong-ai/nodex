@@ -467,7 +467,7 @@ Error code는 typed `nodex_core::error::Error`의 `downcast_ref`로 도출하며
 | `PATH_ESCAPES_ROOT` | `..` / 심볼릭 링크가 프로젝트 루트를 벗어남 |
 | `SYMLINK_TARGET` | 쓰려는 대상의 마지막 경로 구성요소가 심볼릭 링크여서 거부됨. nodex는 링크를 따라가며 쓰지 않음 |
 | `CONTENT_VIOLATIONS` | 쓰기 게이트가 쓰기를 거부: 쓰려는 내용이 Error-severity `check` 위반을 새로 만듦 (각각 `rule_id: message`로 나열) |
-| `CONFIG_ERROR` | `nodex.toml`이 로드 시점 검증에 실패, 인자가 config에 선언되지 않은 것을 지목(`--fields`, `--where`, `--name`, kind가 허용하지 않는 `lifecycle` status)하거나 명령이 처리할 수 없는 값을 지님(`=` 없는 `--content`, `--depth 0`, 디렉터리 `rename`, `retarget X X`), 잠금이 읽는 `rules.immutable_baseline`이 git이 해석하지 못하는 ref를 가리킴, 또는 쓰기 결과를 잠금이 거부함(`lifecycle`, `rename`, `scaffold`는 메시지에 잠금을 밝히고, `retarget --supersede`는 잠금이 선행 문서의 status 변경을 막을 때 거부) |
+| `CONFIG_ERROR` | `nodex.toml`이 로드 시점 검증에 실패, 인자가 config에 선언되지 않은 것을 지목(`--fields`, `--where`, `--name`, kind가 허용하지 않는 `lifecycle` status)하거나 명령이 처리할 수 없는 값을 지님(`=` 없는 `--content`, `--depth 0`, 디렉터리 `rename`, `retarget X X`), 잠금이 읽는 `rules.immutable_baseline`이 git이 해석하지 못하는 ref를 가리킴, 또는 쓰기 결과를 잠금이 거부함(메시지가 잠금과 해결 방법을 밝히며, `retarget --supersede`는 잠금이 선행 문서의 status 변경을 막을 때 거부) |
 | `IO_ERROR` | filesystem read/write 실패 |
 | `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 아래의 쓰기 명령 |
 | `GIT_ERROR` | `git` 호출 실패 또는 거부 (work tree 없음, ref 부재, 충돌이 남은 index 등) — 주로 `diff` / `impact` / `check --since` / `check --staged`에서 발생 |
@@ -579,7 +579,7 @@ nodex check --staged                                          # 다음 커밋이
 exec nodex check --staged
 ```
 
-쓰기 명령도 쓰기 전에 같은 판정을 거칩니다. `rename`, `retarget`, `lifecycle`은 error severity 위반을 새로 만드는 쓰기를 거부하고(`CONTENT_VIOLATIONS`), `--body`나 `--field`를 받은 `scaffold`도 마찬가지입니다. 이 둘이 없으면 `scaffold`는 문서를 쓰고, 새 문서 자신의 error severity 위반은 채울 항목으로 경고에 담으며, 다른 문서에 생기는 위반만 거부합니다. 잠금은 대신 `CONFIG_ERROR`로 거부하며 메시지가 해당 잠금을 알려 줍니다. `lifecycle`, `rename`, `scaffold`는 잠금이 거부할 상태로 문서를 남기는 쓰기를 거부하고, 쓰기 전부터 잠금에서 벗어나 있던 문서도 마찬가지입니다. `retarget`은 잠긴 부분만 남겨 두고 경고하지만(`file_skipped`), `--supersede`에서는 선행 문서의 status 변경이 필수이므로 잠금이 그 변경을 막으면 아무것도 쓰기 전에 명령 전체를 거부합니다.
+쓰기 명령도 쓰기 전에 같은 판정을 거칩니다. `rename`, `retarget`, `lifecycle`은 error severity 위반을 새로 만드는 쓰기를 거부하고(`CONTENT_VIOLATIONS`), `--body`나 `--field`를 받은 `scaffold`도 마찬가지입니다. 이 둘이 없으면 `scaffold`는 문서를 쓰고, 새 문서 자신의 error severity 위반은 채울 항목으로 경고에 담으며, 다른 문서에 생기는 위반만 거부합니다. 잠금은 대신 `CONFIG_ERROR`로 거부합니다. 메시지는 잠금과 그 잠금이 고정한 부분을 밝히고, 어느 해결 방법이 맞는지 알려 줍니다. `nodex check`가 보고하는 drift라면 되돌리고, 잠금이 금지하는 변경이라면 그 변경을 하지 않습니다. `lifecycle`, `rename`, `scaffold`는 잠금이 거부할 상태로 문서를 남기는 쓰기를 거부하고, 쓰기 전부터 잠금에서 벗어나 있던 문서도 마찬가지입니다. `retarget`은 잠긴 부분만 남겨 두고 경고하지만(`file_skipped`), `--supersede`에서는 선행 문서의 status 변경이 필수이므로 잠금이 그 변경을 막으면 아무것도 쓰기 전에 같은 설명과 함께 명령 전체를 거부합니다.
 
 ### 잠금과 Status flow
 

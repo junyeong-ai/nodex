@@ -218,13 +218,18 @@ pub fn run(
     // document's relation fields are repointed.
     let narrowing = nodex_core::narrow(&probe, root, &config, &[], plans, today)?;
     for held in narrowing.held {
+        let shown = nodex_core::path_guard::forward_string(&held.rel_path);
         if succession
             .as_ref()
             .is_some_and(|plan| plan.rel_path == held.rel_path)
         {
-            return Err(CoreError::Config("the predecessor's lifecycle change was held; no part of the replacement was written".into()).into());
+            return Err(CoreError::Config(format!(
+                "retarget --supersede cannot complete: marking {shown} superseded by `{}` is \
+                 refused, and nothing was written: {}",
+                args.new_id, held.reason
+            ))
+            .into());
         }
-        let shown = nodex_core::path_guard::forward_string(&held.rel_path);
         skipped.push(match held.kept {
             nodex_core::Kept::Whole(lock) => format!(
                 "{shown} references {} but is locked ({lock}); it was not repointed — the \
@@ -235,7 +240,7 @@ pub fn run(
                 "{shown} was repointed to `{}`, except in {}, which is locked — there the \
                  reference keeps naming `{}`",
                 args.new_id,
-                super::held_back_parts(&parts),
+                nodex_core::named_parts(&parts),
                 args.old_id
             ),
         });
