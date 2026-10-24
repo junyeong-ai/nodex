@@ -485,7 +485,7 @@ Error code는 typed `nodex_core::error::Error`의 `downcast_ref`로 도출하며
 
 | 코드 | 의미 |
 |---|---|
-| `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언, 어느 `identity` 룰에도 걸리지 않는 문서, walk가 읽지 못한 트리 부분, scope가 받지 않는 `check --content` 경로 |
+| `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언(어떤 파일과도 일치하지 않는 `scope.include`·`identity` glob, 아무것도 막지 않은 `scope.exclude`), 어느 `identity` 룰에도 걸리지 않는 문서, walk가 읽지 못한 트리 부분, scope가 받지 않는 `check --content` 경로 |
 | `snapshot_divergence` | 스냅샷 변경 또는 최신성 검사 실패 — 변경 시 재빌드, 검사 실패 시 메시지에 표시된 원인 해결 |
 | `violations_introduced` | 쓰기가 새로 만든 Error-severity 위반을 거부하지 않고 쓴 채로 알림: 설정 기본값만으로 만든 `scaffold`에서 새 문서의 위반은 채워야 할 자리표시임 (위반마다 경고 하나) |
 | `id_changed` | 쓰기 뒤 문서의 id가 바뀜: 경로에서 도출한 id를 고정할 frontmatter가 없는 문서를 `rename`함. 옛 id를 가리키는 참조는 더 이상 이 문서로 해석되지 않고, baseline에는 새 id의 기록이 없음 |

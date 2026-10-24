@@ -493,7 +493,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 
 | Code | Meaning |
 |---|---|
-| `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing, a document no `identity` rule names, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
+| `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing (a `scope.include` or `identity` glob matching no file, a `scope.exclude` that kept nothing out), a document no `identity` rule names, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
 | `snapshot_divergence` | Snapshot drift or a failed freshness probe — rebuild for drift; resolve the probe error named in the message |
 | `violations_introduced` | A write landed with Error-severity findings it introduced instead of refusing them: a `scaffold` from config defaults alone, whose findings on its new document are the placeholders to fill in (one warning per finding) |
 | `id_changed` | A write left a document under a different id: `rename` of a document with no frontmatter to anchor its path-derived id in. References naming the old id no longer resolve to it, and the baseline holds nothing under the new one |
