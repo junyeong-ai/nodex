@@ -322,6 +322,12 @@ mod tests {
             length <= 1_024,
             "description is {length} chars; the Agent Skills spec caps it at 1,024"
         );
+        // The spec forbids XML tags in a description, and the packaging
+        // validator refuses any angle bracket — `<ref>` included.
+        assert!(
+            !description.contains(['<', '>']),
+            "description contains an angle bracket, which packaging refuses as an XML tag"
+        );
         // The release refuses a mismatch, which is one push too late: this is
         // the file a bump is easiest to forget, and `check.sh` is what runs
         // before the push.
