@@ -27,14 +27,16 @@ From a release before 0.55:
 2. [Quick Start](#quick-start)
 3. [Walkthrough: From Files to Answers](#walkthrough-from-files-to-answers) — build, query, check, and gate an edit on three files
 4. [Core Concepts](#core-concepts) — files become a graph, edge types, frontmatter schema
-5. [How It Works](#how-it-works) — build pipeline, incremental cache, query algorithms
-6. [JSON-First CLI](#json-first-cli) — envelope, error codes, exit codes, command reference
-7. [Validation & Lifecycle](#validation--lifecycle) — built-in rules, strict mode, diff-aware rules
-8. [Diff & Export](#diff--export) — structural delta, JSON Schema, enum manifests
-9. [Configuration](#configuration) — the `nodex.toml` reference
-10. [Architecture](#architecture) — workspace, modules, design invariants
+5. [How It Works](#how-it-works) — build pipeline, verified snapshots
+6. [Commands](#commands) — what each command answers
+7. [JSON-First CLI](#json-first-cli) — envelope, exit, error and warning codes, global flags, manifests
+8. [Validation](#validation) — built-in rules, gating edits and commits, locks and status flows, lifecycle
+9. [Configuration](#configuration) — an example `nodex.toml` and what each section controls
+10. [Architecture](#architecture) — workspace and design principles
 11. [Install](#install)
 12. [License](#license)
+
+Per-command and per-key semantics live in the reference the Claude Code skill ships with: [commands](.claude/skills/nodex/reference/commands.md) and [configuration](.claude/skills/nodex/reference/config.md).
 
 ---
 
@@ -65,7 +67,6 @@ nodex makes the implicit graph explicit. It parses your markdown once, builds a 
 - **Pure CLI** — no daemons, no servers, no AI / network dependencies; everything is a synchronous local process
 
 ---
-
 
 ## Quick Start
 
@@ -147,7 +148,7 @@ created: 2025-02-01
 Start from the [GraphQL API decision](../decisions/0002-graphql-api.md).
 ```
 
-A minimal `nodex.toml` says how to read them (full reference is in [Configuration](#configuration)):
+A minimal `nodex.toml` says how to read them (every key is described in the [configuration reference](.claude/skills/nodex/reference/config.md)):
 
 ```toml
 [scope]
@@ -315,34 +316,16 @@ Edges come from two sources: YAML frontmatter fields, and the markdown body itse
 | Source | Default Relation | Example |
 |---|---|---|
 | Frontmatter `supersedes` | `supersedes` | ADR 2 supersedes ADR 1 |
+| Frontmatter `superseded_by` | `supersedes`, from the successor | ADR 1 names ADR 2 as its successor |
 | Frontmatter `implements` | `implements` | Rule implements ADR |
 | Frontmatter `related` | `related` | Guide is related to ADR |
 | Frontmatter `covers` | `covers` | Doc covers `src/auth.rs` (an out-of-graph code path) |
 | Markdown body link `[text](path.md)` | `references` | Body link to another doc |
 | Body wikilink `[[id]]` (with `[parser].wikilink_enabled`) | `references` | Wikilink to a node id |
-| Custom pattern (configurable) | **any new relation name** | e.g. `@path.md` → `imports` |
+| Declared frontmatter relation (`[[parser.frontmatter_relations]]`) | **the declared relation** | `sources: [doc-a]` → `derived_from` |
+| Custom pattern (`[[parser.link_patterns]]`) | **any new relation name** | e.g. `@path.md` → `imports` |
 
-Built-in relations retain their lifecycle and resolution behavior. Add body syntaxes with `[[parser.link_patterns]]`, or ID-only frontmatter relations with `[[parser.frontmatter_relations]]`. Their relation names cannot collide. Body patterns cannot use `covers`, `supersedes`, `superseded_by`, `implements` or `related`; `references` remains legal.
-
-```toml
-[[parser.frontmatter_relations]]
-field = "sources"
-relation = "derived_from" # optional; defaults to field
-retarget = "keep"        # required: keep | repoint
-```
-
-`sources: doc-a` and `sources: [doc-a, doc-b]` author directed edges from this document to exact node IDs, without path or extension fallback. Incoming queries answer the reverse direction without a second authored field. Declared fields are typed by the parser, participate in schema presence/forbidden checks, strict mode, locks, diff and relation-filtered graph queries, and appear under `frontmatter_relations` in node detail. Field names use ASCII letters, digits, `_` and `-`, must remain plain YAML string keys, and cannot replace built-in or structural fields; relation names must be unique, non-empty and cannot contain the filter separator `,`.
-
-`keep` preserves this field during retarget and reports `reference_kept`; `repoint` moves it through the normal mutation gate. This policy does not preserve body links or exempt stale citations. For historical relations, configure `[detection].superseded_reference_ok_relations = ["derived_from"]` independently; missing IDs remain unresolved. Relations describe authored assertions, not inferred truth, transitivity or lifecycle changes.
-
-Markdown destinations resolve only from the referring document’s directory, including bare filenames; they never fall through to root paths or node ids. Wikilinks and configured patterns use the graph lookup ladder: project-root path, source-relative path, then node id, with configured extension candidates. For that graph syntax, `./` explicitly selects the source-relative frame. Empty and `.` segments normalize away; `..` is resolved within the selected frame. Root-anchored paths are refused as `cause: absolute`.
-
-Markdown links are extracted via [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — an AST-based parser, not regex — so links inside fenced code blocks are correctly ignored. Custom pattern captures skip code blocks *and* inline code spans the same way, and the reference rewriter (`rename` / `retarget`) honors the identical surface, so extraction and rewriting never disagree. For a corpus whose citation idiom lives inside spans — node ids written as `` `adr-001` `` — a pattern sets `code_spans = true`: an inline code span whose **entire content** matches the pattern is then a reference on both sides at once, while a partial match inside a span (`` `just adr-tool` ``) and anything in a code block stay code.
-
-Markdown destinations separate URI path, query and fragment before decoding the
-path. Percent-encoded local filenames resolve normally; external schemes and
-network-path references are not local graph edges. Rename preserves query and
-fragment. Heading-anchor validity remains outside the document graph.
+Built-in relations keep their lifecycle and resolution behavior; a project adds its own through the two declarations above ([frontmatter relations](.claude/skills/nodex/reference/config.md#frontmatter-relations), [body links](.claude/skills/nodex/reference/config.md#body-links)). Markdown links are extracted with [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — an AST parser, not regex — so a link inside a code block stays code; custom patterns skip code the same way, and `rename` / `retarget` rewrite exactly what extraction reads. A Markdown destination resolves from the referring document's directory; wikilinks and custom patterns look a target up as a project-root path, then a source-relative path, then a node id. A target that resolves to nothing stays on the graph as an unresolved edge with its cause, which `check` and `query issues` report.
 
 ### Frontmatter Schema
 
@@ -369,22 +352,6 @@ fragment. Heading-anchor validity remains outside the document graph.
 
 ---
 
-### Query and policy contracts
-
-Markdown links resolve relative to their source document. Wikilinks and configured patterns use graph lookup. Each edge's `references` array retains source, syntax, decoded target and location for every authoring site of one logical relation. Body locations give the one-based file lines `start_line` and inclusive `end_line`, including definitions or code spans that determine the reference; frontmatter locations name the authored `field`. Unresolved listings also expose the sought lookup names. Their `sources`, and reference findings' `details.sources`, report each site's protection and constraining rule IDs. An unresolved edge's `source_protection` is `protected` only when every site is protected, `unprotected` when any is unprotected, and `unknown` otherwise. Protection does not establish historical target validity; unprotected does not authorize an edit. Gate proposed bytes with `check --content`. Custom frontmatter attributes remain attributes; only the documented relation fields create edges.
-
-Default inferred ids use `{kind}-{path_slug}` to distinguish repeated filenames. Explicit ids and configured identity templates remain authoritative. `scaffold --force` preserves the existing identity unless `--id` explicitly replaces it.
-
-`query node` omits internal fingerprints. `--with-body --body-lines START:END` returns the body between those inclusive file lines, with `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `query nodes --missing reviewed` finds absent review metadata. `query stale` and `query orphans` disclose `subjects` and `unjudged`; missing review dates are unjudged, rather than stale or freshly reviewed.
-
-`[rules] severity = { orphan = "error", unresolved_reference = "error" }` promotes registered warning rules consistently in checks, exports and write gates. Structural errors cannot be weakened; unresolved-policy rows own their severity. `init` promotes unmatched unresolved references to errors. Similarity ranks comparison candidates; it does not establish correctness or authorize a lifecycle change.
-
-Use `nodex retarget <old-id> <new-id> --supersede` to plan lifecycle and exact resolved-reference edits together, including Markdown paths. Locked historical citations are preserved and reported. File replacements report partial failures; the batch is not a filesystem transaction.
-
-Each `[[statuses.flow]]` declares one lifecycle over disjoint kinds; a wildcard flow cannot coexist with another flow. Global terminal vocabulary is shared. Flows enforce declared transitions, not human approval.
-
-A configured `rules.immutable_baseline` also governs `--since` and content proposals. `--since` selects the report and history range without replacing that baseline. Proposals reject existing lock drift on targeted records and judge introduced status-flow findings. Choose `immutable_history = "snapshot"` to permit branch-only revisions, and `immutable_baseline_mode = "merge_base"` when the baseline should follow shared ancestry.
-
 ## How It Works
 
 ### Build Pipeline
@@ -404,68 +371,61 @@ flowchart LR
   scan --> cache --> read --> parse --> dedupe --> resolve --> validate --> built
 ```
 
-| Stage | What it does | Module |
-|---|---|---|
-| **Scan** | Walks the filesystem using `[scope].include` / `exclude` globs. Applies `conditional_exclude` to drop a terminal parent's `child_glob`-matching sub-artifacts (reported on the build result, never silent). | `builder/scanner.rs` |
-| **Cache** | Loads `_index/cache.json`. Cache invalidates when the SHA-256 key of `parser::ParseConfig` (parse-affecting settings) and the `nodex` binary version changes; check-only tuning preserves it. | `builder/cache.rs` |
-| **Read** | Reads file contents in parallel via `rayon::par_iter`. A file that cannot be delivered as text (unreadable, or not valid UTF-8) becomes a typed `ParseFailure` on the graph — an Error-severity `parse_failure` in `check`, never a fatal failure or a warning a gate ignores. | `builder/mod.rs` |
-| **Parse** | Per-file SHA256 hash check. On hit, replay the cached `Node` + `RawEdge` set. On miss, parse YAML frontmatter, extract markdown links via pulldown-cmark, run any configured custom-pattern regexes — also in parallel. | `parser/` |
-| **Dedupe IDs** | Reject the build with `Error::DuplicateId { id, first, second }` if two documents resolved to the same node id. | `builder/mod.rs` |
-| **Resolve** | Convert each `RawEdge.target_path` into a node id. Strict matching only. Unmatched targets become `ResolvedTarget::Unresolved { raw, cause }` (surfaced by `query issues`, never silently dropped). Mirror every `superseded_by: Y` scalar into a canonical `supersedes` edge — or, when `Y` is unknown, an unresolved `superseded_by` edge so the dangling reference still surfaces. | `builder/resolver.rs`, `builder/mod.rs` (`derive_superseded_by_edges`) |
-| **Validate** | Iterative 3-color DFS over `supersedes` edges to detect cycles. | `builder/validator.rs` |
-| **Graph** | Sort edges and nodes for deterministic output, then construct the immutable `Graph`: nodes in an `IndexMap`, edges in a `Vec`, plus pre-built `incoming` / `outgoing` adjacency indices. | `model/graph.rs` |
+| Stage | What it does |
+|---|---|
+| **Scan** | Walks `[scope]`'s include / exclude globs; a `conditional_exclude` rule drops a terminal parent's sub-artifacts, and the build names them |
+| **Cache** | Reuses `_index/cache.json` for every file whose SHA-256 is unchanged; the cache is keyed on the parse-affecting settings and the binary version, so tuning a check keeps it |
+| **Read** | Reads files in parallel; a file that is unreadable or not UTF-8 becomes an error-severity `parse_failure`, never a silent drop |
+| **Parse** | Parses frontmatter, extracts Markdown links and runs configured patterns, in parallel |
+| **Dedupe ids** | Refuses the build when two documents resolve to one id (`DUPLICATE_ID`) |
+| **Resolve** | Turns each link target into a node id by exact match; an unmatched target becomes an unresolved edge carrying its cause |
+| **Validate** | Refuses a cycle in `supersedes` (`CYCLE_DETECTED`) |
+| **Graph** | Sorts nodes and edges, indexes adjacency in both directions, and writes `_index/graph.json` |
 
-After the graph is built, `_index/graph.json` is written. Backlinks are derived state — every consumer recomputes them from edges in O(degree) via `Graph::incoming_indices`.
+`build` names what it did not graph — parse failures, conditionally excluded paths, entries holding no document, symlinks it did not follow — each list omitted when empty ([build](.claude/skills/nodex/reference/commands.md#build)).
 
-`build` names what it did not graph, each list omitted when empty: `parse_failures`, `conditionally_excluded` (and `conditionally_kept`, a `child_glob` match the same rule also reads as a terminal parent and so spares), `dangling_paths` (a broken symlink, socket or FIFO the walk met), `unfollowed_paths` and `aliased_paths`.
+### Verified Snapshots
 
-### Read a Verified Snapshot
+Queries answer from `_index/graph.json` without re-parsing. Before answering, a query verifies that the snapshot still matches the configuration, the scope's membership and each document's content, and refuses drift with `GRAPH_OUTDATED`; `--allow-stale` reads with a membership check alone and reports drift as a warning. Queries never rebuild: `nodex build` re-parses only the files whose content changed, and `nodex build --full` ignores the cache. An incompatible snapshot schema is `GRAPH_OUTDATED` in either mode, naming the recorded and supported versions. Each query's envelope carries `snapshot` — what the read verified, and how many documents the snapshot could not parse ([queries](.claude/skills/nodex/reference/commands.md#query), [`nodex status`](.claude/skills/nodex/reference/commands.md#status)).
 
-`nodex query <command>` checks snapshot configuration, scope and
-content before answering. Drift fails with `GRAPH_OUTDATED`; unreadable files fail
-with `IO_ERROR`. This is a probe of the working tree, not a filesystem transaction.
+---
 
-- **Build artifact**: `graph.json` — a derived snapshot of the Markdown sources
-- **Queries** read `graph.json` without rebuilding. By default they verify configuration, scope membership and content, refusing drift with `GRAPH_OUTDATED`. `--allow-stale` explicitly permits snapshot reads with membership-only verification and drift advisories; missed lookups still probe content. `query node --with-body` reads revision-checked bodies. Unresolved-edge checks additionally probe the filesystem
-- **Incremental**: SHA256 per file means only changed files re-parse on the next build. Add `--full` to force a fresh build
+## Commands
 
-Snapshot queries include envelope `snapshot` with `verification` (`membership`,
-`content`, or `unavailable`), `unbuildable` (recorded parse failures), optional
-`unfollowed` (measured in-scope directory boundaries), and optional `divergence`.
-Membership verification does not check content; content verification does not mean
-all documents parsed. Inspect `status` or `check` for failed paths.
+| Command | Answers |
+|---|---|
+| `nodex init` | Writes an annotated `nodex.toml`, pinned to the running binary |
+| `nodex build [--full]` | Builds the graph snapshot; `--full` ignores the cache |
+| `nodex status` | Whether the snapshot matches the working tree, and where it diverges |
+| `nodex check` | Every registered rule over the project; `--content` gates proposed bytes, `--staged` the next commit, `--since <ref>` a history range |
+| `nodex report` | Writes `GRAPH.md`, a readable summary of the graph |
+| `nodex diff <a> <b>` | The nodes, edges, statuses, fields, paths and annotations that changed between two git refs |
+| `nodex impact <a> <b>` | The diff, plus what depends on each changed document and which references now dangle |
+| `nodex query search <kw>` | id, title and tag matches, with each field's contribution to the score |
+| `nodex query nodes` | Documents matching kind, status, tag, field, missing-field and body-text filters, projected to the fields asked for |
+| `nodex query node <id>` | One document with its edges and, on request, its body; `--path` looks it up by file |
+| `nodex query backlinks <id>` | Every document linking to it |
+| `nodex query chain <id>` | The whole supersession lineage, oldest first, from any member |
+| `nodex query dependents <id>` | What references it, directly or within `--depth` hops |
+| `nodex query neighborhood <id>` | Everything within N hops in either direction |
+| `nodex query components` | Connected components, largest first |
+| `nodex query orphans` | Live documents nothing references, after the configured exemptions |
+| `nodex query stale` | Live documents whose last review is `[detection].stale_days` or more days old |
+| `nodex query recent` | Documents whose date field falls within a window |
+| `nodex query similar` | Comparison candidates for a document or a draft title, by title, tag and neighbour overlap |
+| `nodex query covered-by <path>` | Documents whose `covers:` names a code path or a directory holding it |
+| `nodex query annotations` | Body markers grouped by declared block and key |
+| `nodex query issues` | Orphans, stale documents, unresolved references and rule findings in one report |
+| `nodex scaffold` | A new document with valid frontmatter, written through the write gate |
+| `nodex rename <old> <new>` | Moves a document and rewrites the references to it |
+| `nodex retarget <old> <new>` | Repoints references from one id to another; `--supersede` also supersedes the old document |
+| `nodex lifecycle supersede <id>` | Marks a document superseded by `--to <new-id>` |
+| `nodex lifecycle set <id>` | Sets `--status` to any status the document's kind allows |
+| `nodex lifecycle review <id>` | Records today as the review date |
+| `nodex migrate` | Plans frontmatter for bare Markdown; `--apply` writes it |
+| `nodex export …` | The manifests listed under [Manifests](#manifests) |
 
-Snapshot schema versions are checked before decoding graph data. An incompatible
-schema yields `GRAPH_OUTDATED` with the recorded and supported versions; run
-`nodex build --full` in that project to regenerate it. `--allow-stale` does not
-bypass schema compatibility. Queries never rebuild snapshots automatically.
-
-For hooks and concurrent invocations, global `--jobs N` limits parallel workers
-per process; otherwise Rayon uses `RAYON_NUM_THREADS` or available CPUs.
-`check --content` reuses unchanged parses within the invocation without persisting
-proposals or replacing content-hash validation.
-
-### Query Algorithms
-
-| Query | Result | Algorithm |
-|---|---|---|
-| `search <kw>` | id/title/tag matches with score | Substring match, scored |
-| `nodes [--kind --status --tag]` | Every node matching every named predicate | Linear filter, no ranking |
-| `backlinks <id>` | Nodes linking to target | `incoming_indices(id)` lookup |
-| `chain <id>` | Supersession chain | Full lineage from any member, oldest → newest |
-| `node <id> \| --path` | Full node + incoming/outgoing | Lookup (id direct, path linear) + both adjacency indices |
-| `orphans` | Live nodes with zero external incoming edges | Linear scan + the four exemptions |
-| `stale` | Active docs whose `reviewed` is `stale_days` or more days old | Linear scan, filter by status + `reviewed` |
-| `recent` | Docs with date in window | Linear scan + date filter |
-| `similar` | Score-ranked candidates | Title-token, tag and graph-neighbour Jaccard overlap |
-| `components` | Connected component partition | Undirected BFS, deterministic ordering |
-| `neighborhood <id>` | Nodes within N hops | Bounded BFS (undirected) |
-| `dependents <id>` | The nodes that reference it, or with `--depth N` every node within N hops | Reverse BFS over incoming edges (default 1 hop), narrowed by `--relations` |
-| `annotations` | Body markers grouped by block and key | Linear scan over extracted annotations |
-| `covered-by <path>` | Docs covering this path or a directory holding it | Linear scan over `covers:` frontmatter |
-| `issues` | Orphans + stale + unresolved + rule violations + skipped rules + rule coverage | Composes the above + `check` under the resolved `rules.immutable_baseline` |
-
-**Note on adjacency**: only resolved edges are indexed. `Unresolved { raw, cause }` edges still exist on the graph (so you can list them via `query issues`) but don't appear in `incoming_indices`.
+`scaffold`, `rename` and `retarget` take `--dry-run`, which runs every gate and writes nothing. Flags, payloads and edge cases: [command reference](.claude/skills/nodex/reference/commands.md); `nodex export commands` lists every leaf and flag.
 
 ---
 
@@ -495,9 +455,19 @@ Every operational command emits JSON to stdout; only clap's help surfaces (`--he
 }
 ```
 
+### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Completed without a command error or batch write failure; policy holds and scope advisories may remain |
+| `1` | `nodex check` found `severity = error` violations |
+| `2` | Error envelope, actual batch write failures with the result envelope retained, or output stdout would not take (a pipe closed early, a full disk) |
+
 ### Error Codes
 
 Error codes are derived from the typed `nodex_core::error::Error` enum via `downcast_ref` — they are **never** string-matched on messages.
+
+<!-- published:error-codes -->
 
 | Code | Cause |
 |---|---|
@@ -520,9 +490,13 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `INVALID_ARGUMENT` | clap parse failure |
 | `INTERNAL_ERROR` | Anything unclassified (bug) |
 
+<!-- /published:error-codes -->
+
 ### Warning Codes
 
 A `warnings[]` entry describes the result's scope, retention or other conditions. Warnings do not establish success; read the exit code and result, including batch `failures`.
+
+<!-- published:warning-codes -->
 
 | Code | Meaning |
 |---|---|
@@ -540,13 +514,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `threshold_undeclared` | A listing asked by a detection threshold the project does not declare measured nothing — `query stale` without `[detection].stale_days` — so its empty answer is not a clean one |
 | `cache` | A cache could not be read or persisted; the next run redoes that work |
 
-### Exit Codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Completed without a command error or batch write failure; policy holds and scope advisories may remain |
-| `1` | `nodex check` found `severity = error` violations |
-| `2` | Error envelope, actual batch write failures with the result envelope retained, or output stdout would not take (a pipe closed early, a full disk) |
+<!-- /published:warning-codes -->
 
 ### Global Flags
 
@@ -558,255 +526,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 | `--check-version <REQ>` | Refuse to run unless the binary version satisfies the SemVer requirement (CI pin) |
 | `--today <YYYY-MM-DD>` | Evaluate date-relative rules and queries — staleness, orphan grace, recency windows — and date what nodex writes as if today were DATE, so a run is reproducible |
 
-### Command Reference
-
-| Command | Description |
-|---|---|
-| `nodex init` | Generate `nodex.toml` with annotated defaults |
-| `nodex build [--full]` | Build graph; `--full` ignores cache |
-| `nodex status` | Graph snapshot state — `absent` / `unreadable` / `schema_mismatch` / `outdated` / `current`, with the exact divergence (`config_changed`, `added_paths`, `removed_paths`, content-probed `changed_paths`) and the snapshot's recorded `unbuildable_paths`. A probe, not a gate: exit 0 whenever the probe runs |
-| `nodex check [--severity error\|warning] [--since <ref>] [--staged] [--content <path>=<-\|FILE> ...]` | Run validation rules; `--since` narrows the report to what the diff answers for — each rule says which of its findings (see *Diff-Aware Validation*) — and activates diff-aware rules; `--content <path>=<source>` (repeatable) validates proposed (unwritten) bytes overlaid on the working tree in one build, gating an edit — or a multi-file batch — at its source, and excludes `--since` and `--staged`; `--staged` judges the project as the next commit records it (see *Commit-Time Validation*); exit 1 on errors. `--severity` is an exact-match **display** filter — `--severity warning` lists only warnings and `--severity error` only errors, while `has_errors`, the per-proposal verdicts and the exit code answer for every violation checked; a `gate_suppression` warning says how many the filter hid. In content mode the envelope additionally carries `standing`: the proposed nodes' warning-severity violations in the proposed state (the absolute view) — `violations` is the introduced delta, so a node's pre-existing housekeeping warnings (`stale_review`, `git_drift`) cancel out of it and an advisory consumer reads them from `standing` without a second project-wide check |
-| `nodex diff <ref-a> <ref-b>` | Structural delta between two git refs |
-| `nodex impact <ref-a> <ref-b> [--depth N --relations a,b]` | "What breaks if I merge this?" — the diff plus each modified node's dependents up to `--depth` hops (default 1), each removed node's direct referrers that still point at it (now dangling), and each moved node's both — what still depends on it where it is, and what still points at where it was — with a `likely_breaking` list of the removed and moved nodes the *after* graph still references at a place they are not |
-| `nodex report` | Generate `GRAPH.md` from current documents. Use `build` to write the JSON snapshot. |
-| `nodex migrate [--apply]` | Inject frontmatter into legacy docs (dry-run by default) |
-| `nodex rename <old> <new> [--dry-run]` | Move file and rewrite body-link references (resolver-consistent, code-fence aware). A destination the scan would not admit is refused — but only for a *tracked* source; an untracked file (outside scope, or conditionally excluded) gets a plain guarded move with no gate, id anchoring, or rewriting. A source spelling the filesystem aliases onto a tracked document (letter case, Unicode normalization) is refused with the canonical spelling. A referencing doc whose body is immutability-locked is skipped with a warning instead of defaced — frozen history keeps its original spelling. Every reference the move leaves something to say about is named once: one it declined to repoint (it will dangle), and one it left standing that now names somebody else — the second is the only report a valid-but-changed graph gets. `--dry-run` reports the same result as `completion: planned` without writing |
-| `nodex retarget <old-id> <new-id> [--supersede] [--dry-run]` | Repoint resolved references, including Markdown paths, onto `<new-id>`; the successor doc is skipped so nothing there names itself, and it reports the predecessor references it kept — every one but `supersedes`, which is the succession record. A reference-unsafe successor id (trim-unstable / wikilink metacharacters) is refused up front, and a doc locked by `body_immutable` — or by a `frontmatter_immutable` block covering a relation field — is skipped with a warning instead of rewritten. `--supersede` composes the lifecycle change in the guarded proposal. `--dry-run` reports the planned result without writing |
-| `nodex scaffold --kind X --title "..." [--id ...] [--path ...] [--body <-\|FILE>] [--field KEY=VALUE]... [--dry-run] [--force]` | Create new document with valid frontmatter — no prior `nodex build` needed (the before-graph is built live from the working tree). `--body` supplies the markdown body (same SOURCE grammar as `check --content`); `--field` supplies frontmatter pairs (value is YAML) that feed the cross_field fixpoint. Supplying either engages the strict gate: an Error-severity check violation the document introduces refuses with `CONTENT_VIOLATIONS`; default-only scaffolds write with advisories. A path the scan would not admit is refused — a scaffolded doc the build can never graph is a write-only file |
-| `nodex query search <keyword> [--status x,y] [--limit N]` | id/title/tag matches ranked by score; body text is the `query nodes --body-contains` filter |
-| `nodex query backlinks <id> [--limit N]` | All nodes linking to target |
-| `nodex query chain <id>` | Full supersession lineage from any member (oldest → newest) |
-| `nodex query orphans [--limit N]` | Live nodes no other document's record names — zero external incoming edges, and no predecessor naming it as `superseded_by` (the one authored pointer the graph folds into an edge the other way) — outside `orphan_ok_kinds`, per-node `orphan_ok` and `orphan_grace_days` (self-links don't count); the same population the `orphan` rule guards |
-| `nodex query stale [--limit N]` | Active docs whose `reviewed` date is `stale_days` or more days old (a doc with no `reviewed` is not listed); without `stale_days` it lists nothing and carries `threshold_undeclared` |
-| `nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags] [--where F=V ...] [--missing F1,F2] [--body-contains TEXT] [--limit N] [--fields id,title,...]` | Generic listing primitive — every node matching every predicate (AND across categories, OR within). `--body-contains` keeps documents whose body contains TEXT (case-insensitive), read at the indexed revision. Empty filter returns every node in id order. `--where field=value` (repeatable) narrows by exact field equality over the scalar fields of the same vocabulary as `--fields` (`path` included; a collection built-in like `tags` is rejected — use `--tag`), matched with the same read as a `cross_field` `when` predicate. `--fields` projects the result: the named identity-spine fields (`id,title,kind,status,path`) in place, and any project-declared frontmatter field (other built-ins, `attrs` keys) under a nested `attrs` object — so an agent pulls a document's own frontmatter in one listing instead of reparsing files; an undeclared field is a `CONFIG_ERROR`. Tag matching is case-insensitive (same fold every tag-consuming surface uses). |
-| `nodex query node <id> \| --path <file> [--with-body [--body-lines START:END]]` | Full node detail with incoming + outgoing edges. `--path` is the reverse lookup for editor / IDE integrations holding the file path (`./`-prefixed and root-contained absolute forms normalise to the project-relative path); `--with-body` attaches the canonical body text (`""` for body-less docs, key absent when not asked) so agents skip a separate file read. |
-| `nodex query covered-by <path>` | Docs whose `covers:` frontmatter names this path or a directory holding it, the reach git drift measures. The declaring value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`; the `<path>` argument is a needle with no frame, so `./`, `..` and `\` in it normalise away |
-| `nodex query issues` | Unified orphans + stale + unresolved + rule violations + skipped rules + per-rule coverage. Resolves `rules.immutable_baseline` exactly as a default `check`, so immutability violations surface here without `--since`. The typed listings and the violations are two views of one set of findings: `orphans` and `stale` each carry a gate record in `violations` (`orphan`, `stale_review`), and a finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions, and `by_category` counts each finding under the rule that found it, keyed `violation_<rule_id>`. Unresolved warning and error findings follow the same rule-based counting; info rows are reported under their policy name outside `total` |
-| `nodex query similar [--id <id> \| --title "<t>" [--tags a,b]] [--kind K --parent-dir D --status S --limit N --min-score S]` | Return only candidates with positive title-token, tag or graph-neighbour overlap. `--kind`, `--status` and `--parent-dir` filter candidates independently of score; parent directory is an exact project-relative match. Supply prospective tags with `--title` and `--tags a,b`. Components absent from the target are omitted; missing candidate sets measure zero. Readers decide semantic duplication. |
-| `nodex query recent [--days N --field F --kind K --since YYYY-MM-DD --limit N]` | Docs whose configured date field falls in a recent window |
-| `nodex query components [--max-size N --limit N]` | Partition the graph into connected components (undirected, largest first); `--max-size` keeps those of at most N members |
-| `nodex query neighborhood <id> [--depth N]` | Nodes within `N` hops of `<id>` (undirected) |
-| `nodex query dependents <id> [--depth N --relations a,b]` | Reverse traversal — the nodes that depend on `<id>` within N hops (default 1) |
-| `nodex query annotations [--name <name>] [--min-count N] [--with-frontmatter f1,f2,...]` | Group body-text markers declared by `[[annotations]]` by capture key; `--name` exact-matches one declared `[[annotations]]` block name (not a glob; unknown name → `CONFIG_ERROR`); `--min-count` keeps only keys with at least N occurrences; `--with-frontmatter` enriches each source with selected frontmatter fields (built-in or project-declared) so consumers avoid file re-reads |
-| `nodex lifecycle <action> <id> [--to id \| --status s]` | Transition: `supersede --to <new>`, `set --status <s>` (any allowed status), `review` |
-| `nodex export schema` | JSON Schema (draft 2020-12) for the project's frontmatter |
-| `nodex export enums` | Closed-vocabulary manifest (kinds, statuses, per-field enums) |
-| `nodex export rules` | Registered-rules manifest — every rule the current config registers, with `id`, `source` (`builtin` / `config`), `severity`, `description`, `diff_aware` / `judges_steps` and a per-rule `params` payload (a registered rule can still report itself in `skipped_rules` when it runs) |
-| `nodex export envelope-schema [--inline-refs]` | JSON Schema (draft 2020-12) of every CLI envelope shape — drives codegen for typed downstream consumers; `--inline-refs` emits each per-command schema fully self-contained (no `$ref`/`$defs`) for `$ref`-naive generators |
-| `nodex export config` | Resolved document-locating surface: scope, output, parser, scaffold templates, identity rules in evaluation order plus the code-level fallbacks (`fallback_kind`, `fallback_id_template`), and the resolved global `initial_status` (a kind a `[[statuses.flow]]` governs starts at that flow's `initial`) |
-| `nodex export commands` | The authoritative CLI grammar: the global flags, then every leaf's `path` tokens, its `per_command` schema key, its positionals (name, required) and its flags (spelling, whether it takes a value, repeats or is required) |
-| `nodex export diagnostics` | Error-code and exit-code vocabularies — the closed sets of envelope `error.code` values (each tagged `core`/`cli` origin) and advisory `warnings[].code` values, plus the `0`/`1`/`2` exit-code contract, so a consumer codegens an exhaustive error enum instead of hard-coding it from prose |
-
-### Creation and ranking
-
-Scaffold returns `data.candidates` with similarity scores and component breakdowns
-when candidates exist. Ranking supplies comparison candidates; it does not decide
-whether a document is a duplicate or should be superseded.
-
-Creation uses `--path` or an explicit template in `[scaffold.paths]`; classification
-globs never choose a destination. `{slug}` is the title slug and `{stem}` adds
-configured sequence numbering when used as the complete filename stem.
-
-```toml
-[scaffold.paths]
-adr = "docs/decisions/{stem}.md"
-spec = "specs/{slug}/spec.md"
-```
-
-Use explicit status and supersession records to identify what governs. `query similar` supplies comparison candidates, without establishing semantic duplication. Candidate filters do not change the target or historical evidence. A target without weighted signals produces a warning with structured `count` and `reason`.
-
----
-
-## Validation & Lifecycle
-
-### Built-in Rules
-
-`nodex check` runs every registered rule against the graph and emits a flat list of `Violation` records. Each violation carries `rule_id`, `severity`, optional `node_id` / `path`, a human `message`, and a typed `details` object: a stable machine category (the `type` discriminator) plus the structured parameters of the failure (offending field, expected set, failing value). The `message` is a single-source rendering of `details`, so an agent can branch on `details.type` and propose a fix without parsing prose. The response also lists `skipped_rules: [{rule_id, reason}]` for rules that declined to fire, and `rule_coverage: [{rule_id, unit, subjects, unjudged}]` for every rule that *did* — the population of nodes / edges / files that rule guards. The two partition the registry, so a consumer can ask whether the gate was complete and not only whether it found anything: an empty `violations` is what a thorough pass and a vacuous one both look like, and a rule reporting `subjects: 0` was in effect over nothing whatever its config declares. `subjects` counts what the rule protects, never what it caught — a `body_line` block counts documents of its kinds, `parse_failure` counts every document the build attempted, and a diff-aware lock counts the records it is armed over rather than the ones edited on this run. An immutability lock is armed only over records the baseline also holds: a diff carries its per-node channels over the ids both snapshots have, so a document with no baseline record cannot be judged against one and is left out of the reach. Records the scope selected and the rule cannot judge are reported beside the reach as `unjudged`, so a single response carries both. It is a difference rather than a defect, and what a non-zero points at is the rule's own question: an immutability lock counts a document added since the baseline — which costs nothing — alongside one whose baseline record went missing, and cannot tell them apart; `git_drift` counts a node whose every drift-relation edge went unmeasured, which is a reference to fix rather than a baseline to refresh.
-
-| `rule_id` | Severity | What it checks |
-|---|---|---|
-| `parse_failure` | error | Every in-scope document parses; a dropped document (unparseable YAML, non-mapping frontmatter, a non-string key, unclosed `---` fence) is a node-less error, never a warning a gate ignores |
-| `field_parse` | error | Parser-owned frontmatter fields parse as their type; a failed value (bad date, bad bool, non-string scalar) reads as absent and is flagged on the still-present node |
-| `required_field` | error | Every required field (per `[schema].required` + per-kind override) is present |
-| `forbidden_field` | error | No field a per-kind override lists in `forbidden` is present (registered only when one does) |
-| `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
-| `field_enum` | error | `attrs` + `kind` + `status` are in the declared `enums` allow-list |
-| `cross_field` | error | Conditional requirements like `when status=superseded require superseded_by` |
-| `unknown_field` | error | Undeclared frontmatter keys (active only under `[schema].mode = "strict"`) |
-| `explicit_field` | error | Named inferrable built-ins (`id` / `title` / `kind` / `status`) are authored, not left to inference (opt-in via `[schema].require_explicit`) |
-| `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` regex |
-| `sequential_numbering` | warning | No gaps in the leading number of files matching a `[[rules.naming]]` block with `sequential = true` |
-| `unique_numbering` | error | No two files matching a `[[rules.naming]]` block with `unique = true` share the same leading number |
-| `stale_review` | warning | Active (non-terminal) nodes whose `reviewed` date is `[detection].stale_days` or more days old; missing `reviewed` counts as `unjudged`; list these with `query nodes --missing reviewed`, or require the field to make absence an error. Registered only when `stale_days` is set |
-| `orphan` | warning | Live nodes no other document's record names — neither an incoming reference nor a predecessor's `superseded_by` — outside `[detection].orphan_ok_kinds`, the per-node `orphan_ok` flag, and `[detection].orphan_grace_days` |
-| `superseded_reference` | warning | Live nodes citing a terminal node whose `supersedes` lineage continues in a live one; `details.current` names where it continues. A citation from the superseding lineage itself passes, and so does one of a terminal node whose lineage ends in terminal nodes (archived, deprecated). Not asked: `supersedes` itself, kinds in `[detection].superseded_reference_ok_kinds`, relations in `[detection].superseded_reference_ok_relations`, a target the citing document names in a marker of the `[[annotations]]` block `[detection].superseded_reference_ok_annotation` names (keyed by the target's id, so it covers every body citation of that target from that document; its frontmatter relations to the target stay asked), and protected authoring sites. A logical edge remains judged if any non-exempt site is unprotected; if none is unprotected and a non-exempt site's protection is unknown, it counts as `unjudged`. Newly appended citations do not inherit the prefix's protection, including citations completed by an appended reference definition |
-| `git_drift` | warning | Active nodes whose referenced targets — linked docs and `covers` code paths, a file or a whole directory — have accumulated more than `git_drift_threshold` commits since `reviewed` (opt-in). The measure is commits that *introduced* a change to the target on a day after `reviewed`: whole history, not the simplified view `git log -- <path>` shows by default, and a merge counts only where it differs from every parent. A `check` of the working tree or the index keeps the history it walked in `_index/history.json`, keyed by the commit it was taken at, so the next command walks only the commits since; the whole history is walked again where `HEAD` does not reach the kept commit, or where git can reshape history in place (a shallow clone, a graft, a replace ref) |
-| `frontmatter_immutable/<name>` | error | One per `[[rules.frontmatter_immutable]]` block — a locked field changed on a doc the block's `trigger` had already armed at the reference point (diff-aware: needs `--since` or `rules.immutable_baseline`) |
-| `body_immutable/<name>` | error | One per `[[rules.body_immutable]]` block — body edited after the block's `trigger` engaged (`terminal`: doc was already terminal; `status`: it held one of the statuses the block names; `creation`: a prior committed snapshot exists); `mode = "frozen"` rejects any change, `mode = "append_only"` requires the locked body to remain a prefix of the new body, and `append_section` confines that growth to one closing section (diff-aware) |
-| `status_transition` | error | A status moved somewhere `[[statuses.flow]]` does not declare, over the kinds that flow governs — a move out of a terminal status included (registered only with a flow; needs a git work tree) |
-| `status_entry` | error | A record entered the flow at anything but its entry status (registered only with a flow; needs a git work tree) |
-| `body_line/<name>` | error | One per `[[rules.body_line]]` block — lines matching `pattern` outside code blocks must carry capture values from declared enums |
-| `acyclic_relation` | error | The resolved edge graph must stay acyclic for every relation in `rules.acyclic_relations` (default `["implements"]`); one finding per document caught in a cycle, naming the relation, the region and one in-region edge out of the document to cut. (`supersedes` is validated separately — and harder — as a build-time error) |
-| `unresolved_reference` | warning | Unmatched unresolved references; `rules.severity` may promote this to error |
-| `unresolved_reference/<name>` | configured | One per non-info policy row; warning and error findings are counted once through `check` |
-
-Adding a custom rule means implementing the `Rule` trait in `nodex-core/src/rules/` and registering it in `registered_rules()`.
-
-Batch writes report `completion: planned | complete | partial`. A partial result
-with actual write failures keeps its result JSON and exits 2. Policy holds alone
-exit 0; inspect holds and scope warnings before continuing.
-Completion describes edits over the configured readable corpus; scope warnings
-still matter. A no-op can be complete.
-
-`rename` prepares the destination content before moving the source without editing it.
-A failed move leaves source content unchanged. If the destination rewrite fails after
-moving, inbound references stay unchanged and the result reports `partial` and
-`failures`; `id_stability.type: anchor_failed` names the id it could not preserve.
-Inspect the moved file before retrying. The move and file rewrites are not a filesystem
-transaction and have no automatic rollback.
-
-### Schema Mode
-
-`[schema].mode` controls how undeclared frontmatter keys are treated:
-
-- `lenient` (default): undeclared keys land in `Node::attrs` untouched
-- `strict`: any frontmatter key not built-in and not declared in `types` / `enums` / `required` / `cross_field` (global + per-kind override) or a per-kind `forbidden` fires a `unknown_field` violation — catches typos like `relatd:` or `Implementss:`
-
-### Lifecycle Actions
-
-`nodex lifecycle <action> <node-id>` is the dedicated command for changing a document's status (`retarget --supersede` runs the same `supersede` step together with its reference edits). It goes through `lifecycle::transition()`, which validates the source status, edits the YAML frontmatter in place, and refuses to write through symlinks.
-
-| Action | Resulting `status` | Other fields written |
-|---|---|---|
-| `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
-| `set --status <s>` | `<s>` | `updated: <today>` |
-| `review` | (unchanged) | `reviewed: <today>` (refused when the existing `reviewed` date is in the future — never moves backward) |
-
-`updated: <today>` is left out where the document's kind lists `updated` in its override's `forbidden`.
-
-### Status flow
-
-`[[statuses.flow]]` declares a lifecycle — which statuses follow which, over the kinds that have one:
-
-```toml
-[[statuses.flow]]
-kinds = ["adr"]          # empty = every kind
-initial = "proposed"     # where a governed kind starts; omitted = [statuses].initial
-transitions = { proposed = ["active"], active = ["superseded", "archived"] }
-```
-
-Declared, it registers `status_transition` and `status_entry`, and `lifecycle`, `retarget --supersede` and `scaffold --force` refuse a move it does not name at the write seam. Omitted, nothing is judged and `[statuses].terminal` stays the only statement nodex has about how a lifecycle ends.
-
-`kinds` is what keeps a lifecycle from being invented for a kind that has none — an ADR is proposed and then accepted, a runbook is written live and has no promotion step. A kind outside the filter is judged by neither rule and keeps whatever status it is authored at. `initial` is what `scaffold`, `migrate` and the parse of a document declaring no status write for the kinds it governs, so a project adopts a lifecycle for one kind without moving the status every other kind is created at.
-
-A flow answers for the statuses it **names** and nothing else: a terminal one has no way out and every other has one, each is reachable from the entry point, and each is admitted by every kind it governs (asked per kind, never over their union). Separately, a status no flow names and no ungoverned kind may hold is refused at load as vocabulary nothing could carry.
-
-Both rules judge history a step at a time, against git rather than `rules.immutable_baseline`: every `check`, `query issues` and write seam judges the uncommitted change — under `check --staged`, the staged one — against `HEAD` (and every `MERGE_HEAD` while a merge is under way), and `check --since <ref>` also judges each commit the heads reach and `<ref>` does not, against its parents. A range therefore reports what a gate on each of its commits would under today's config — a record authored at `proposed` and accepted a commit later passes, and a detour through an undeclared status is reported at the commit that took it (`details.commit`; absent for the uncommitted change). A step finding is about a commit, so a plain `check` never re-judges history. `check --content` judges the step its proposed overlay would commit and gates introduced flow findings; outside a Git work tree both rules skip. A node is its id, so a record the flow governed on no parent *enters* the flow however it got there — authored, moved under a path-derived id, re-keyed, given a governed kind, or restored; `nodex rename` preserves the id by anchoring it in the moved document and produces no arrival. Where a step cannot be read unambiguously — lines that share no commit, a shallow clone's cut or a commit whose tree the build refuses, among others — the record is counted in `unjudged` rather than judged, and the last two are named by a `history_unread` warning. A squash merge enters a record at the status it was accepted at, so a squash-merging repository accepts in a PR of its own, and a `--since` range a shallow clone does not hold is refused (`GIT_ERROR`) — fetch it (`fetch-depth: 0`). How merges, unparseable documents, ignored paths and amended commits are judged, and what each run costs: [`reference/config.md` § Status flow](.claude/skills/nodex/reference/config.md#status-flow). Each flow governs disjoint kinds; overlapping populations are rejected at load.
-
-`supersede` is its own action because superseding carries a structural payload — a successor plus a supersession-DAG safety check. Every other status transition goes through the generic `set`, whose target is any value the project allows. The target is validated against `[statuses].allowed` for the kind being transitioned (its `status` enum, if any) or globally — a project that never models `deprecated` simply doesn't allow it, and `set --status deprecated` is refused at the write seam rather than the vocabulary being forced into every project. `set` also refuses a status a `cross_field` rule governs while the required field is absent (e.g. `superseded`, which needs `superseded_by` — that is `supersede`'s job), so the tool never writes a document its own `check` rejects. The terminal guard still refuses leaving a terminal status, so `set` can never un-terminalize a doc; `review` is the only non-status-changing action.
-
-### Diff-Aware Validation
-
-`nodex check --since <ref>` builds the graph at the named ref, computes a structural diff, and narrows the report to findings that change answers for. A configured `rules.immutable_baseline` remains the lock baseline; otherwise the named ref supplies it. Which findings a diff answers for is each rule's to say (`Rule::touched_by`): by default the finding's own document is one the diff touched — added, removed, or changed, or an edge or annotation it authored moved — with no neighbour expansion; a rule whose findings are decided by other documents' records widens it: `orphan` to the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` (so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record), `superseded_reference` to the cited document and every successor in its lineage, when its own record moved or a pointer at it did (a terminal status or a succession declared there is the edit that makes a standing citation stale), `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or on a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) is always kept, and so is every `status_transition` / `status_entry` finding, each about a step inside the range, a move the range went on to undo included. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. The rules that need two snapshots:
-
-- `frontmatter_immutable/<name>` — freeze declared fields on a doc the block's `trigger` had already armed before the edit (the write that first arms it is allowed; gated on the diff's *before* status). `id` is refused at load because every armed lock already protects identity; a locked `status` is read from the diff's status transitions. Multiple blocks; each carries a unique `name`, a `fields` list, a `trigger`, and an optional `kinds` filter. Locking `kind` is what settles which lifecycle a record answers to: every kind-scoped rule reads it first, and `terminal` settles it only once the record is finished with — so a registry block reaches for `creation` or `status`. The `kinds` filter reads the before frame too, so a write that takes a record out of a block's kinds is judged by the block that held it.
-- `body_immutable/<name>` — body locks. `mode = "frozen"` rejects any body edit; `mode = "append_only"` requires the locked body to remain a prefix of the new body. `append_section = "## Corrections"` confines that growth to the section the heading opens: every non-blank appended line must fall inside it, nothing may follow it at its heading level or above, and no appended line may belong to a link reference definition a committed reference resolves to — so a frozen record takes corrections while everything committed above them reads as it did. Headings match by level and text as the markdown parser reads them, so one inside code, a quote or a list opens no section. `details.refusal` names what to undo: `rewritten`, `outside_section` or `redefines_reference`. `trigger` reads as it does above: `creation` freezes the body as soon as a prior committed snapshot exists, regardless of status — the creating commit is structurally exempt and frontmatter (including `status`) stays editable for supersession. Driven by per-node body fingerprints (whole-body SHA-256 + per-line hash vector + top-level sections and resolved reference definitions) computed at build time — no file re-reads at check time.
-
-Merges compare the protected fields or body, so unrelated edits and file moves do not change which revisions a lock protects. The merge step permits either independently armed frozen revision; the result must also satisfy any armed baseline used for the endpoint comparison. Append-only locks must preserve every applicable armed parent as a prefix. An unarmed parent cannot release an armed lock.
-
-With `immutable_history = "steps"` (default), locks also judge each commit in `--since` and the uncommitted step. A record accepted inside the range is locked on subsequent steps; reverting an illegal edit does not erase its finding (`details.commit`). Replacing an armed record's id at the same path is refused when the old id has no counterpart. Moving a record while preserving its id and removing a path from the document scope are not inferred to be id changes.
-
-The baseline and history policy are independent:
-
-```toml
-[rules]
-immutable_baseline = "origin/main"
-immutable_baseline_mode = "merge_base" # default: "ref", the source commit itself
-immutable_history = "snapshot"       # default: "steps", also judge commit steps
-```
-
-Snapshot locks preserve records already armed in the baseline; branch-only records remain editable until integrated. Append-only preserves the baseline prefix, so branch-only corrections can still be revised. Checks, staged checks, proposals, issues, and writes share this baseline. `--since` scopes the report and history without replacing a configured baseline. Merge-base selection requires a unique readable common ancestor and refuses missing or ambiguous ancestry. Both nondefault settings require an explicit baseline. A clean check after the source includes the evaluated commit compares that commit with itself; auditing an integrated change requires an earlier source SHA. Status-flow rules keep judging commit steps.
-
-`frontmatter_immutable` also accepts `fields = ["*"]` with `except = ["status", "superseded_by", "covers"]`. It protects additions, removals, and semantic changes to every other frontmatter field, including custom fields added later. Identity remains structurally protected. See [configuration reference](.claude/skills/nodex/reference/config.md#diff-aware-rules).
-
-Both families pick when they engage with the same `trigger`, read in the diff's *before* frame, so the single write that first arms a lock may set what that lock covers in the same edit: `terminal` (the default) arms at every `[statuses].terminal` status; `status` at the statuses the block names in `statuses = [...]`; `creation` at every status in the compared before snapshot. Reach for `status` rather than moving a status into `[statuses].terminal`, which `statuses.flow` validation, `conditional_exclude`, the `terminal` trigger, the lifecycle seam, `git_drift`, orphan and stale detection, `superseded_reference` and the `GRAPH.md` report all read — arming a lock through that word declares the record finished to every one of them, and a flow declaring a move out of that status stops loading at all. Where `[[statuses.flow]]` governs a kind a block locks, load proves two things about the arming: no declared transition leaves it, so a status edit cannot disarm the lock; and where the block locks `status` itself, no declared transition moves a document while it is armed, so the lock cannot refuse a move the flow calls legal.
-
-Without a diff context — no `--since`, no resolvable `rules.immutable_baseline`, and not a `check --content` overlay — both families report themselves non-applicable in `skipped_rules` rather than passing silently. (`rules.immutable_baseline` resolving to a git ref activates them on a plain `check`, no `--since` needed.)
-
-#### The project and its repository
-
-Every git-backed feature — the immutability baseline, `git_drift`, the status-flow rules, `diff`, `impact`, `check --staged` — measures **the project**, at its own location inside the repository that tracks it. `git_drift` reads the history in one `git log` walk and so needs git 2.31 or newer; on an older git the walk is refused and every drift target reports unmeasurable rather than being mismeasured. A `nodex.toml` in a subdirectory of a larger repository is as ordinary as one at the repository root: paths are read against the project's own prefix, and a ref is graphed from the project's directory inside its checkout, not from the repository around it. A ref is read by checking it out into a directory nodex keeps under the repository's git directory (`.git/nodex/checkout/`) and switches from tree to tree, so a read writes only the files that differ from the tree it last held; each such directory is a copy of the repository's tracked files, filters applied as in the work tree, and nodex keeps as many as it has needed at once — one per process reading history, two for a `check --staged` that also reads a baseline or `HEAD`. A file git writes through a filter, `ident` or `working-tree-encoding` depends on the configuration when it is written, so it is removed when the run that read it ends: the copies keep no decrypted file of an encrypted repository (git-crypt and the like) past that run, and the next run writes each such file under the configuration it runs with. A run that is killed leaves them until the next run takes its directory. Deleting the directory while no nodex runs is safe; the next read checks everything out again. The binding is resolved once per command and named outright, so nothing in the ambient environment can move the target — the quarantine object directory a server-side hook exports or a pathspec-magic variable changes nothing about what nodex measures. The one variable read is `GIT_INDEX_FILE`, and only by `check --staged`, where git uses it to name the index a commit under way is made from.
-
-An inherited `GIT_DIR` / `GIT_WORK_TREE` is deliberately ignored: the project's location decides which repository is measured, so a repository designated only by the environment (the bare-repo dotfiles pattern) is not seen — nodex reports having no work tree rather than measuring one it was pointed at. Variables that merely bound *discovery* (`GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`) are left alone, since they cannot select a different repository.
-
-Under the default ref/steps policy, a project outside Git or a repository with no commits reports `baseline_inert`; snapshot or merge-base policies refuse those states. A selected commit that carries no project is inert under either policy. The advisory appears on checks and writes, and diff-aware rules report `skipped_rules`. An unreadable source ref is refused with `CONFIG_ERROR` by both reads and writes.
-
-
-### Write-Time Validation
-
-```bash
-nodex check --content docs/a.md=-                            # proposed bytes from stdin
-nodex check --content docs/a.md=draft.md                     # …or from a file
-nodex check --content docs/a.md=- --content docs/b.md=b.md   # batch: N proposals, one build
-```
-
-`check --content <path>=<source>` validates a document's **proposed** content before it is written; `<source>` is `-` (stdin) or a file path. The flag is repeatable, and every proposal is overlaid into **one** graph build, so a reference one proposal authors resolves against another proposal in the same batch — a `supersede` that also rewrites N referrers is judged as one combined proposal instead of reporting a still-dangling link a one-at-a-time check would. nodex builds the graph once for the working tree and once with the proposals overlaid, runs every rule — schema, cross-field, and the diff-aware immutability locks — against both, and gates ordinary rules on their before/after difference. Configured locks judge proposed documents absolutely against the shared baseline, including existing drift; status flows judge the step the proposal would commit. An ordinary violation already present without the proposal never refuses it, while any violation the overlay introduces — on a proposed document, on another node it affects, or the node-less `parse_failure` of a proposal that destroys its own node — fails the gate at exit 1. A proposed file need not exist on disk yet; an out-of-scope path is vacuously clean and the run warns that it validated nothing (so a write gate never passes silently on a misaimed path). Both builds are read-only and the drift history is only consulted, so a write-time check writes nothing to the output directory — neither `cache.json` nor `history.json`. The result's `proposals` array carries a `{path, in_scope, has_path_errors}` verdict per pair (`has_path_errors` scoped to that proposal's own path; the run-wide gate is the top-level `has_errors`), and every violation carries a typed `details` payload (see [Built-in Rules](#built-in-rules)). At most one source may be stdin; a path may appear once; mutually exclusive with `--since` and `--staged`.
-
-Agents can validate the same proposed bytes that writes will judge. Configured locks use the selected committed baseline; without a configured baseline, authored proposals use the current on-disk state.
-
-### Commit-Time Validation
-
-```bash
-nodex check --staged     # the project as the next commit records it
-```
-
-A pre-commit gate answers for what the commit records, and the working tree is not that: an edit left unstaged is not committed, a document never added is not in the commit, and a staged change the working tree has since undone is. `check --staged` writes the index git is committing as a tree, checks it out, and runs `check` over that project under the tree's own `nodex.toml`, the config the commit carries. The tree is written from a copy, so the index itself is never locked or written, and a hook runs the check beside another git process that holds it. The baseline and the history are a plain `check`'s, and the step rules judge the move the commit makes from `HEAD` (and every `MERGE_HEAD`) to the index. `git commit -a` and `git commit <path>` commit an index of their own, which git names to their hooks in `GIT_INDEX_FILE`; `check --staged` reads it — a relative one against the work tree's top level, as git reads it — and the work tree's index otherwise. An index with unmerged entries has no tree and is refused, as `git commit` refuses it; so is an index that does not record the project's directory, and a `GIT_INDEX_FILE` naming no file (`GIT_ERROR`). A staged link resolving outside the repository is not read, and a `scope_coverage` warning names it. Two commits make a step the hook cannot see whole, and the staged check judges both from `HEAD`: `git commit --amend` makes its step from `HEAD^`, and `git merge` runs `pre-merge-commit` before it records the merged head — gate merges in `pre-commit` (a merge concluded with `git commit`) or with `check --since` in CI. Mutually exclusive with `--content`; combines with `--since`.
-
-```sh
-#!/bin/sh
-# .git/hooks/pre-commit
-exec nodex check --staged
-```
-
-### Kind Filter
-
-Every per-block rule family — `[[rules.body_line]]`, `[[rules.body_immutable]]`, `[[rules.frontmatter_immutable]]` — plus `[[annotations]]` accepts an optional `kinds: ["..."]` list. Empty = no restriction; otherwise the rule fires only on nodes whose `kind` appears in the list. Every entry must be in `kinds.allowed`; `Config::load` rejects typos so a silent never-fire is impossible. `[[schema.overrides]]` `kinds` is a different thing: it names the kinds the override applies to, and an empty list is refused at load.
-
-### Binary-Version Pin
-
-`[meta] nodex_version = ">=0.61, <0.62"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH`; their `--dry-run` forms write nothing and run as reads with the advisory — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
-
----
-
-## Diff & Export
-
-### Structural diff
-
-```bash
-nodex diff <ref-a> <ref-b>
-```
-
-Builds the graph at each git ref and emits a deterministic delta:
-
-```json
-{
-  "added_nodes":   [...],
-  "removed_nodes": [...],
-  "added_edges":   [...],
-  "removed_edges": [...],
-  "status_transitions": [{"id": "...", "from": "...", "to": "..."}],
-  "field_changes":      [{"id": "...", "field": "...", "before": ..., "after": ...}],
-  "path_changes":       [{"id": "...", "from": "...", "to": "..."}],
-  "added_annotations":   [...],
-  "removed_annotations": [...]
-}
-```
-
-Pure structural primitive — no policy, no heuristics. `path_changes` names a document present on both sides under a different path — a move that kept its id, which changes nothing authored and every path-keyed reading of the document. Drives `check --since` and the `frontmatter_immutable` / `body_immutable` rules; consumers can build CI summaries on it.
-
-Both snapshots are graphed under a **single lens** — the newer side's `nodex.toml` (`diff` / `impact`: the *after* ref's; `check --since`: the checked project's, which is the working tree's or, under `--staged`, the index's) — never the before ref's. This is deliberate twice over: a vocabulary change — for example, removing a value from `kinds.allowed` — surfaces as concrete field changes on the affected nodes instead of an apples-to-oranges diff across incompatible schemas, and the PR that migrates the config format itself still passes the diff gates — under per-ref configs that exact PR deadlocks, because the base ref's config no longer parses under the new binary.
-
-### Authoritative manifests
+### Manifests
 
 ```bash
 nodex export schema                         # JSON Schema (draft 2020-12) for the project's frontmatter
@@ -818,33 +538,129 @@ nodex export commands                       # every leaf, its positionals and it
 nodex export diagnostics                     # error-code + warning-code + exit-code vocabularies (closed sets, for codegen)
 ```
 
-The dependency direction is enforced: nodex emits, external tools (TypeScript linters, IDE plugins, CI sync gates) consume. There is no inverse — nodex never parses an external file to derive its own vocabulary.
+The dependency runs one way: nodex emits, and external tools — linters, IDE plugins, CI sync gates — consume; nodex never parses an external file to derive its own vocabulary. `export envelope-schema` is the codegen contract: each command's schema bundles its nested types under `$defs`, whose names drive named-model codegen, and `--inline-refs` emits each one self-contained for generators that do not follow `$ref`. Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json` as pinnable assets, and release CI refuses a shape change that lacks the version bump it requires.
 
-`export envelope-schema` is the codegen contract: each per-command entry is a draft-2020-12 schema with its nested types bundled under a per-entry `$defs` (the names drive named-model codegen); `--inline-refs` re-emits the same model fully self-contained for generators that do not follow `$ref`. The schema's `version` field is the source-of-truth nodex version, and release CI diffs each release's schema against the previous release's published asset (`nodex-envelope-schema-v<ver>.json`, `nodex-commands-v<ver>.json` ship as pinnable assets) — a shape change without the promised minor-or-major bump fails the release.
+---
+
+## Validation
+
+### Built-in Rules
+
+`nodex check` runs every registered rule and lists its `violations`. Each carries `rule_id`, `severity`, the document (`node_id` / `path`), a `message`, and a typed `details` object whose `type` names the failure and whose fields carry its parameters — the offending field, the allowed set, the failing value — so a tool branches on `details` and never parses the message. Beside the findings, `skipped_rules` names every rule that could not run and why, and `rule_coverage` gives every rule that ran the population it guarded (`subjects`) and the records it could not judge (`unjudged`). Together they cover the whole registry: an empty `violations` list is what a thorough pass and a vacuous one both look like, and `subjects: 0` says which one it was ([check semantics](.claude/skills/nodex/reference/commands.md#check)).
+
+| `rule_id` | Severity | What it checks |
+|---|---|---|
+| `parse_failure` | error | Every in-scope document parses; a dropped document is a node-less error, never a warning a gate ignores |
+| `field_parse` | error | Parser-owned frontmatter fields parse as their type; a failed value (bad date, bad bool) reads as absent and is flagged on the still-present node |
+| `required_field` | error | Every required field (`[schema].required` plus per-kind overrides) is present |
+| `forbidden_field` | error | No field a per-kind override lists in `forbidden` is present |
+| `field_type` | error | `attrs` values match declared `types` (string / integer / bool / date) |
+| `field_enum` | error | `attrs`, `kind` and `status` are in the declared `enums` allow-list |
+| `cross_field` | error | Conditional requirements like `when status=superseded require superseded_by` |
+| `unknown_field` | error | Undeclared frontmatter keys (under `[schema].mode = "strict"` only) |
+| `explicit_field` | error | The inferrable built-ins `[schema].require_explicit` names are authored, not inferred |
+| `filename_pattern` | error | Filenames match `[[rules.naming]].pattern` |
+| `sequential_numbering` | warning | No gaps in leading file numbers where a naming block sets `sequential = true` |
+| `unique_numbering` | error | No two files share a leading number where a naming block sets `unique = true` |
+| `stale_review` | warning | Live documents whose `reviewed` date is `[detection].stale_days` or more days old; a missing date counts as `unjudged` |
+| `orphan` | warning | Live documents nothing references — no incoming edge, no predecessor's `superseded_by` — outside the configured exemptions |
+| `superseded_reference` | warning | Live documents citing a terminal document whose lineage continues in a live one; `details.current` names where it continues |
+| `git_drift` | warning | Live documents whose linked documents or `covers` paths gained more than `git_drift_threshold` commits since `reviewed` (opt-in) |
+| `frontmatter_immutable/<name>` | error | A field the block locks changed after the block's `trigger` armed it |
+| `body_immutable/<name>` | error | The body changed after the block's `trigger` armed it: `frozen` refuses any edit, `append_only` keeps the locked body as a prefix |
+| `status_transition` | error | A status moved where `[[statuses.flow]]` declares no move, a move out of a terminal status included |
+| `status_entry` | error | A record entered a flow at anything but its entry status |
+| `body_line/<name>` | error | Lines matching a `[[rules.body_line]]` pattern carry capture values from its declared enums |
+| `acyclic_relation` | error | Each relation in `rules.acyclic_relations` (default `implements`) stays acyclic; each finding names an edge to cut |
+| `unresolved_reference` | warning | A reference matching no document; `[rules].severity` may promote it to error |
+| `unresolved_reference/<name>` | configured | One per non-info `[[detection.unresolved_policy]]` row |
+
+Which rules a configuration registers, and what each one's population leaves out: [built-in rule ids](.claude/skills/nodex/reference/config.md#built-in-rule-ids). `nodex export rules` lists the registered set with each rule's parameters.
+
+### Gating Edits and Commits
+
+```bash
+nodex check --content docs/a.md=-                            # proposed bytes from stdin
+nodex check --content docs/a.md=- --content docs/b.md=b.md   # several proposals, one combined graph
+nodex check --staged                                          # the project as the next commit records it
+```
+
+`check --content <path>=<source>` validates content before it is written; `<source>` is `-` (stdin) or a file. Every proposal is overlaid on the working tree in one build, so a batch — a supersession and the referrers it rewrites — is judged as one change. The gate fails (exit 1) on what the proposals introduce, wherever in the graph it lands; an error a document already carried never blocks an edit. Locks judge the proposed documents against the configured baseline, or the working tree where none is configured, and status flows judge the step the proposal would commit. Nothing is written, the cache included ([details](.claude/skills/nodex/reference/commands.md#check)).
+
+`check --staged` judges what the next commit records rather than the working tree: it writes the index as a tree from a copy — the index itself is never locked or written — and checks that tree under the `nodex.toml` it carries. Under `git commit -a` and `git commit <path>` it reads the index git names in `GIT_INDEX_FILE` ([details](.claude/skills/nodex/reference/commands.md#check---staged)).
+
+```sh
+#!/bin/sh
+# .git/hooks/pre-commit
+exec nodex check --staged
+```
+
+The writing commands ask the same question before they write: `rename`, `retarget`, `lifecycle` and a `scaffold` given `--body` or `--field` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`).
+
+### Locks and Status Flows
+
+Two rule families judge a change against what came before it.
+
+**Locks** keep what a record has settled. `[[rules.frontmatter_immutable]]` locks fields and `[[rules.body_immutable]]` locks the body — `frozen`, or `append_only` with an optional `append_section` that takes corrections under one closing heading. A block's `trigger` says when it arms: `terminal` (the default), `status` at the statuses the block names, or `creation` from the first commit. The comparison point is `rules.immutable_baseline` — `nodex init` writes `HEAD` — and `check`, `query issues`, `check --content` and every write read the same one:
+
+```toml
+[rules]
+immutable_baseline = "origin/main"
+immutable_baseline_mode = "merge_base" # default "ref": the commit itself
+immutable_history = "snapshot"         # default "steps": also judge each commit
+
+[[rules.body_immutable]]
+name = "adr-decisions"
+mode = "frozen"
+trigger = "creation"
+kinds = ["adr"]
+```
+
+**Status flows** declare a lifecycle over the kinds that have one:
+
+```toml
+[[statuses.flow]]
+kinds = ["adr"]          # empty = every kind
+initial = "proposed"     # where a governed kind starts; omitted = [statuses].initial
+transitions = { proposed = ["active"], active = ["superseded", "archived"] }
+```
+
+A flow registers `status_transition` and `status_entry`, and `lifecycle`, `retarget --supersede` and `scaffold --force` refuse a move it does not declare. Both rules judge history a step at a time against git: every check judges the uncommitted change against `HEAD`, and `check --since <ref>` also judges each commit in the range against its parents, so a detour through an undeclared status is reported at the commit that took it. Where a step cannot be read — a commit the build refuses, or history a shallow clone cut off — its records are counted as `unjudged` and a `history_unread` warning names what was missing; a `--since` range the clone does not hold is refused, so a CI job checking one fetches with `fetch-depth: 0`.
+
+`check --since <ref>` narrows the report to the findings the diff answers for; `rule_coverage` still reports each rule's whole population. With no baseline, no `--since` and no proposed content to compare, the locks are listed in `skipped_rules` instead of passing.
+
+More: [locks and triggers](.claude/skills/nodex/reference/config.md#diff-aware-rules) · [status flows](.claude/skills/nodex/reference/config.md#status-flow) · [range checks](.claude/skills/nodex/reference/commands.md#check---since) · [how nodex reads git](.claude/skills/nodex/reference/config.md#git-measurement)
+
+### Lifecycle
+
+`nodex lifecycle <action> <id>` changes a document's status (`retarget --supersede` runs the same `supersede` step together with its reference edits):
+
+| Action | Resulting `status` | Other fields written |
+|---|---|---|
+| `supersede --to <new-id>` | `superseded` | `superseded_by: <new-id>`, `updated: <today>` |
+| `set --status <s>` | `<s>` | `updated: <today>` |
+| `review` | (unchanged) | `reviewed: <today>` (refused when the existing `reviewed` date is in the future — never moves backward) |
+
+`supersede` also checks that the successor exists and keeps the supersession graph acyclic. `set` accepts any status the document's kind allows, and refuses one the project's own `check` would reject — `superseded` without `superseded_by` is `supersede`'s job — or a move a status flow does not declare. Nothing moves a document out of a terminal status, and `updated` is not written where the kind forbids it ([details](.claude/skills/nodex/reference/commands.md#lifecycle)).
+
+### Binary-Version Pin
+
+`[meta] nodex_version = ">=0.61, <0.62"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH`; their `--dry-run` forms write nothing and run as reads with the advisory — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
 ## Configuration
 
-All behavior is driven by `nodex.toml`. `Config::load` runs `validate()` at startup and rejects inconsistent configs (e.g., a `terminal` status absent from `allowed`, or an `initial` status excluded by a `status` enum), so misconfigurations fail fast. Self-consistency that depends on the document being acted on — a `lifecycle` action never writing a status the project rejects — is enforced at that command's write seam instead, so a project is never forced to declare statuses for actions it doesn't use.
-
-The scan can skip directories outside every include's literal prefix and subtrees covered by recursive `/**` exclusions. For example, `exclude = ["_*/**"]` skips matching root subtrees; `exclude = ["docs/private"]` still permits documents beneath `docs/private`. Scan diagnostics describe entries the walk reaches, not an inventory of skipped subtrees.
+All behavior comes from `nodex.toml`, and `nodex init` writes an annotated starter pinned to the running binary. Loading validates the whole file and refuses an inconsistent one with `CONFIG_ERROR` — a terminal status missing from `allowed`, a pattern that does not compile, a rule naming an undeclared kind — so a misconfiguration fails before any command runs. Self-consistency that depends on the document being acted on, such as a `lifecycle` action never writing a status the project rejects, is enforced at that command's write seam instead. `nodex export config` and `nodex export rules` show what a project resolved to, and the [configuration reference](.claude/skills/nodex/reference/config.md) describes every key.
 
 ```toml
 [scope]
 include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }, "README.md"]
 exclude = ["docs/drafts/**"]
-# Directory basenames pruned from the walk at any depth (default below).
-# Tune for your stack — a Go repo has no `.venv`; a docs vault under a
-# dir named like one of these opts it back in by dropping it here.
-# An empty list disables basename pruning.
-# prune_dirs = ["node_modules", "__pycache__", "target", ".git", ".venv"]
-# Drop a terminal parent's sub-artifacts (only child_glob matches; the
-# dropped paths are reported on the build result, and the write that
-# makes the parent terminal names them via `document_evicted`):
+# Drop a terminal parent's sub-artifacts; the build names what it drops:
 # [[scope.conditional_exclude]]
 # parent_glob = "specs/**/SPEC.md"
-# child_glob = "specs/**/tasks/**"   # "**/*" clears the whole subtree
+# child_glob = "specs/**/tasks/**"
 # condition = "status_terminal"
 
 [kinds]
@@ -853,13 +669,9 @@ allowed = ["generic", "guide", "readme", "adr", "spec", "learning"]
 [statuses]
 allowed = ["draft", "active", "superseded", "archived", "deprecated", "abandoned"]
 terminal = ["superseded", "archived", "deprecated", "abandoned"]
-# Status written by scaffold / migrate and assumed for a document that
-# declares none, where no [[statuses.flow]] governs its kind. Omitted = the
-# first `allowed` value:
-initial = "draft"
+initial = "draft"   # what scaffold and migrate write; omitted = the first allowed status
 
 [scaffold.paths]
-generic = "docs/{stem}.md"
 adr = "docs/decisions/{stem}.md"
 spec = "specs/{slug}/SPEC.md"
 
@@ -874,11 +686,10 @@ template = "adr-{stem}"
 [[parser.link_patterns]]
 pattern = "@([A-Za-z0-9_./-]+\\.md)"
 relation = "imports"
-# code_spans = true   # a span whose ENTIRE content matches is a reference
 
 [rules]
+severity = { unresolved_reference = "error" }
 immutable_baseline = "HEAD"   # a plain `check` enforces the locks below against the last commit
-# acyclic_relations = ["implements"]   # relations whose edges must stay a DAG (default)
 
 [[rules.naming]]
 glob = "docs/decisions/**"
@@ -886,113 +697,46 @@ pattern = "^\\d{4}-[a-z0-9-]+\\.md$"
 sequential = true
 unique = true
 
-# Freeze fields once the block's `trigger` engages; diff-aware (needs `--since` or
-# `rules.immutable_baseline`). The write that first arms the lock — e.g.
-# setting `superseded_by` as a doc is superseded — is allowed; only later edits lock.
-# `id` is protected automatically by every armed lock; a locked `status` is read from the diff's status transitions.
-# Multiple blocks supported — each carries a unique `name` and an optional `kinds` filter.
 [[rules.frontmatter_immutable]]
 name = "identity"
 fields = ["kind"]
-trigger = "creation"    # which lifecycle a record answers to, settled by its first commit
+trigger = "creation"   # which lifecycle a record answers to, settled by its first commit
 
-[[rules.frontmatter_immutable]]
-name = "supersession"
-fields = ["superseded_by"]
-# kinds = ["adr"]       # trigger omitted = "terminal"
-
-# Body lock. `frozen` rejects any body edit; `append_only` requires the
-# locked body to remain a prefix of the new body, and `append_section`
-# (e.g. "## Corrections") confines that growth to the closing section the
-# heading opens. `trigger` reads as it does above: both lock families
-# share it — "terminal" (default), "status" with the block's own
-# `statuses = [...]`, or "creation" at every status in the before snapshot.
+# A decision's body is frozen once committed:
 # [[rules.body_immutable]]
 # name = "adr-decisions"
 # mode = "frozen"
 # trigger = "creation"
 # kinds = ["adr"]
 
-# Per-line body-text vocabulary conformance — one block per pattern.
-# Captures named in `enums` must hold a value from the allowed set;
-# non-matching lines are silently ignored (this is a conformance rule,
-# not a presence rule).
+# Each line of a spec's decision log names a known gate:
 # [[rules.body_line]]
 # name = "spec-decision-log"
 # pattern = '''^- \*\*(?P<gate>[a-z-]+)\*\*'''
 # kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
-# Body-text marker extraction — surfaced by `nodex query annotations`.
-# Pre-graph identifiers that intentionally do not resolve to a node
-# (TODO topics, promotion candidates, open research questions).
+# Body markers surfaced by `nodex query annotations`:
 # [[annotations]]
 # name = "promotes"
 # pattern = '''\[PROMOTES:\s*(?P<id>[\w-]+)\]'''
 # key = "id"
 # kinds = ["learning"]
-# The block superseded_reference_ok_annotation names: the key is the id of a
-# target cited as history and a reason must follow it. Annotations read inline
-# code, so it takes a marker only from a line that starts with <!--:
-# <!-- superseded-ok: adr-0001 the figures are its own -->
-# [[annotations]]
-# name = "superseded-ok"
-# pattern = '''^\s*<!--\s*superseded-ok:\s*(?P<target>[\w-]+)\s+\w'''
-# key = "target"
 
 [schema]
-# Authored fields only — id / title / kind / status / orphan_ok are
-# parser-resolved for every document and rejected here at load.
 required = ["created"]
-mode = "lenient"   # "strict" rejects undeclared frontmatter keys
-cross_field = [
-  { when = "status=superseded", require = "superseded_by" },
-]
+cross_field = [{ when = "status=superseded", require = "superseded_by" }]
 
 [[schema.overrides]]
 kinds = ["adr"]
 required = ["decision_date"]   # added on top of the global required set
 types = { decision_date = "date" }
-enums = { priority = ["low", "medium", "high"] }
 forbidden = ["covers"]         # a decision record does not describe live code
 
 [detection]
 stale_days = 180
 orphan_grace_days = 14
-# orphan_ok_kinds = ["readme"]
-# superseded_reference_ok_kinds = ["readme"]
-# superseded_reference_ok_relations = ["derived_from"] # declare the relation first
-# superseded_reference_ok_annotation = "superseded-ok"   # the [[annotations]] block above
-# git_drift_threshold = 5
-# Which relations carry the measurement (default shown).
-# git_drift_relations = ["references", "implements", "covers"]
-# Ordered first-match classification of unresolved references —
-# Both "error" and "warning" register `unresolved_reference/<name>`;
-# "info" is reported outside the finding total. A row narrows on four axes, each optional but
-# `cause`: `cause` is one of missing | target_unparsed |
-# excluded_from_scope | id_not_found | escapes_source | absolute;
-# `relations` narrows to the relations the edge may carry (omitted =
-# every one, and `superseded_by` is nameable here alone, being the one
-# relation only an unresolved edge carries); `glob` matches the names the
-# resolution *sought* — the node id for an id relation, the normalized
-# resolution candidates for a document reference, never the raw target —
-# and is refused at load on `escapes_source` / `absolute`, which are
-# refused before anything is looked up. A row an earlier row already
-# covers is refused at load: first match wins, so it could never fire —
-# declare the narrow rows first. `source_protection` optionally selects
-# protected | unprotected | unknown; protection follows evaluated locks,
-# not historical target validity. Declaring the table replaces the
-# default row {name = "excluded_target", cause = "excluded_from_scope",
-# severity = "info"} — re-declare it to keep it.
-# [[detection.unresolved_policy]]
-# name = "legacy-archive"
-# cause = "missing"
-# glob = "archive/**"
-# severity = "info"
-#
-# The relation is what separates a structural edge from a prose citation
-# when both name the same dead id for the same reason — a successor that
-# does not exist is a defect, a citation of a purged record is history.
+# A successor that does not exist is a defect, not history:
 # [[detection.unresolved_policy]]
 # name = "dead-successor"
 # cause = "id_not_found"
@@ -1001,50 +745,24 @@ orphan_grace_days = 14
 
 [output]
 dir = "_index"
-
-[report]
-title = "Document Graph"
-god_node_display_limit = 10
-orphan_display_limit = 20
-stale_display_limit = 20
-
-[similarity]
-# Rank comparison candidates by title-token, tag and graph-neighbour Jaccard overlap.
-# Kind, status and parent directory filter candidates without affecting scores.
-default_limit = 10
-weights = { title = 0.4, tags = 0.2, linked = 0.2 }
-# Tokens excluded from titles; an empty list keeps every token.
-title_stop_words = ["the","a","an","and","or","of","to","for","in","on","with","is","are","be","by","as","at","from"]
-
-[search]
-# `nodex query search <keyword>` ranking. Unlike similarity, whose
-# composite renormalises over the components a run can measure, search is
-# ADDITIVE: a node's score is the sum of the weights of the fields the
-# keyword matched, and a node matching nothing is excluded. Each field has
-# an exact and a partial (substring) tier, so the exact-vs-partial
-# preference is config, not a hidden constant. Each `SearchEntry` carries a
-# `components` breakdown (per-field contribution, absent fields omitted) so
-# a consumer sees why.
-weights = { id_exact = 3.0, id_partial = 1.5, title_exact = 2.5, title_partial = 1.0, tag = 0.5 }
 ```
 
 | Section | Controls |
 |---|---|
-| `[scope]` | Which files are scanned (`include` / `exclude` globs, `conditional_exclude`, `prune_dirs`, `follow_symlinks`). Dot-prefixed paths are skipped unless an include pattern requires the leading dot at each hidden segment (e.g. `.claude/**/*.md`). A directory reached through a symlink is not descended unless `follow_symlinks = true` — the default matches `git` / `ripgrep` / `fd` / `find` and keeps every path-keyed rule with exactly one path to key on; each undescended link the walk reaches is named in the build's `unfollowed_paths`, and each extra name a followed link admits in `aliased_paths`. An `include` entry may be a table `{ glob, may_be_empty = true }` (so may an `identity` or `conditional_exclude` rule) saying that selecting nothing is expected — it silences only that declaration's own `scope_coverage` warning |
+| `[scope]` | Which files are scanned: `include` / `exclude` globs, `prune_dirs`, `follow_symlinks`, `conditional_exclude` |
 | `[kinds]` | Allowed `kind` values (must include `"generic"`) |
-| `[statuses]` | Allowed `status` values + which are terminal + `initial` (the status scaffold / migrate write and a document declaring none receives, for kinds no flow governs; default: first allowed) + `flow` (see [Status flow](#status-flow)) |
-| `[scaffold.paths]` | Explicit per-kind creation path templates, or supply `--path` |
-| `[identity]` | `kind_rules` + `id_rules` (template with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
-| `[parser]` | Custom ID-only `frontmatter_relations` and body `link_patterns` (each with a `relation` and optional `code_spans`), `extensions` (link targets that count as documents, leading dot included), `wikilink_enabled` (`[[id]]` body syntax, off by default) |
-| `[rules]` | `severity` (promote registered warning rules to `error`; `nodex init` writes `{ unresolved_reference = "error" }`) + `immutable_baseline` (shared lock source; `nodex init` writes `"HEAD"`), `immutable_baseline_mode` (`ref` / `merge_base`), `immutable_history` (`steps` / `snapshot`) + `acyclic_relations` (default `["implements"]`) + `naming` patterns + `frontmatter_immutable` (field lock) + `body_immutable` (body lock, `frozen` / `append_only`, optional `append_section`) + `body_line` (per-line vocabulary check); both locks pick when they engage with `trigger` = `terminal` / `status` / `creation` |
-| `[[annotations]]` | Body-text marker patterns (regex + named-capture key); surfaced by `query annotations`, and read by `superseded_reference` for the block `[detection].superseded_reference_ok_annotation` names |
-| `[schema]` | `required` / `types` / `enums` / `cross_field` + per-kind `overrides` (which also take `forbidden`) + `mode` + `require_explicit` (inferrable built-ins — `id` / `title` / `kind` / `status` — that must be authored, not inferred; reds `check` via the `explicit_field` rule) |
-| `[detection]` | `stale_days` / `orphan_grace_days` (default 14) / `orphan_ok_kinds` / `superseded_reference_ok_kinds` / `superseded_reference_ok_relations` / `superseded_reference_ok_annotation` / optional `git_drift_threshold` with `git_drift_relations` + ordered `unresolved_policy` rows classifying unresolved references (`error` / `warning` / `info`) |
+| `[statuses]` | Allowed and terminal statuses, `initial`, and the `[[statuses.flow]]` lifecycles |
+| `[scaffold.paths]` | Per-kind creation path templates |
+| `[identity]` | `kind_rules` and `id_rules` (templates with `{stem}`, `{parent}`, `{kind}`, `{path_slug}`) |
+| `[parser]` | Declared `frontmatter_relations`, body `link_patterns`, `extensions`, `wikilink_enabled` |
+| `[rules]` | `severity` promotions, the lock baseline (`immutable_baseline`, `immutable_baseline_mode`, `immutable_history`), `acyclic_relations`, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line` |
+| `[[annotations]]` | Body-text markers surfaced by `query annotations` |
+| `[schema]` | `required` / `types` / `enums` / `cross_field`, per-kind `overrides` (with `forbidden`), `mode`, `require_explicit` |
+| `[detection]` | Staleness, orphan and superseded-reference exemptions, `git_drift`, and the ordered `unresolved_policy` |
 | `[output]` | Where build artifacts land |
-| `[report]` | `GRAPH.md` formatting limits |
-| `[similarity]` | Default operator-capacity limit, weights, stop words |
-| `[search]` | `query search` keyword-ranking weights (per-field exact / partial tiers) |
-| `[meta]` | `nodex_version` SemVer pin — document-writing commands refuse on a mismatching binary (see [Binary-Version Pin](#binary-version-pin)) |
+| `[report]` | `GRAPH.md` display limits |
+| `[similarity]` / `[search]` | Ranking weights for `query similar` and `query search` |
+| `[meta]` | `nodex_version`, the [binary-version pin](#binary-version-pin) |
 
 ---
 
@@ -1058,36 +776,7 @@ nodex/
 └── nodex-cli/     Binary  — clap CLI; thin wrapper that adds JSON envelope + error classification
 ```
 
-The split keeps `nodex-core` reusable — embedding it in another Rust tool doesn't pull a CLI dependency stack.
-
-### nodex-core Modules
-
-| Module | Responsibility |
-|---|---|
-| `model/` | Data types — `Node`, `Edge`, `Graph`, `Kind`, `Status`, `ResolvedTarget`, `RawEdge`, `Annotation`, `RawAnnotation`, `BodyLineMatch`, `RawBodyLineMatch` |
-| `parser/` | Markdown → `(Node, Vec<RawEdge>, Vec<RawAnnotation>, Vec<RawBodyLineMatch>)`; YAML frontmatter, body links (pulldown-cmark AST), `iter_body_lines` fence-aware iterator, identity inference, minimal-diff `FrontmatterEditor` |
-| `builder/` | Scan → cache → read → parse → resolve → validate → graph |
-| `query/` | Read-only traversals: `search`, `traverse`, `detect`, `structure`, `listing`, `issues`, `recent`, `similar` (`compute_similarity`), `annotations` (`find_annotations`), `dependents` (`find_dependents`) |
-| `diff.rs` | `compute_diff(before, after)` — pure structural delta primitive |
-| `ancestry.rs` | Where each record stood at each step of history — a commit against its parents, the uncommitted change against `HEAD` and every `MERGE_HEAD` — for the rules that judge moves rather than endpoints (`status_transition`, `status_entry`, and the immutability locks under `immutable_history = "steps"`) |
-| `git.rs` | The repository a project is tracked in, resolved from the project's own location; the one seam every `git` invocation is built through |
-| `impact.rs` | `compute_impact` — diff + each changed node's dependents within the requested hops (direct referrers by default); "what breaks if I merge this?" |
-| `reference_rewrite.rs` | Resolver-consistent, fence-aware rewriting of body-link and id references — the single engine behind `rename` and `retarget` |
-| `retarget.rs` | `retarget_document` — repoint one node id's references onto another by exact match |
-| `mutate.rs` | `plan_file` → `narrow` → `stage_plan` / `write_plan` — the guarded write path for batch rewrites: plan every file with reader-follows / writer-skips symlink discipline, gate the whole batch once against the immutability locks and hold back only the locked parts, then write each survivor atomically inside the root; `rename`, `retarget` and `migrate --apply` route through it |
-| `export.rs` | `export_schema(&Config)` + `export_enums(&Config)` + `export_rules(&Config)` + `export_config(&Config)` + `export_envelope_schema(inline_refs)` + `export_diagnostics()` + `compute_envelope_schema_diff` + `compute_commands_diff` — authoritative manifests and the release contract classifiers |
-| `rules/` | `Rule` trait + built-ins; `is_applicable` / `skip_reason` report a registered rule a run could not evaluate; `check` returns `{violations, skipped_rules, rule_coverage}` |
-| `command_result.rs` | Typed `data` payload of every command (`LifecycleResult`, `MigrateResult`, `RenameResult`, `RetargetResult`, `InitResult`, `ReportResult`, `BuildResult`, `CheckResult`) — single source of truth for both the CLI emitter and the `export envelope-schema` derive |
-| `output/` | `graph.json` (derived snapshot) + deterministic `GRAPH.md` |
-| `status.rs` | Snapshot reads: `load_current_graph` (default queries; config, membership and content must match, else `GRAPH_OUTDATED`) and `load_graph` (`--allow-stale`; membership probe, drift as an advisory), both refusing a missing file (`GRAPH_MISSING`) or another schema (`GRAPH_OUTDATED`) first; `Snapshot::require` / `Snapshot::body` for lookups and revision-checked bodies; `compute_status` / `compute_divergence` (the `nodex status` content probe) |
-| `lifecycle.rs` | Status transitions that mutate frontmatter |
-| `scaffold.rs` | Create new docs with valid frontmatter and ranked comparison candidates |
-| `path_guard.rs` | Reject `..` / symlinks; `stage_in_root`, the guarded staging and atomic replacement every write goes through; `write_atomic_in_root` wraps both |
-| `yaml_text.rs` | Line-level YAML scalar reading and quoting behind the minimal-diff frontmatter writes |
-| `hash.rs` | SHA-256 content fingerprints for the build cache and the `GRAPH.md` stamp |
-| `config/` | `nodex.toml` load + validate (split into `types` / `validate` / `views` / `predicate`); `Config::declared_fields_for(kind)` powers strict mode |
-| `error.rs` | Typed `Error` enum + stable `code()` strings |
-| `warning.rs` | Typed advisory warnings — a stable `WarningCode` beside the rendered message, the non-fatal counterpart to `error.rs` |
+The split keeps `nodex-core` reusable — embedding it in another Rust tool doesn't pull a CLI dependency stack. Each crate's `CLAUDE.md` records its module boundaries, and `.claude/rules/` holds the procedures for adding a validation rule or a command.
 
 ### Design Principles
 
@@ -1097,19 +786,15 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 3. **Type-safe edge resolution.** `ResolvedTarget` is `Resolved { id }` or `Unresolved { raw, cause }`. Unresolved edges are surfaced via `query issues`; they are skipped by adjacency indices.
 
-4. **SHA256 incremental + version invalidation.** Per-file content hashes mean only changed files re-parse. The cache key hashes `parser::ParseConfig` (parse-affecting settings) and the `nodex` binary version; check-only tuning does not invalidate it.
+4. **Incremental by content.** Per-file SHA-256 hashes mean only changed files re-parse. The cache is keyed on the parse-affecting settings and the `nodex` binary version, so tuning a check does not invalidate it.
 
-5. **Symmetric mutation guards.** Everything nodex writes into the project — documents (`scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`) and infra artifacts (`graph.json`, `GRAPH.md`, `cache.json`, `history.json`, init's `nodex.toml`) — uses `path_guard::stage_in_root` and atomic replacement (directly or through `write_atomic_in_root`), which rejects `..` / absolute paths, refuses symlinked targets, and enforces root containment across symlinked ancestors. Batch file rewrites (`rename`, `retarget`, `migrate --apply`) additionally share one core path — `mutate::plan_file`, `mutate::narrow`, `mutate::stage_plan` / `mutate::write_plan` — owning the reader-follows / writer-skips symlink discipline and one immutability-lock verdict for the whole batch (`BaselineProbe::refusals`). Guards live in core, not in each CLI handler.
+5. **One guarded write path.** Everything nodex writes into a project — documents and its own artifacts alike — goes through one core seam that refuses `..`, absolute paths and symlinked targets, keeps the write inside the root and replaces the file atomically. A batch rewrite (`rename`, `retarget`, `migrate --apply`) plans every file first and is judged once against the locks before any file is written. The guards live in core, not in each command.
 
-6. **No silent rule skips, and no silent vacuous passes.** Rules that decline to fire (`frontmatter_immutable` with neither `--since` nor a resolvable `rules.immutable_baseline`, opt-in rules without their environment) appear in the `skipped_rules` array of every check / issues response — never as silent passes. Rules that *do* fire report their reach in `rule_coverage`, because a rule that examined nothing passes for the same reason a rule that examined everything passes. The two arrays partition the registry: a rule either declined or ran, and either way the report says which and over how much.
+6. **No silent skips, no vacuous passes.** A rule that cannot run is named in `skipped_rules`, and a rule that ran reports in `rule_coverage` how much it guarded, because a rule that examined nothing passes exactly as one that examined everything does. Every command that reads the working tree says what it read (`scope_coverage`), so a migration that saw no file does not read as one that finished.
 
 7. **One-way export.** External tools consume nodex's `export schema` / `export enums` manifests. nodex never parses an external file to derive its own vocabulary; the dependency direction is fixed.
 
 A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value at the command's write seam (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
-
-Principle 6 also reaches below the rule registry. Coverage is a property of the scan, not of the graph a command happens to build from it, so every command that reads the working tree to answer says what it read — `build`, `check`, `report`, `scaffold`, `migrate`, `rename`, `retarget`, `lifecycle`, and `diff` / `impact` once per ref. A mis-scoped `migrate` reports `total: 0` with a `scope_coverage` warning beside it, and a mis-scoped `rename` reports `total_updated: 0` the same way, because a finished migration and one that never saw a file are otherwise the same JSON. The snapshot readers say it too — every `query` leaf and `status` — because a snapshot of nothing matches a working tree of nothing exactly, so fidelity is the only thing that probe can report and emptiness the only thing it cannot: `nodex status` answers `current` over a corpus it never read, and a gate reading `state` alone would call that healthy. One place has no warnings array to ride: an id lookup that misses ends in an error envelope, so the `NOT_FOUND` message names what the project held instead — over a corpus governing nothing, or one whose every document failed to parse, no correction to the id could have succeeded.
-
-Principle 6 has a write-plane half. A gate reports the violations a proposal introduces, and that is complete only over the population `check` runs on — so a write that *removes* a document from that population is silent by construction: the findings leave with it and the delta can only shrink. `[[scope.conditional_exclude]]` is the one membership rule a document's content moves, so a write that puts a terminal document in the parent slot — by changing its status, or by moving one that was already terminal there — is the write that drops its sub-artifacts, and it names them on the envelope as `document_evicted`. Both the write and its pre-write gate (`check --content`) report it, and the file is left untouched. The advisory itself never refuses: evicting them is what the rule was declared to do. A refusal can still arrive from what the eviction *breaks* elsewhere — a reference into a dropped document that the project's own `[[detection.unresolved_policy]]` calls an error fails the gate like any other introduced violation. What the advisory says is that `check`'s reach just shrank, and by which documents. The population is every record the project holds, nodes and `parse_failures` alike, so an evicted document that never parsed is named too — that is the case where a write turns a red `check` green.
 
 ---
 

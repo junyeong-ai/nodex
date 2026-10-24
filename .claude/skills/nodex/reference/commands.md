@@ -38,7 +38,7 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 ## status
 
-`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`.
+`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`. A probe, not a gate: it exits 0 whenever the probe runs, whatever state it reports.
 
 `outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[[statuses.flow]]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on similarity / detection tuning.
 
@@ -84,6 +84,8 @@ nodex query node --path <file>
 `query node --with-body` compares the file's exact content revision with the indexed node before attaching text. `GRAPH_OUTDATED` requires rebuilding; metadata and body are never mixed across revisions.
 
 Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects the body between those inclusive file lines — the numbering every reported location uses — and returns `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
+
+Each edge's `references` lists every site that authors it: `source`, `syntax` (`markdown`, `wikilink`, `pattern`, `frontmatter`), the decoded `target` and a `location` — one-based `start_line` and inclusive `end_line` for a body site, including the reference definition or code span that supplies its meaning, and the authored `field` for frontmatter. Unresolved listings add the names the resolution sought. Their `sources`, like a reference finding's `details.sources`, pair each site with its lock `protection` and the `rules` constraining it.
 
 ```bash
 nodex query backlinks <id> [--limit N]
@@ -162,8 +164,9 @@ records lack the evidence that rule needs: a baseline lock commonly counts new
 documents, while git drift can lack measurable targets and step rules can lack
 history. Read the rule's evidence before deciding whether a gap needs repair.
 
-`--content PATH=SOURCE` validates proposed bytes before writing. SOURCE is `-`
-(stdin) or a path relative to the invoking directory, never `-C`. At most one
+`--content PATH=SOURCE` validates proposed bytes before writing; PATH need not
+exist yet. SOURCE is `-` (stdin) or a path relative to the invoking directory,
+never `-C`. At most one
 source is stdin; target paths must be distinct. Every proposal overlays one
 combined graph, so cross-proposal references resolve. Excludes `--since` and
 `--staged`; no cache is written.
@@ -203,7 +206,7 @@ nodex diff <ref-a> <ref-b>
 ```
 `{added_nodes, removed_nodes, added_edges, removed_edges, status_transitions: [{id, from, to}], field_changes: [{id, field, before, after}], path_changes: [{id, from, to}], added_annotations, removed_annotations}`. `path_changes` is a move that kept the id — nothing authored changed, every path-keyed reading of the document did.
 
-Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the checked project's: the working tree's, or the index's under `--staged`). The before ref supplies content only.
+Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the checked project's: the working tree's, or the index's under `--staged`). The before ref supplies content only. A vocabulary change therefore surfaces as field changes on the documents it affects rather than as a comparison across two schemas, and the change that migrates `nodex.toml` itself still passes: under per-ref configs it would deadlock, its base ref's config no longer loading under the new binary.
 
 ```bash
 nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
@@ -225,7 +228,7 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
   --field 'supersedes=[old-id]' --field created=2026-06-12 --body -
 ```
 
-`--body` reads the same `SOURCE` grammar as `check --content` (`-` = stdin, else a file path). `--field KEY=VALUE` (value is YAML, repeatable) renders after the identity lines and feeds the `cross_field` fixpoint. A key with a canonical source — a dedicated flag, a config derivation, or the structural `path` — is refused as a `--field` key and the error names the exact set.
+No prior `nodex build` is needed: the graph a scaffold is judged against is built from the working tree. `--body` reads the same `SOURCE` grammar as `check --content` (`-` = stdin, else a file path). `--field KEY=VALUE` (value is YAML, repeatable) renders after the identity lines and feeds the `cross_field` fixpoint. A key with a canonical source — a dedicated flag, a config derivation, or the structural `path` — is refused as a `--field` key and the error names the exact set.
 
 `--force` preserves the existing identity unless `--id` explicitly replaces it. It still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
 
@@ -240,7 +243,7 @@ nodex rename <old-path> <new-path> [--dry-run]
 ```
 `--dry-run` runs every guard and gate the write would and reports the same result with `completion: planned`, writing nothing; `retarget --dry-run` does the same for a repoint.
 
-Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning.
+Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning. For a tracked source, a destination the scan would not admit is refused; an untracked file — outside scope, or conditionally excluded — gets a plain guarded move with no gate, id anchoring or reference rewrite.
 
 A markdown link destination *spells* a path rather than being one, so `rename` repoints what the destination **names**: `[x](old&#x2e;md)` and `[x](a\(1\).md)` are edges like any other and move with the file. It writes back the spelling the parser reads as the new path — plain where that works (byte-for-byte the author's style), pointy `<…>` or backslash-escaped where the name needs it, so a move to `docs/new one.md` repoints rather than leaving the link behind. A reference no spelling survives (a wikilink whose new target carries `]`) is left untouched and visible, surfacing as an unresolved edge rather than being mangled.
 
