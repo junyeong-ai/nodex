@@ -378,7 +378,7 @@ flowchart LR
 
 ### Verified Snapshots
 
-Queries answer from `_index/graph.json` without re-parsing. Before answering, a query verifies that the snapshot still matches the configuration, the scope's membership and each document's content, and refuses drift with `GRAPH_OUTDATED`. `--allow-stale` skips the content comparison (`snapshot.verification: "membership"`): configuration or membership drift becomes a `snapshot_divergence` warning instead of a refusal, and an edited document goes undetected. Queries never rebuild: `nodex build` re-parses only the files whose content changed, and `nodex build --full` ignores the cache. An incompatible snapshot schema is `GRAPH_OUTDATED` in either mode, naming the recorded and supported versions. Only queries and `nodex status` read the snapshot; `check` builds from the working tree itself and needs no prior build. Each query's envelope carries `snapshot` — what the read verified, and how many documents the snapshot could not parse ([queries](.claude/skills/nodex/reference/commands.md#query), [`nodex status`](.claude/skills/nodex/reference/commands.md#status)).
+Queries answer from `_index/graph.json` without re-parsing. Before answering, a query verifies that the snapshot still matches the configuration, the scope's membership and each document's content, and refuses drift with `GRAPH_OUTDATED`. `--allow-stale` skips the content comparison (`snapshot.verification: "membership"`): configuration or membership drift becomes a `snapshot_divergence` warning instead of a refusal, and a read of the snapshot's recorded values — a listing, or `query node` without `--with-body` — does not notice an edited document. A body read (`query node --with-body`, `query nodes --body-contains`) and an id lookup that misses still compare content and refuse with `GRAPH_OUTDATED`. Queries never rebuild: `nodex build` re-parses only the files whose content changed, and `nodex build --full` ignores the cache. An incompatible snapshot schema is `GRAPH_OUTDATED` in either mode, naming the recorded and supported versions. Only queries and `nodex status` read the snapshot; `check` builds from the working tree itself and needs no prior build. Each query's envelope carries `snapshot` — what the read verified, and how many documents the snapshot could not parse ([queries](.claude/skills/nodex/reference/commands.md#query), [`nodex status`](.claude/skills/nodex/reference/commands.md#status)).
 
 ---
 
@@ -465,7 +465,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 |---|---|
 | `CYCLE_DETECTED` | A cycle exists in `supersedes` edges |
 | `DUPLICATE_ID` | Two documents resolved to the same node id |
-| `PARSE_ERROR` | A write command met a document whose frontmatter does not parse — or, for `lifecycle`, has none (`nodex migrate --apply` writes one) — or `graph.json` is corrupt (`nodex build --full`); a build records a malformed document as a `parse_failure` violation instead |
+| `PARSE_ERROR` | A writing command met a document whose frontmatter does not parse — or, for `lifecycle`, has none (`nodex migrate --apply` writes one) — or `graph.json` is corrupt (`nodex build --full`); a build records a malformed document as a `parse_failure` violation instead |
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
@@ -473,9 +473,9 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `WRITE_CONFLICT` | A document changed after the mutation read it; reread and retry against its current revision. |
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
-| `SYMLINK_TARGET` | A write seam refused a target whose final component is a symlink — the writer never follows one |
-| `CONTENT_VIOLATIONS` | A write command's gate refused the write: what it would write introduces Error-severity `check` violations (each listed as `rule_id: message`) |
-| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, an argument names what the config does not declare (`--fields`, `--where`, `--name`, a `lifecycle` status the kind does not allow) or carries a value the command cannot act on (`--content` without `=`, `--depth 0`, `rename` of a directory, `retarget X X`), `rules.immutable_baseline` names a ref git cannot resolve while an immutability lock reads it, or a write would leave a document in a state an armed lock refuses (the message names the lock) |
+| `SYMLINK_TARGET` | A write was refused because its target's final component is a symlink: nodex never writes through one |
+| `CONTENT_VIOLATIONS` | The write gate refused the write: what it would write introduces Error-severity `check` violations (each listed as `rule_id: message`) |
+| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, an argument names what the config does not declare (`--fields`, `--where`, `--name`, a `lifecycle` status the kind does not allow) or carries a value the command cannot act on (`--content` without `=`, `--depth 0`, `rename` of a directory, `retarget X X`), `rules.immutable_baseline` names a ref git cannot resolve while an immutability lock reads it, or a write would leave a document in a state an armed lock refuses (`lifecycle`, `rename` and `scaffold` name the lock; `retarget --supersede` refuses when one holds the predecessor's status change) |
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed or refused (e.g., not a work tree, missing ref, an index with unmerged entries) — most often from `diff`, `impact`, `check --since` and `check --staged` |
@@ -587,7 +587,7 @@ nodex check --staged                                          # the project as t
 exec nodex check --staged
 ```
 
-The writing commands ask the same question before they write: `rename`, `retarget` and `lifecycle` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`), and so does `scaffold` given `--body` or `--field`; without them it writes, reports its new document's own error-severity findings as warnings to fill in, and refuses only findings on other documents. A lock refuses with `CONFIG_ERROR` instead, naming the lock: `lifecycle`, `rename` and `scaffold` refuse a write that would leave a document in a state an armed lock refuses, one that drifted before the write included, while `retarget` keeps the locked part back and warns.
+The writing commands ask the same question before they write: `rename`, `retarget` and `lifecycle` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`), and so does `scaffold` given `--body` or `--field`; without them it writes, reports its new document's own error-severity findings as warnings to fill in, and refuses only findings on other documents. A lock refuses with `CONFIG_ERROR` instead, naming the lock: `lifecycle`, `rename` and `scaffold` refuse a write that would leave a document in a state an armed lock refuses, one that drifted before the write included, while `retarget` keeps the locked part back and warns (`file_skipped`), except under `--supersede`: the predecessor's status change is required, so a lock that holds it refuses the whole command before anything is written.
 
 ### Locks and Status Flows
 
@@ -633,11 +633,11 @@ More: [locks and triggers](.claude/skills/nodex/reference/config.md#diff-aware-r
 | `set --status <s>` | `<s>` | `updated: <today>` |
 | `review` | (unchanged) | `reviewed: <today>` (refused when the existing `reviewed` date is in the future — never moves backward) |
 
-`supersede` also checks that the successor exists and keeps the supersession graph acyclic. `set` accepts any status the document's kind allows, and refuses one the project's own `check` would reject — `superseded` without `superseded_by` is `supersede`'s job — or a move a status flow does not declare. Nothing moves a document out of a terminal status, and `updated` is not written where the kind forbids it ([details](.claude/skills/nodex/reference/commands.md#lifecycle)).
+`supersede` also checks that the successor exists and keeps the supersession graph acyclic. `set` accepts any status the document's kind allows, and refuses one the project's own `check` would reject — `superseded` without `superseded_by` is `supersede`'s job — or a move a status flow does not declare. No `lifecycle` action moves a document out of a terminal status (`set` refuses with `INVALID_TRANSITION`); without a `[[statuses.flow]]` a hand edit or `scaffold --force` still can, and only a declared flow's `status_transition` reports it. `updated` is not written where the kind forbids it ([details](.claude/skills/nodex/reference/commands.md#lifecycle)).
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.61, <0.62"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while document-writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH`; their `--dry-run` forms write nothing and run as reads with the advisory — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.61, <0.62"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH`; their `--dry-run` forms write nothing and run as reads with the advisory — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
@@ -786,7 +786,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 7. **One-way export.** nodex emits its vocabulary for other tools ([Manifests](#manifests)) and never derives its own from theirs.
 
-A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value where that command writes (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
+A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value where that command writes (as `lifecycle set --status` does). One exception is by design: `scaffold` without `--body` or `--field` writes a placeholder whose own error findings are the fields left to fill in, and reports them as `build_recommended` warnings. See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
 
 ---
 
@@ -804,7 +804,7 @@ curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/inst
 iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.ps1 | iex
 ```
 
-The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and installs the Claude Code skill: an interactive run asks where (user level by default); `--skill user|project|none` (`-Skill` on Windows) or `NODEX_SKILL_LEVEL` decides without asking. `scripts/uninstall.sh` (`uninstall.ps1` on Windows) removes the binary and the user-level skill; `--help` lists its flags.
+The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and installs the Claude Code skill: an interactive run asks where (user level by default); `--skill user|project|none` (`-Skill` on Windows) or `NODEX_SKILL_LEVEL` decides without asking. `scripts/uninstall.sh` (`uninstall.ps1` on Windows) removes the binary and the user-level skill; `--help` lists its flags (`Get-Help` on Windows).
 
 ### Supported platforms
 
