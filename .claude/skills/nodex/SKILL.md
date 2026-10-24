@@ -1,10 +1,12 @@
 ---
 name: nodex
 description: >-
-  Inspects, validates and edits Markdown document graphs governed by nodex.toml.
-  Use for document lookup, relation traversal, proposed-content checks,
-  guarded lifecycle or reference changes, and machine-readable CLI exports.
-  Use when the project holds a nodex.toml or the user mentions nodex.
+  Queries, validates and edits Markdown documents governed by nodex.toml:
+  finds documents and what links to them, checks proposed frontmatter and
+  body content before writing, scaffolds, renames, supersedes and retargets
+  documents, and gates commits and CI ranges. Use when the project holds a
+  nodex.toml or the user mentions nodex, document frontmatter validation,
+  ADR supersession or broken document links.
 allowed-tools: Bash(nodex *)
 metadata:
   version: 0.61.1
@@ -56,9 +58,10 @@ Before treating an empty answer or green check as complete, inspect
 Coverage is measured before report narrowing; `unjudged` means selected but not
 judged, not necessarily a broken document. Details: [check](reference/commands.md#check).
 
-To find documents by body text, use `nodex query nodes --body-contains "<text>"`;
-add `--status` with the project's non-terminal statuses (`export enums`) to leave
-retired records out. It lists documents, not lines.
+To find documents by id, title or tag, use `nodex query search <keyword>` (scored);
+by body text, `nodex query nodes --body-contains "<text>"`, which lists documents,
+not lines. Add `--status` with the project's non-terminal statuses (`export enums`)
+to leave retired records out.
 
 Similarity selects positive title-token, tag and graph-neighbour overlap. Kind,
 status and exact parent-directory filters narrow candidates before ranking.
@@ -67,8 +70,10 @@ choosing a lifecycle change; orphan status or an old review date is not a verdic
 
 ## Write and verify
 
-1. Hand edit: pipe the new bytes to `nodex check --content <path>=-`; write the
-   file only when `data.has_errors` is false, else fix the proposal and re-run.
+1. Hand edit: pipe the new bytes to `nodex check --content <path>=-`. Exit 0
+   with every `data.proposals[].in_scope` true: write the file (an out-of-scope
+   path validated nothing). Exit 1: fix the proposal and re-run. Exit 2: nothing
+   was judged; read `error`.
 2. Tool write: run `scaffold`, `rename` or `retarget` with `--dry-run` first. It
    runs the same gates and writes nothing (`scaffold` reports `written: false`,
    `rename` and `retarget` `completion: planned`); read its warnings
@@ -96,17 +101,23 @@ historical target validity. See [source protection](reference/config.md#unresolv
 Use `scaffold`, `rename`, `retarget` and `lifecycle` for guarded graph changes.
 Classification globs do not choose creation paths; scaffold needs `--path` or a
 `scaffold.paths` template. Scaffold without `--body` / `--field` writes even when
-the new document has findings and reports them in `build_recommended` warnings, so
-run `nodex check` after it; with `--body` or `--field`, an introduced error refuses
-the write (`CONTENT_VIOLATIONS`). `migrate --apply` injects inferred defaults into
-bare Markdown.
+the new document has error-severity findings and reports them in
+`build_recommended` warnings, so run `nodex check` after it; with `--body` or
+`--field`, an introduced error refuses the write (`CONTENT_VIOLATIONS`).
+`migrate --apply` injects inferred defaults into bare Markdown.
 
-Writes refuse introduced errors and targeted baseline-lock drift. A record under an
-`append_only` lock takes corrections in the section its `append_section` names; a
-`frozen` body takes none, and a changed decision takes supersession. Discover lock
-and relation policy from `export rules` / `export config`. Declared relations with
-`retarget = "keep"` remain historical citations; body links are repointed unless a
-lock holds them (`file_skipped`).
+To supersede, create the successor, then run `nodex retarget <old-id> <new-id>
+--supersede`: one gated plan sets the predecessor's status and `superseded_by`
+and repoints its citations. `lifecycle supersede` changes the predecessor alone,
+leaving its citations to `superseded_reference`, which a project that makes
+that rule an error enforces by refusing the write.
+
+Writes refuse introduced errors and lock drift on the documents they change. An
+`append_only` record takes appended lines only, inside its `append_section`
+heading when the lock names one; a `frozen` body takes none, and a changed
+decision takes supersession. Discover lock and relation policy from `export rules`
+/ `export config`. Declared relations with `retarget = "keep"` remain historical
+citations; body links are repointed unless a lock holds them (`file_skipped`).
 
 Batch writes are not a filesystem transaction. Inspect `completion`, `failures`
 and warnings even on nonzero exits; successful earlier writes remain. Policy
@@ -117,8 +128,8 @@ before retrying. Rename can leave a surviving move with `id_stability: anchor_fa
 ## History and integrations
 
 ```bash
-nodex check --staged
-nodex check --since origin/main
+nodex check --staged             # pre-commit: exit 1 blocks the commit
+nodex check --since origin/main  # CI: check out full history (fetch-depth: 0)
 nodex diff origin/main HEAD
 nodex query dependents <id> --depth 3 --relations implements,supersedes
 nodex impact origin/main HEAD

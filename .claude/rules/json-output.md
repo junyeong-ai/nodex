@@ -1,6 +1,7 @@
 ---
 paths:
   - "nodex-cli/**/*.rs"
+  - "nodex-core/src/error.rs"
   - "nodex-core/src/export.rs"
   - "nodex-core/src/warning.rs"
   - "nodex-core/src/command_result.rs"

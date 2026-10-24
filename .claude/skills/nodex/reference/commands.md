@@ -85,12 +85,12 @@ nodex query node --path <file>
 
 Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects the body between those inclusive file lines — the numbering every reported location uses — and returns `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
 
-Each edge's `references` lists every site that authors it: `source`, `syntax` (`markdown`, `wikilink`, `pattern`, `frontmatter`), the decoded `target` and a `location` — one-based `start_line` and inclusive `end_line` for a body site, including the reference definition or code span that supplies its meaning, and the authored `field` for frontmatter. Unresolved listings add the names the resolution sought. Their `sources`, like a reference finding's `details.sources`, pair each site with its lock `protection` and the `rules` constraining it.
+Each edge's `references` lists the sites that author it, one per syntax, decoded target and line range: `source`, `syntax` (`markdown`, `wikilink`, `pattern`, `frontmatter`), the decoded `target` and a `location` — one-based `start_line` and inclusive `end_line` for a body site, including the reference definition or code span that supplies its meaning, and the authored `field` for frontmatter. Unresolved listings add the names the resolution sought. Their `sources`, like a reference finding's `details.sources`, pair each site with its lock `protection` and the `rules` constraining it.
 
 ```bash
 nodex query backlinks <id> [--limit N]
 ```
-Nodes that link to `<id>`; self-edges excluded.
+One item per citing edge — its `relation` and first `location` — so a document citing `<id>` through two relations (a body link and `related:`) is listed twice and `total` counts edges, not documents; self-edges are excluded. `query dependents <id>` lists each citing document once.
 
 ```bash
 nodex query chain <id>
@@ -161,22 +161,23 @@ nodex check --content docs/a.md=- --content docs/b.md=b.md
 `{rule_id, unit, subjects, unjudged}`, measured before report narrowing. Zero
 subjects means nothing was guarded; inspect scope and kind filters. Unjudged
 records lack the evidence that rule needs: a baseline lock commonly counts new
-documents, while git drift can lack measurable targets and step rules can lack
-history. Read the rule's evidence before deciding whether a gap needs repair.
+documents, while git drift can lack measurable targets and the step rules
+(`status_transition`, `status_entry`) can lack history. Read the rule's evidence
+before deciding whether a gap needs repair.
 
 `--content PATH=SOURCE` validates proposed bytes before writing; PATH need not
 exist yet. SOURCE is `-` (stdin) or a path relative to the invoking directory,
-never `-C`. At most one
-source is stdin; target paths must be distinct. Every proposal overlays one
-combined graph, so cross-proposal references resolve. Excludes `--since` and
-`--staged`; no cache is written.
+never `-C`. At most one source is stdin; target paths must be distinct. Every
+proposal overlays one combined graph, so cross-proposal references resolve.
+Excludes `--since` and `--staged`; no cache is written.
 
-Ordinary rules judge introduced errors; targeted locks judge absolute drift
-against the configured baseline, or the working tree without one. Step rules
-judge the move the proposal would commit. Unrelated standing errors do not block
-a proposal. `proposals` reports `{path, in_scope, has_path_errors}` and `standing`
-reports the proposed nodes' warning findings; top-level `has_errors` gates the
-whole batch. A warning retained in `standing` is not suppressed by `--severity`.
+Ordinary rules judge introduced errors; a lock covering a proposed document
+judges its absolute drift against the configured baseline, or the working tree
+without one. Step rules judge the move the proposal would commit. Unrelated
+standing errors do not block a proposal. `proposals` reports `{path, in_scope,
+has_path_errors}` and `standing` reports the proposed nodes' warning findings;
+top-level `has_errors` gates the whole batch. A warning retained in `standing`
+is not suppressed by `--severity`.
 
 An in-project path outside scope validates nothing and warns; a path escaping the
 root is refused. Inferred id, title, kind and status do not prove those keys were
@@ -192,6 +193,8 @@ nodex check --since <ref>
 ```
 Builds the graph at `<ref>`, diffs it against the working tree (the index under `--staged`) under that tree's config, and narrows the report to findings that change answers for. A configured `rules.immutable_baseline` remains the lock baseline; otherwise `<ref>` supplies it. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `orphan` also the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` — so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record; `superseded_reference` also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale; `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always; and every `status_transition` / `status_entry` finding, each about a step inside the range, a move the range went on to undo included. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. A `<ref>` git cannot resolve is refused (`GIT_ERROR`); one that does not carry the project — a subdirectory project added after it — widens back to the whole project and says so (`baseline_inert`, `gate_suppression`).
 
+A CI job needs the history the range names, and `actions/checkout` fetches one commit by default: a clone that lacks `<ref>` is refused with `GIT_ERROR`, and so is a range its shallow cut crosses where a status flow judges the range's steps. Check out with `fetch-depth: 0` ([baseline](config.md#diff-aware-rules), [status flow](config.md#status-flow)).
+
 ## check --staged
 
 ```bash
@@ -206,7 +209,7 @@ nodex diff <ref-a> <ref-b>
 ```
 `{added_nodes, removed_nodes, added_edges, removed_edges, status_transitions: [{id, from, to}], field_changes: [{id, field, before, after}], path_changes: [{id, from, to}], added_annotations, removed_annotations}`. `path_changes` is a move that kept the id — nothing authored changed, every path-keyed reading of the document did.
 
-Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the checked project's: the working tree's, or the index's under `--staged`). The before ref supplies content only. A vocabulary change therefore surfaces as field changes on the documents it affects rather than as a comparison across two schemas, and the change that migrates `nodex.toml` itself still passes: under per-ref configs it would deadlock, its base ref's config no longer loading under the new binary.
+Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the checked project's: the working tree's, or the index's under `--staged`). The before ref supplies content only. A configuration change on its own therefore does not appear in the diff: what the config infers — a kind from `identity.kind_rules`, a path-derived id, a default status — reads the same on both sides, and only what the range re-authored in the documents shows, as `field_changes` or `status_transitions`. That is also why the change that migrates `nodex.toml` itself still passes: under per-ref configs it would deadlock, its base ref's config no longer loading under the new binary.
 
 ```bash
 nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
@@ -243,7 +246,7 @@ nodex rename <old-path> <new-path> [--dry-run]
 ```
 `--dry-run` runs every guard and gate the write would and reports the same result with `completion: planned`, writing nothing; `retarget --dry-run` does the same for a repoint.
 
-Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning. For a tracked source, a destination the scan would not admit is refused; an untracked file — outside scope, or conditionally excluded — gets a plain guarded move with no gate, id anchoring or reference rewrite.
+Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning. For a source the scan admits, a destination it would not admit is refused; any other source — outside scope, or conditionally excluded — gets a plain guarded move with no gate, id anchoring or reference rewrite.
 
 A markdown link destination *spells* a path rather than being one, so `rename` repoints what the destination **names**: `[x](old&#x2e;md)` and `[x](a\(1\).md)` are edges like any other and move with the file. It writes back the spelling the parser reads as the new path — plain where that works (byte-for-byte the author's style), pointy `<…>` or backslash-escaped where the name needs it, so a move to `docs/new one.md` repoints rather than leaving the link behind. A reference no spelling survives (a wikilink whose new target carries `]`) is left untouched and visible, surfacing as an unresolved edge rather than being mangled.
 
@@ -293,7 +296,7 @@ nodex lifecycle set       <id> --status <status>  # any value in statuses.allowe
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor + DAG
 ```
 
-`supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the project's vocabulary at the write seam. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (where the project requires `superseded_by` for `superseded`, as the `nodex init` template does, use `supersede`), and any other rule the project's own `check` would red, including effects on other documents, and that refusal is `CONTENT_VIOLATIONS`; a move the status flow does not declare, or one out of a terminal status, is refused before the gate with `INVALID_TRANSITION`. A violation the document already carried never refuses it.
+`supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the kind's status vocabulary before writing. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (where the project requires `superseded_by` for `superseded`, as the `nodex init` template does, use `supersede`), and any other rule the project's own `check` would red, including effects on other documents, and that refusal is `CONTENT_VIOLATIONS`; a move the status flow does not declare, or one out of a terminal status, is refused before the gate with `INVALID_TRANSITION`. A violation the document already carried never refuses it, except a lock's: a document that has drifted from an armed lock is refused with `CONFIG_ERROR`, naming the lock.
 
 Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc. `set` and `supersede` write `updated: <today>`, unless the document's kind forbids `updated` (`[[schema.overrides]] forbidden`).
 
