@@ -114,7 +114,7 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 
 `query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.
 
-Both listings are the typed half of a rule: `orphan` and `stale_review` read the same predicates, so `query orphans` and the `orphan` violations are one pass seen twice, and `rule_coverage` answers for the population either way. A finding with a gate record is counted once — through the violation — so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`. Unresolved warning and error findings follow the same counting. Info rows are reported under their own name outside `total`.
+`query orphans` and `query stale` read the same predicates as the `orphan` and `stale_review` rules. In `query issues` a finding with a gate record is counted once, through the violation, so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`; unresolved warning and error findings count the same way, and info rows are reported under their own name outside `total`.
 
 ```bash
 nodex query similar --id <id> [--kind K] [--parent-dir D] [--status S] [--limit N] [--min-score S]
@@ -228,7 +228,7 @@ nodex diff <ref-a> <ref-b>
 ```
 `{added_nodes, removed_nodes, added_edges, removed_edges, status_transitions: [{id, from, to}], field_changes: [{id, field, before, after}], path_changes: [{id, from, to}], added_annotations, removed_annotations}`. `path_changes` is a move that kept the id — nothing authored changed, every path-keyed reading of the document did.
 
-Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the checked project's: the working tree's, or the index's under `--staged`). The before ref supplies content only. A configuration change on its own therefore does not appear in the diff: what the config infers — a kind from `identity.kind_rules`, a path-derived id, a default status — reads the same on both sides, and only what the range re-authored in the documents shows, as `field_changes` or `status_transitions`. That is also why the change that migrates `nodex.toml` itself still passes: under per-ref configs it would deadlock, its base ref's config no longer loading under the new binary.
+Both snapshots are graphed under a **single lens** — the after ref's `nodex.toml` (for `check --since`, the checked project's: the working tree's, or the index's under `--staged`). The before ref supplies content only. A configuration change on its own therefore does not appear in the diff: what the config infers — a kind from `identity.kind_rules`, a path-derived id, a default status — reads the same on both sides, and only what the range re-authored in the documents shows, as `field_changes` or `status_transitions`. A change that migrates `nodex.toml` itself therefore diffs cleanly even when its base ref's config no longer loads under the new binary.
 
 ```bash
 nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
@@ -287,7 +287,10 @@ identity-scoped locks no longer pair it with the old record. Anchor its id or ru
 `migrate --apply` before moving it when identity must survive. Write paths require the filesystem's exact case and normalization;
 an alternate spelling is refused with the name to use.
 
-`rename` also names every reference it leaves something to say about, once each. Two kinds: one it had a replacement for and **declined to write** (no spelling the move could accept — it goes on naming what it named, and the next build reports the unresolved edge, which `check` and `query issues` report according to configured severity — a project whose `[[detection.unresolved_policy]]` calls that cause an error is one whose write gate refuses the move outright, leaving no warning to read), and one it left standing that **now names somebody else** (the move took the rung out from under it, or carried the referring document to where the same spelling means something different). The second is the one nothing downstream would mention: the graph it produces is valid, so only the command that made it can say so.
+`rename` names, once each, two kinds of reference in `file_skipped`:
+
+- one it had a replacement for and **declined to write**, because no spelling the move could accept exists. It goes on naming what it named, and the next build reports the unresolved edge at its configured severity; where `[[detection.unresolved_policy]]` makes that cause an error, the write gate refuses the move instead.
+- one it left standing that **now names another document**: the move took away the rung it resolved on, or carried the referring document to where the same spelling means something else. The graph stays valid, so this warning is the only place it is said.
 
 ```bash
 nodex retarget <old-id> <new-id> [--supersede] [--dry-run]
