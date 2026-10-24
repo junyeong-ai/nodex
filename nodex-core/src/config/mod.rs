@@ -4,6 +4,7 @@
 //! (`predicate`) language — re-exported here so `crate::config::*` is the
 //! one import path.
 
+mod cover;
 mod predicate;
 mod types;
 mod validate;

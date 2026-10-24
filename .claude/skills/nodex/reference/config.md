@@ -41,7 +41,7 @@ An annotation pattern reads every line outside a code block, inline code include
 
 ## Identity
 
-An authored `kind:` or `id:` takes precedence; otherwise `identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. Each `id_rules` entry names the `kind` it applies to, `"*"` for any kind, so a `"*"` rule declared before a narrower one takes its documents first; the build reports a rule an earlier one covers as never applying (`scope_coverage`). A document no kind rule classifies is `generic`, and one no id rule names takes the inferred id `{kind}-{path_slug}`. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
+An authored `kind:` or `id:` takes precedence; otherwise `identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. Each `id_rules` entry names the `kind` it applies to, `"*"` for any kind, so a `"*"` rule declared before a narrower one takes its documents first. A kind or id rule whose every path earlier rules select, for every kind it applies to, could never apply and is **refused at load**, naming the rules that cover it. Covering compares the paths the globs select, not their spelling: `docs/**` covers `docs/adr/*.md`, two earlier globs can cover one between them, and `docs/adr/0*.md` covers nothing beyond the paths it matches, however the documents are named today. A document no kind rule classifies is `generic`, and one no id rule names takes the inferred id `{kind}-{path_slug}`. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
 
 ## Scope
 
@@ -317,7 +317,7 @@ Four axes narrow a row, and only `cause` is required:
 
 `source_protection` optionally matches `protected`, `unprotected` or `unknown` under the evaluated locks. An edge is protected only when every authored source is protected; one unprotected source keeps it unprotected. Missing baseline evidence stays unknown. Appended citations, including a link completed by an appended definition, do not inherit the prefix's protection. This is a modification constraint, not evidence of historical target validity. Omit the selector to preserve existing severity policy. `protected` and `unknown` require a configured lock covering at least one selected source: a body lock for body relations or a frontmatter lock selecting the authored relation field.
 
-A row an earlier one already covers is **rejected at load**: first match wins, so it could never classify an edge, and an error row that never fires reports a clean gate over exactly what it was declared to catch. Declare the narrow rows before the broad ones.
+A row earlier rows already cover is **rejected at load**: first match wins, so it could never classify an edge, and an error row that never fires reports a clean gate over exactly what it was declared to catch. Rows cover one between them, relation by relation and by the targets their globs select, as identity rules do. Declare the narrow rows before the broad ones.
 
 ```toml
 [[detection.unresolved_policy]]
