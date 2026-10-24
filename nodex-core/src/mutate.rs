@@ -1360,9 +1360,9 @@ impl Introduced {
     /// code draws, so a seam that refuses exactly here cannot report
     /// success onto a project the next `check` fails.
     ///
-    /// `subject` is what the seam was asked to do — "proposed content",
-    /// "moving X to Y" — so one typed code reads as the command the
-    /// operator ran.
+    /// `subject` is what the seam was asked to do — `scaffold of "a.md"`,
+    /// `rename of "a.md" to "b.md"` — so one typed code reads as the command
+    /// the operator ran.
     pub fn refusal(&self, subject: impl Into<String>) -> Option<crate::error::Error> {
         let findings: Vec<String> = self
             .violations

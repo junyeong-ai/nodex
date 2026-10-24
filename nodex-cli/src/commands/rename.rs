@@ -180,7 +180,15 @@ pub fn run(
                 .into());
             }
         },
-        None => untracked_destination(root, &config, &old_abs, new_rel, new_path, &mut skipped)?,
+        None => untracked_destination(
+            root,
+            &config,
+            &old_abs,
+            old_path,
+            new_rel,
+            new_path,
+            &mut skipped,
+        )?,
     };
 
     // The scope as the move leaves it, modelled through the same scope
@@ -260,7 +268,7 @@ pub fn run(
         if let Some((path, lock)) = refusals.destroyed() {
             let record = nodex_core::path_guard::forward_string(path);
             return Err(CoreError::Config(format!(
-                "rename cannot complete: moving {old_path:?} to {new_path:?} would leave the \
+                "rename of {old_path:?} to {new_path:?} cannot complete: it would leave the \
                  baseline record at {record:?} with nothing carrying its id, and it is frozen \
                  ({lock}). A record travels under its id: give the document an explicit `id:` if \
                  this one is derived from its path, or move it where it stays readable"
@@ -281,7 +289,7 @@ pub fn run(
         // stands cannot say because the record is missing from it either way.
         if let Some(lock) = probe.frozen_record_lost(new_rel, &proposed.graph, &config) {
             return Err(CoreError::Config(format!(
-                "rename cannot complete: moving {old_path:?} to {new_path:?} would write over a \
+                "rename of {old_path:?} to {new_path:?} cannot complete: it would write over a \
                  record the baseline froze there ({lock}); supersede the record instead of \
                  replacing it"
             ))
@@ -387,7 +395,7 @@ pub fn run(
         today,
     )
     .context("the project this rename would produce could not be checked")?;
-    if let Some(refusal) = introduced.refusal(format!("moving {old_path:?} to {new_path:?}")) {
+    if let Some(refusal) = introduced.refusal(format!("rename of {old_path:?} to {new_path:?}")) {
         return Err(refusal.into());
     }
 
@@ -611,6 +619,7 @@ fn untracked_destination(
     root: &Path,
     config: &Config,
     old_abs: &Path,
+    old_path: &str,
     new_rel: &Path,
     new_path: &str,
     skipped: &mut Vec<String>,
@@ -642,19 +651,18 @@ fn untracked_destination(
         Proposed::Absent => {
             if lands_in_scope(root, config, new_rel)? {
                 return Err(CoreError::Config(format!(
-                    "rename cannot complete: {new_path:?} is inside the graph's scope, and {} \
-                     holds no document the rules can read (it is not text, or it is a symlink \
-                     whose target the destination cannot reach) — the move would land bytes the \
-                     next build reports as a parse failure",
-                    nodex_core::path_guard::forward_string(old_abs)
+                    "rename of {old_path:?} to {new_path:?} cannot complete: the destination is \
+                     inside the graph's scope, and the source holds no document the rules can \
+                     read (it is not text, or it is a symlink whose target the destination \
+                     cannot reach) — the move would land bytes the next build reports as a parse \
+                     failure"
                 ))
                 .into());
             }
             skipped.push(format!(
-                "{} is not a document the graph can be asked about (it is not text, or it is a \
-                 symlink whose target the destination cannot reach), and it moves where the graph \
-                 does not reach, so there was nothing for the gate to judge",
-                nodex_core::path_guard::forward_string(old_abs)
+                "{old_path} is not a document the graph can be asked about (it is not text, or it \
+                 is a symlink whose target the destination cannot reach), and it moves where the \
+                 graph does not reach, so there was nothing for the gate to judge"
             ));
             Ok(None)
         }

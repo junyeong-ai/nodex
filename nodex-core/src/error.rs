@@ -173,9 +173,13 @@ pub enum Error {
     /// an Error-severity violation the proposal *introduces* (absent from
     /// the pre-proposal report — pre-existing project violations never
     /// refuse a write). The remediation is the proposal, never
-    /// `nodex.toml`. `subject` is what the seam was asked to do, so one
-    /// code carries every write seam's own words.
-    #[error("{subject} introduces check violations: {}", findings.join("; "))]
+    /// `nodex.toml`. `subject` is what the seam was asked to do, worded as
+    /// the seam's other refusals open, so a command reads one way whatever
+    /// refused it.
+    #[error(
+        "{subject} cannot complete: it would introduce check violations — {}",
+        findings.join("; ")
+    )]
     ContentViolations {
         subject: String,
         findings: Vec<String>,

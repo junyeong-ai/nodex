@@ -99,8 +99,7 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool, today: NaiveDate) -
         &result.graph,
         &probe,
         today,
-    )
-    .context("lifecycle transition failed")?;
+    )?;
 
     // The graph this transition was decided against carries what the walk
     // could not read; the gate carries what the transition itself introduced

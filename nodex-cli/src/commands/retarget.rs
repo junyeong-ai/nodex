@@ -224,9 +224,9 @@ pub fn run(
             .is_some_and(|plan| plan.rel_path == held.rel_path)
         {
             return Err(CoreError::Config(format!(
-                "retarget --supersede cannot complete: marking {shown} superseded by `{}` is \
+                "retarget of {:?} to {:?} cannot complete: marking {shown} superseded by `{}` is \
                  refused, and nothing was written: {}",
-                args.new_id, held.reason
+                args.old_id, args.new_id, args.new_id, held.reason
             ))
             .into());
         }
@@ -263,9 +263,10 @@ pub fn run(
         today,
     )
     .context("the project this repoint would produce could not be checked")?;
-    if let Some(refusal) =
-        introduced.refusal(format!("repointing {:?} to {:?}", args.old_id, args.new_id))
-    {
+    if let Some(refusal) = introduced.refusal(format!(
+        "retarget of {:?} to {:?}",
+        args.old_id, args.new_id
+    )) {
         return Err(refusal.into());
     }
 
