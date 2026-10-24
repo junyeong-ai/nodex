@@ -19,7 +19,8 @@ export commands` (`<command> --help` explains each), payloads with `nodex export
 envelope-schema`, and codes with `nodex export diagnostics`. Use project vocabulary
 from `nodex export config`, `enums` and `rules` rather than inventing kinds or statuses.
 
-Read the relevant reference before its workflow:
+Each workflow below links the reference section it depends on; read that section
+before acting on it. Both references open with a table of contents:
 
 - [Commands and result semantics](reference/commands.md): query filters, proposed
   content, history checks, lifecycle changes and partial writes.
@@ -50,9 +51,8 @@ the body, a zero cap, a scaffold with no path); the refusal message lists the
 accepted values, so correct the argument rather than `nodex.toml`. `CONFIG_ERROR`
 is `nodex.toml` itself.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
-and `current`; rebuild with `--full` for a schema mismatch.
-Incompatible snapshot schemas also yield `GRAPH_OUTDATED`, naming the recorded
-and supported versions. `--allow-stale` does not bypass schema compatibility.
+and `current`; rebuild with `--full` for a schema mismatch
+([status](reference/commands.md#status)).
 
 Before treating an empty answer or green check as complete, inspect
 `scope_coverage`, `snapshot.unbuildable`, `skipped_rules` and `rule_coverage`.
@@ -114,10 +114,9 @@ leaving its citations to `superseded_reference`, which a project that makes
 that rule an error enforces by refusing the write.
 
 Writes refuse introduced errors (`CONTENT_VIOLATIONS`) and lock drift (`LOCKED`) on
-the documents they change. An
-`append_only` record takes appended lines only, inside its `append_section`
-heading when the lock names one; a `frozen` body takes none, and a changed
-decision takes supersession. Discover lock and relation policy from `export rules`
+the documents they change. An `append_only` record takes appended lines only,
+inside its `append_section` heading when the lock names one; a `frozen` body takes
+none, and a changed decision takes supersession ([locks](reference/config.md#diff-aware-rules)). Discover lock and relation policy from `export rules`
 / `export config`. Declared relations with `retarget = "keep"` remain historical
 citations; body links are repointed unless a lock holds them (`file_skipped`).
 
