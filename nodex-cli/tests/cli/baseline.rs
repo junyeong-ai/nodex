@@ -1,12 +1,12 @@
 //! The immutability baseline: how a ref's project is located and read, the
 //! same way by `check` and by the write seams.
 
-#[cfg(unix)]
-use crate::support::envelope_of;
 use crate::support::{
     LOCKED_PROJECT_CONFIG, git_runner, init_project, nodex, reported, run_envelope, run_json,
     scratch, snapshot_lock_project, walk_entries, warning_msg, write_doc,
 };
+#[cfg(unix)]
+use crate::support::{adr, envelope_of, flow_project};
 use assert_cmd::Command;
 use serde_json::Value;
 use std::fs;
@@ -2882,5 +2882,166 @@ fn configured_step_locks_keep_history_when_the_report_ref_predates_the_project()
             .iter()
             .any(|v| v["rule_id"] == "body_immutable/sealed" && v["details"]["commit"].is_string()),
         "{envelope}"
+    );
+}
+
+/// A `nodex` run under a `git` that runs the real one and, the first time the
+/// run resolves `name` to a commit, points `refs/heads/<name>` at `target`: a
+/// ref moving between a run's questions, as a fetch landing mid-run moves it.
+/// The double leaves `<double>/moved` once it has moved the ref, so a test
+/// tells a run that resolved the name from one that never asked.
+#[cfg(unix)]
+fn under_a_moving_ref(
+    double: &std::path::Path,
+    repo: &std::path::Path,
+    name: &str,
+    target: &str,
+) -> Command {
+    use std::os::unix::fs::PermissionsExt;
+    const DOUBLE: &str = r#"#!/bin/sh
+"$NODEX_TEST_GIT" "$@"
+status=$?
+for arg in "$@"; do
+  if [ "$arg" = "$NODEX_TEST_REF^{commit}" ] && [ ! -e "$NODEX_TEST_MOVED" ]; then
+    : > "$NODEX_TEST_MOVED"
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE "$NODEX_TEST_GIT" \
+      -C "$NODEX_TEST_REPO" update-ref "refs/heads/$NODEX_TEST_REF" "$NODEX_TEST_TARGET"
+  fi
+done
+exit $status
+"#;
+    let path = std::env::var_os("PATH").expect("PATH is set");
+    let git = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .expect("git on PATH");
+    let script = double.join("git");
+    fs::write(&script, DOUBLE).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut cmd = nodex(repo);
+    cmd.env(
+        "PATH",
+        std::env::join_paths(
+            std::iter::once(double.to_path_buf()).chain(std::env::split_paths(&path)),
+        )
+        .unwrap(),
+    )
+    .env("NODEX_TEST_GIT", git)
+    .env("NODEX_TEST_REF", name)
+    .env("NODEX_TEST_MOVED", double.join("moved"))
+    .env("NODEX_TEST_REPO", repo)
+    .env("NODEX_TEST_TARGET", target);
+    cmd
+}
+
+#[cfg(unix)]
+#[test]
+fn a_baseline_ref_that_moves_during_a_run_is_read_at_the_commit_it_first_named() {
+    // A run resolves its baseline once and asks every later question of the
+    // commit that answer named. The ref moves onto the commit that rewrote
+    // the frozen body right after that answer: a run asking the name again
+    // would read the rewrite as its own baseline and pass it.
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    let rev = |name: &str| {
+        String::from_utf8(git(&["rev-parse", name]).stdout)
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    fs::write(
+        repo.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [rules]\nimmutable_baseline = \"moving\"\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\ntrigger = \"creation\"\n",
+    )
+    .unwrap();
+    fs::write(repo.join(".gitignore"), "_index/\n").unwrap();
+    let doc = |body: &str| format!("---\nid: a\ntitle: A\nstatus: active\n---\n{body}\n");
+    write_doc(repo, "docs/a.md", &doc("Original."));
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "baseline"]);
+    git(&["branch", "moving"]);
+    write_doc(repo, "docs/a.md", &doc("Rewritten."));
+    git(&["commit", "-qam", "rewrite the frozen body"]);
+    let rewritten = rev("HEAD");
+
+    let double = scratch();
+    let envelope =
+        reported(under_a_moving_ref(double.path(), repo, "moving", &rewritten).arg("check"));
+
+    assert!(
+        double.path().join("moved").exists(),
+        "the run resolved the baseline through the double"
+    );
+    assert_eq!(rev("moving"), rewritten, "the ref moved during the run");
+    let locks: Vec<&str> = envelope["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v["rule_id"].as_str())
+        .filter(|rule| rule.starts_with("body_immutable"))
+        .collect();
+    assert_eq!(
+        locks,
+        ["body_immutable/frozen"],
+        "the lock read the commit the ref named first: {envelope}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_since_ref_that_moves_during_a_run_bounds_the_range_at_the_commit_it_first_named() {
+    // `--since` is resolved once where it enters: the tree it graphs and the
+    // commits it walks are asked of that commit. The ref moves onto the
+    // commit that took an undeclared step right after the first answer: a
+    // range asked by name again would start past the step and report
+    // nothing.
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    let rev = |name: &str| {
+        String::from_utf8(git(&["rev-parse", name]).stdout)
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    flow_project(repo, "");
+    adr(repo, "adr-001", "proposed", "Body.");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "propose"]);
+    git(&["branch", "moving"]);
+    adr(repo, "adr-001", "superseded", "Body.");
+    git(&["commit", "-qam", "skip acceptance"]);
+    let skipped = rev("HEAD");
+    write_doc(repo, "README.md", "outside the scope\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "unrelated"]);
+
+    let double = scratch();
+    let envelope = reported(
+        under_a_moving_ref(double.path(), repo, "moving", &skipped)
+            .args(["check", "--since", "moving"]),
+    );
+
+    assert!(
+        double.path().join("moved").exists(),
+        "the run resolved the range's start through the double"
+    );
+    assert_eq!(rev("moving"), skipped, "the ref moved during the run");
+    let steps: Vec<(&str, &str)> = envelope["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter(|v| v["rule_id"] == "status_transition")
+        .filter_map(|v| Some((v["node_id"].as_str()?, v["details"]["commit"].as_str()?)))
+        .collect();
+    assert_eq!(
+        steps,
+        [("adr-001", skipped.as_str())],
+        "the range starts where the ref named first: {envelope}"
     );
 }
