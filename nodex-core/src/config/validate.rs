@@ -233,21 +233,16 @@ impl<'a> PolicySelector<'a> {
     /// The earlier rows that between them claim every edge this one selects,
     /// or `None` when some edge is still left for it.
     ///
-    /// Claiming accumulates: two rows each taking one relation leave nothing
-    /// for a third that names both, and asking pairwise would miss it. A row
-    /// contributes only where its target set is at least as wide as this
-    /// row's — no glob, or the same glob.
+    /// Claiming accumulates: two rows each taking one relation, or one part of
+    /// the targets, leave nothing for a third that names both, and asking
+    /// pairwise would miss it. So each relation this row selects, under each
+    /// protection state, asks whether the earlier rows claiming it select
+    /// every target its glob does ([`super::cover::covered_by`]).
     ///
     /// `selects` is the relations this row admits, an omitted filter standing
     /// for every relation the cause can arise on — so a wildcard row is dead
     /// exactly when earlier rows have enumerated that vocabulary between them,
     /// which is the same question asked of the same set.
-    ///
-    /// Glob *containment* is deliberately not decided: whether `docs/**`
-    /// contains `docs/a/**` is a question about glob languages, and answering
-    /// it wrongly rejects a legal table in one direction and admits a dead row
-    /// in the other. Equality catches what an operator writes, and the
-    /// undecided remainder errs toward admitting.
     fn claimed_by(
         &self,
         earlier: &'a [Self],
@@ -270,27 +265,24 @@ impl<'a> PolicySelector<'a> {
         );
         let mut claimants = Vec::new();
         for state in states {
-            let mut claimed = std::collections::BTreeSet::new();
-            for row in earlier {
-                if row.cause != self.cause
-                    || !(row.glob.is_none() || row.glob == self.glob)
-                    || row
-                        .source_protection
-                        .is_some_and(|selected| selected != state)
-                {
-                    continue;
+            for relation in &selects {
+                let claiming: Vec<(usize, Option<&str>)> = earlier
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| {
+                        row.cause == self.cause
+                            && row
+                                .source_protection
+                                .is_none_or(|selected| selected == state)
+                            && (row.relations.is_empty() || row.relations.contains(relation))
+                    })
+                    .map(|(index, row)| (index, row.glob))
+                    .collect();
+                for index in super::cover::covered_by(&claiming, self.glob)? {
+                    if !claimants.contains(&earlier[index].name) {
+                        claimants.push(earlier[index].name);
+                    }
                 }
-                if !claimants.contains(&row.name) {
-                    claimants.push(row.name);
-                }
-                if row.relations.is_empty() {
-                    claimed.extend(selects.iter().copied());
-                } else {
-                    claimed.extend(row.relations.iter().copied());
-                }
-            }
-            if !selects.is_subset(&claimed) {
-                return None;
             }
         }
         Some(claimants)
@@ -1490,6 +1482,36 @@ impl Config {
                     kr.kind
                 )));
             }
+            let earlier: Vec<(usize, Option<&str>)> = self.identity.kind_rules[..idx]
+                .iter()
+                .enumerate()
+                .map(|(index, rule)| (index, Some(rule.glob.as_str())))
+                .collect();
+            if let Some(covering) = super::cover::covered_by(&earlier, Some(&kr.glob)) {
+                let named: Vec<String> = covering
+                    .iter()
+                    .map(|&index| {
+                        let rule = &self.identity.kind_rules[index];
+                        format!(
+                            "identity.kind_rules[{index}] (glob {:?}, kind {:?})",
+                            rule.glob, rule.kind
+                        )
+                    })
+                    .collect();
+                return Err(Error::Config(format!(
+                    "identity.kind_rules[{idx}] (glob {:?}, kind {:?}) can never apply: {}, \
+                     declared before it, {} every path it would, and the first match decides a \
+                     kind; declare it before them, or remove it",
+                    kr.glob,
+                    kr.kind,
+                    named.join(" and "),
+                    if named.len() == 1 {
+                        "selects"
+                    } else {
+                        "select"
+                    },
+                )));
+            }
         }
         for (idx, ir) in self.identity.id_rules.iter().enumerate() {
             if let Some(glob) = &ir.glob {
@@ -1510,6 +1532,58 @@ impl Config {
                     "identity.id_rules[{idx}].kind {:?} is not in kinds.allowed; \
                      use \"*\" for any-kind or one of the allowed kinds",
                     ir.kind
+                )));
+            }
+            // Ids take the first rule selecting a document, by its kind and
+            // path. A `"*"` rule selects every kind the vocabulary allows, so
+            // it is covered only where each of them is.
+            let earlier = |kind: &str| -> Vec<(usize, Option<&str>)> {
+                self.identity.id_rules[..idx]
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, rule)| rule.kind == "*" || rule.kind == kind)
+                    .map(|(index, rule)| (index, rule.glob.as_deref()))
+                    .collect()
+            };
+            let kinds: Vec<&str> = match ir.kind.as_str() {
+                "*" => self.kinds.allowed.iter().map(String::as_str).collect(),
+                kind => vec![kind],
+            };
+            let covering =
+                kinds
+                    .iter()
+                    .try_fold(std::collections::BTreeSet::new(), |mut covering, kind| {
+                        covering.extend(super::cover::covered_by(
+                            &earlier(kind),
+                            ir.glob.as_deref(),
+                        )?);
+                        Some(covering)
+                    });
+            if let Some(covering) = covering {
+                let describe = |index: usize| {
+                    let rule = &self.identity.id_rules[index];
+                    match &rule.glob {
+                        Some(glob) => format!(
+                            "identity.id_rules[{index}] (kind {:?}, glob {glob:?})",
+                            rule.kind
+                        ),
+                        None => format!(
+                            "identity.id_rules[{index}] (kind {:?}, any path)",
+                            rule.kind
+                        ),
+                    }
+                };
+                let named: Vec<String> = covering.into_iter().map(describe).collect();
+                return Err(Error::Config(format!(
+                    "{} can never apply: {}, declared before it, {} every document it would, and \
+                     the first match decides an id; declare it before them, or remove it",
+                    describe(idx),
+                    named.join(" and "),
+                    if named.len() == 1 {
+                        "selects"
+                    } else {
+                        "select"
+                    },
                 )));
             }
             // `parser::identity::expand_template` only substitutes the

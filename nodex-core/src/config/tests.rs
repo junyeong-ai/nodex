@@ -2823,25 +2823,113 @@ fn validate_accepts_a_row_the_earlier_ones_leave_an_edge_for() {
 }
 
 #[test]
-fn validate_lets_a_narrower_glob_through_an_earlier_row_of_another_glob() {
-    // Different globs are different target sets, and glob containment is not
-    // decided — a row whose glob nobody matched exactly stays legal.
-    let mut config = Config::default();
-    config.detection.unresolved_policy = vec![
-        policy_row(
-            "specs",
-            crate::model::UnresolvedCause::Missing,
-            Some("specs/**"),
-            UnresolvedSeverity::Info,
-        ),
-        policy_row(
-            "docs",
-            crate::model::UnresolvedCause::Missing,
-            Some("docs/**"),
-            UnresolvedSeverity::Error,
-        ),
-    ];
-    config.validate().expect("disjoint globs");
+fn a_first_match_entry_is_covered_by_the_paths_earlier_globs_select() {
+    // Covering is a question about the paths globs select, answered exactly:
+    // a broader earlier glob covers a narrower later one, two earlier globs
+    // can cover one between them, and a glob that only happens to name every
+    // document today covers nothing it does not select.
+    let policy = |globs: &[&str]| {
+        let mut config = Config::default();
+        config.detection.unresolved_policy = globs
+            .iter()
+            .enumerate()
+            .map(|(index, glob)| {
+                policy_row(
+                    &format!("row{index}"),
+                    crate::model::UnresolvedCause::Missing,
+                    Some(glob),
+                    UnresolvedSeverity::Error,
+                )
+            })
+            .collect();
+        config.validate()
+    };
+    for globs in [
+        &["docs/**", "docs/adr/**"][..],
+        &["docs/**", "docs/adr/*.md"],
+        &["*.md", "docs/adr/*.md"],
+        &["docs/a/**", "docs/b/**", "docs/{a,b}/*.md"],
+    ] {
+        let err = policy(globs).expect_err("a covered row is refused");
+        assert!(
+            err.to_string().contains("can never fire"),
+            "{globs:?}: {err}"
+        );
+    }
+    for globs in [
+        &["specs/**", "docs/**"][..],
+        &["docs/adr/**", "docs/**"],
+        &["docs/adr/0*.md", "docs/adr/**"],
+        &["docs/*/x.md", "docs/**/x.md"],
+    ] {
+        policy(globs).unwrap_or_else(|err| panic!("{globs:?}: {err}"));
+    }
+}
+
+#[test]
+fn a_kind_rule_an_earlier_one_covers_is_refused() {
+    let rules = |globs: &[(&str, &str)]| {
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "guide".into(), "adr".into()];
+        config.identity.kind_rules = globs
+            .iter()
+            .map(|(glob, kind)| KindRule {
+                glob: (*glob).into(),
+                kind: (*kind).into(),
+                may_be_empty: false,
+            })
+            .collect();
+        config.validate()
+    };
+    let err = rules(&[("docs/**", "guide"), ("docs/adr/**", "adr")]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "config error: identity.kind_rules[1] (glob \"docs/adr/**\", kind \"adr\") can never \
+         apply: identity.kind_rules[0] (glob \"docs/**\", kind \"guide\"), declared before it, \
+         selects every path it would, and the first match decides a kind; declare it before \
+         them, or remove it"
+    );
+    rules(&[("docs/adr/**", "adr"), ("docs/**", "guide")]).expect("narrow before broad");
+}
+
+#[test]
+fn an_id_rule_is_refused_only_where_earlier_rules_cover_every_kind_it_selects() {
+    let rules = |declared: &[(&str, Option<&str>)]| {
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "adr".into()];
+        config.identity.id_rules = declared
+            .iter()
+            .map(|(kind, glob)| IdRule {
+                kind: (*kind).into(),
+                glob: glob.map(Into::into),
+                template: "{kind}-{stem}".into(),
+                may_be_empty: false,
+            })
+            .collect();
+        config.validate()
+    };
+    for declared in [
+        &[("*", None), ("adr", None)][..],
+        &[("*", Some("docs/**")), ("adr", Some("docs/adr/**"))],
+        &[
+            ("adr", None),
+            ("generic", Some("docs/**")),
+            ("*", Some("docs/x/**")),
+        ],
+    ] {
+        let err = rules(declared).expect_err("covered");
+        assert!(
+            err.to_string().contains("can never apply"),
+            "{declared:?}: {err}"
+        );
+    }
+    for declared in [
+        &[("adr", None), ("*", None)][..],
+        &[("adr", Some("docs/**")), ("*", Some("docs/adr/**"))],
+        &[("*", Some("docs/adr/0*.md")), ("*", Some("docs/adr/**"))],
+    ] {
+        rules(declared).unwrap_or_else(|err| panic!("{declared:?}: {err}"));
+    }
 }
 
 #[test]

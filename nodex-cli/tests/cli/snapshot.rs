@@ -424,9 +424,7 @@ fn status_ignores_comment_edits_but_flags_graph_shaping_config_change() {
     assert_eq!(data["state"], "current");
 
     // A semantic identity edit reshapes the graph → config_changed.
-    toml.push_str(
-        "\n[[identity.id_rules]]\nkind = \"*\"\nglob = \"docs/**\"\ntemplate = \"doc-{stem}\"\n",
-    );
+    toml.push_str("\n[[identity.kind_rules]]\nglob = \"docs/**\"\nkind = \"guide\"\n");
     fs::write(&toml_path, &toml).unwrap();
     let data = run_json(nodex(tmp.path()).arg("status"));
     assert_eq!(data["state"], "outdated");
