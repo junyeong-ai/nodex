@@ -59,7 +59,7 @@ pub struct Current<'a> {
     pub files: &'a Path,
 }
 
-/// Build the graph at `git_ref` (content only — the config of the project
+/// Build the graph at `at` (content only — the config of the project
 /// being judged stays the single lens) in a [`Checkout`] and diff it
 /// against the already-built `current` graph: the seam behind `check
 /// --since`. [`baseline_diff`] resolves `rules.immutable_baseline` for a
@@ -73,19 +73,19 @@ pub struct Current<'a> {
 /// ref.
 pub fn diff_against_ref(
     repository: &Repository,
-    git_ref: &str,
+    at: &ResolvedRef<'_>,
     config: &nodex_core::Config,
     current: Current<'_>,
     steps: Steps<'_>,
 ) -> Result<Prior> {
-    prior(repository, git_ref, config, current, steps)
+    prior(repository, at, config, current, steps)
 }
 
-/// The baseline at `git_ref` and the history `steps` reaches, read through
-/// one checkout where the ref carries the project.
+/// The baseline at `at` and the history `steps` reaches, read through one
+/// checkout where the ref carries the project.
 fn prior(
     repository: &Repository,
-    git_ref: &str,
+    at: &ResolvedRef<'_>,
     config: &nodex_core::Config,
     current: Current<'_>,
     steps: Steps<'_>,
@@ -94,24 +94,23 @@ fn prior(
         Steps::None | Steps::Uncommitted => None,
         Steps::Range(source) => Some(source),
     };
-    let (baseline, ancestry) =
-        match baseline_graph(current.files, repository, git_ref, config, steps)? {
-            BaselineSnapshot::Absent { warning } => (
-                BaselineResolution::Inert { warning },
-                if matches!(steps, Steps::None) {
-                    None
-                } else {
-                    history(repository, config, since)?
-                },
-            ),
-            BaselineSnapshot::Graphed(baseline) => (
-                BaselineResolution::Resolved(Box::new(BaselineDiff {
-                    diff: nodex_core::diff::compute_diff(&baseline.graph, current.graph),
-                    warnings: baseline.warnings,
-                })),
-                baseline.ancestry,
-            ),
-        };
+    let (baseline, ancestry) = match baseline_graph(current.files, repository, at, config, steps)? {
+        BaselineSnapshot::Absent { warning } => (
+            BaselineResolution::Inert { warning },
+            if matches!(steps, Steps::None) {
+                None
+            } else {
+                history(repository, config, since)?
+            },
+        ),
+        BaselineSnapshot::Graphed(baseline) => (
+            BaselineResolution::Resolved(Box::new(BaselineDiff {
+                diff: nodex_core::diff::compute_diff(&baseline.graph, current.graph),
+                warnings: baseline.warnings,
+            })),
+            baseline.ancestry,
+        ),
+    };
     Ok(Prior {
         baseline,
         unread: ancestry
@@ -161,7 +160,8 @@ pub enum Steps<'a> {
     /// rewriting history clears.
     Uncommitted,
     /// Every commit the heads reach and the ref does not, as well — what
-    /// `check --since <ref>` asks about.
+    /// `check --since <ref>` asks about, named by the
+    /// [`ResolvedRef::object`] the ref resolved to.
     Range(&'a str),
 }
 
@@ -182,11 +182,12 @@ pub enum Steps<'a> {
 pub fn baseline_graph(
     files: &Path,
     repository: &Repository,
-    git_ref: &str,
+    at: &ResolvedRef<'_>,
     config: &nodex_core::Config,
     steps: Steps<'_>,
 ) -> Result<BaselineSnapshot> {
-    let tree = match recorded(repository, git_ref)? {
+    let git_ref = at.name;
+    let tree = match at.recorded(repository)? {
         Recorded::Tree(tree) => tree,
         Recorded::Absent(detail) => {
             return Ok(BaselineSnapshot::Absent {
@@ -807,7 +808,9 @@ pub fn write_baseline(root: &Path, config: &nodex_core::Config) -> Result<Baseli
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     Ok(binding.snapshot(
         |repository, git_ref| {
-            match baseline_graph(root, repository, git_ref, config, Steps::Uncommitted) {
+            match ResolvedRef::resolve(repository, git_ref)
+                .and_then(|at| baseline_graph(root, repository, &at, config, Steps::Uncommitted))
+            {
                 Ok(BaselineSnapshot::Graphed(baseline)) => Ok(*baseline),
                 // The binding is only bound for a ref that carries the project,
                 // so reading it cannot find otherwise. Say so rather than
@@ -863,7 +866,13 @@ pub fn baseline_diff(
     // be reporting on rules that can never fire.
     let binding = nodex_core::BaselineBinding::resolve(root, config)?;
     match binding.bound() {
-        Some((repository, git_ref)) => prior(repository, git_ref, config, current, steps),
+        Some((repository, git_ref)) => prior(
+            repository,
+            &ResolvedRef::resolve(repository, git_ref)?,
+            config,
+            current,
+            steps,
+        ),
         None => {
             let ancestry = match steps {
                 Steps::None => None,
@@ -1050,7 +1059,8 @@ impl Checkout {
     }
 
     /// The project as `tree` records it, graphed under `config`. The tree
-    /// carries the project — [`recorded`] is what establishes that.
+    /// carries the project — [`ResolvedRef::recorded`] is what establishes
+    /// that.
     pub fn graph(&self, tree: &str, config: &nodex_core::Config) -> Result<BuildOutcome> {
         self.hold(tree)?;
         self.graph_held(config)
@@ -1180,41 +1190,83 @@ pub enum Recorded {
     Absent(String),
 }
 
-/// What `git_ref` records for the project. A ref that names nothing is
-/// refused rather than read as an absent project, on both planes: `check
-/// --since` would otherwise report every node as in scope and exit 0 on a
-/// typo, while the same name in `rules.immutable_baseline` refuses — and
-/// `diff` would blame the project's location for a ref that does not exist.
-/// `BaselineProbe` draws the line in the same place.
-pub fn recorded(repository: &Repository, git_ref: &str) -> Result<Recorded> {
-    let state = repository.ref_state(git_ref).map_err(|e| CoreError::Git {
-        context: format!("could not establish what {git_ref:?} carries"),
-        stderr: e.to_string(),
-    })?;
-    match state {
-        RefState::Unresolvable => Err(CoreError::Git {
-            context: format!("{git_ref:?} cannot be read"),
-            stderr: "git resolves no such ref".to_string(),
-        }
-        .into()),
-        // Only reachable for a project with a prefix: a ref always records a
-        // tree at a repository's own top level.
-        RefState::WithoutProject(_) => Ok(Recorded::Absent(format!(
-            "that ref records no project directory at {:?}",
-            nodex_core::path_guard::forward_string(repository.prefix())
-        ))),
-        RefState::Unborn => Ok(Recorded::Absent(
-            "no ref in the repository names a commit, so there is nothing to compare against"
-                .to_string(),
-        )),
-        RefState::CarriesProject(commit) => {
-            repository.tree(&commit).map(Recorded::Tree).map_err(|e| {
-                CoreError::Git {
-                    context: format!("the tree {git_ref:?} records could not be read"),
-                    stderr: e.to_string(),
+/// A ref as the operator named it, and what git answered the one time the
+/// run asked: every message names the ref as written, and every later
+/// question — the tree it records, the range `check --since` walks, git
+/// drift's `since..HEAD` — is asked of that answer, so a fetch that moves
+/// the name mid-run cannot split one run across two commits.
+pub struct ResolvedRef<'a> {
+    name: &'a str,
+    named: Named,
+}
+
+/// What a resolved name names: [`RefState`] less a name that names
+/// nothing, which [`ResolvedRef::resolve`] refuses.
+enum Named {
+    Unborn,
+    WithoutProject(String),
+    CarriesProject(String),
+}
+
+impl<'a> ResolvedRef<'a> {
+    /// Ask git what `name` names. A ref that names nothing is refused rather
+    /// than read as an absent project, on both planes: `check --since` would
+    /// otherwise report every node as in scope and exit 0 on a typo, while
+    /// the same name in `rules.immutable_baseline` refuses — and `diff` would
+    /// blame the project's location for a ref that does not exist.
+    /// `BaselineProbe` draws the line in the same place.
+    pub fn resolve(repository: &Repository, name: &'a str) -> Result<Self> {
+        let state = repository.ref_state(name).map_err(|e| CoreError::Git {
+            context: format!("could not establish what {name:?} carries"),
+            stderr: e.to_string(),
+        })?;
+        let named = match state {
+            RefState::Unresolvable => {
+                return Err(CoreError::Git {
+                    context: format!("{name:?} cannot be read"),
+                    stderr: "git resolves no such ref".to_string(),
                 }
-                .into()
-            })
+                .into());
+            }
+            RefState::Unborn => Named::Unborn,
+            RefState::WithoutProject(commit) => Named::WithoutProject(commit),
+            RefState::CarriesProject(commit) => Named::CarriesProject(commit),
+        };
+        Ok(Self { name, named })
+    }
+
+    /// What the next question about the ref names: the commit it named, or,
+    /// in a repository that has recorded no commit, the name, which named
+    /// none and leaves a range nothing to walk.
+    pub fn object(&self) -> &str {
+        match &self.named {
+            Named::Unborn => self.name,
+            Named::WithoutProject(commit) | Named::CarriesProject(commit) => commit,
+        }
+    }
+
+    /// What the ref records for the project.
+    pub fn recorded(&self, repository: &Repository) -> Result<Recorded> {
+        match &self.named {
+            // Only reachable for a project with a prefix: a ref always records
+            // a tree at a repository's own top level.
+            Named::WithoutProject(_) => Ok(Recorded::Absent(format!(
+                "that ref records no project directory at {:?}",
+                nodex_core::path_guard::forward_string(repository.prefix())
+            ))),
+            Named::Unborn => Ok(Recorded::Absent(
+                "no ref in the repository names a commit, so there is nothing to compare against"
+                    .to_string(),
+            )),
+            Named::CarriesProject(commit) => {
+                repository.tree(commit).map(Recorded::Tree).map_err(|e| {
+                    CoreError::Git {
+                        context: format!("the tree {:?} records could not be read", self.name),
+                        stderr: e.to_string(),
+                    }
+                    .into()
+                })
+            }
         }
     }
 }
@@ -1265,7 +1317,7 @@ pub fn staged_tree(repository: &Repository, checkout: &Checkout) -> Result<Strin
 /// The tree `git_ref` records, for a comparison that cannot proceed without
 /// the project on both sides (`nodex diff`, `nodex impact`).
 pub fn required_tree(repository: &Repository, git_ref: &str) -> Result<String> {
-    match recorded(repository, git_ref)? {
+    match ResolvedRef::resolve(repository, git_ref)?.recorded(repository)? {
         Recorded::Tree(tree) => Ok(tree),
         Recorded::Absent(detail) => Err(CoreError::Git {
             context: format!("{git_ref:?} does not carry this project"),

@@ -627,35 +627,37 @@ fn resolve_diff(
     config: &nodex_core::Config,
     current: Current<'_>,
 ) -> Result<DiffResolution> {
-    let (mut prior, changes) = match args.since.as_deref() {
+    let (mut prior, changes, since) = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
+            let since = super::git_checkout::ResolvedRef::resolve(&repository, git_ref)?;
             let report_steps = if config.rules.immutable_baseline.is_some() {
                 super::git_checkout::Steps::None
             } else {
-                super::git_checkout::Steps::Range(git_ref)
+                super::git_checkout::Steps::Range(since.object())
             };
             let mut prior = super::git_checkout::diff_against_ref(
                 &repository,
-                git_ref,
+                &since,
                 config,
                 current,
                 report_steps,
             )?;
-            if config.rules.immutable_baseline.is_some() {
+            let changes = if config.rules.immutable_baseline.is_some() {
                 let configured = super::git_checkout::baseline_diff(
                     root,
                     config,
                     current,
-                    super::git_checkout::Steps::Range(git_ref),
+                    super::git_checkout::Steps::Range(since.object()),
                 )?;
                 prior.steps = configured.steps;
                 let changes = std::mem::replace(&mut prior.baseline, configured.baseline);
                 prior.unread.extend(configured.unread);
-                (prior, Some((changes, git_ref.to_string())))
+                Some((changes, since.object().to_string()))
             } else {
-                (prior, None)
-            }
+                None
+            };
+            (prior, changes, Some(since.object().to_string()))
         }
         None => (
             super::git_checkout::baseline_diff(
@@ -664,6 +666,7 @@ fn resolve_diff(
                 current,
                 super::git_checkout::Steps::Uncommitted,
             )?,
+            None,
             None,
         ),
     };
@@ -679,9 +682,9 @@ fn resolve_diff(
             None
         }
         Some((BaselineResolution::NotApplicable, _)) => None,
-        None => match (&prior.baseline, args.since.as_deref()) {
+        None => match (&prior.baseline, since) {
             (BaselineResolution::Resolved(baseline), Some(source)) => {
-                Some((baseline.diff.clone(), source.to_string()))
+                Some((baseline.diff.clone(), source))
             }
             (BaselineResolution::Inert { .. }, Some(_)) => {
                 prior.unread.push(nodex_core::Warning::new(nodex_core::WarningCode::GateSuppression,
