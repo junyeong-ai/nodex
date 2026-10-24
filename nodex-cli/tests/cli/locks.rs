@@ -1645,6 +1645,45 @@ fn frozen_baseline_project(root: &std::path::Path) {
     git(&["commit", "-m", "baseline"]);
 }
 
+/// With no baseline a lock judges authored bytes against the working tree,
+/// and a placeholder written over a record it freezes replaces that record:
+/// the finding is the lock's, never a field left to fill in.
+#[test]
+fn scaffold_force_over_a_record_a_lock_holds_without_a_baseline_is_refused() {
+    let tmp = scratch();
+    let project = tmp.path();
+    fs::write(
+        project.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[rules.body_immutable]]\nname = \"frozen\"\nmode = \"frozen\"\ntrigger = \"creation\"\n",
+    )
+    .unwrap();
+    write_doc(
+        project,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nstatus: active\n---\nThe decision.\n",
+    );
+    let before = fs::read_to_string(project.join("docs/a.md")).unwrap();
+    for body in [None, Some("Rewritten.\n")] {
+        let mut command = nodex(project);
+        command.args(["scaffold", "--kind", "generic", "--title", "A"]);
+        command.args(["--id", "a", "--path", "docs/a.md", "--force"]);
+        if let Some(body) = body {
+            command.args(["--body", "-"]).write_stdin(body);
+        }
+        let output = command.output().expect("ran");
+        let envelope: Value = serde_json::from_slice(&output.stdout).expect("json");
+        assert_eq!(
+            envelope["error"]["code"], "LOCKED",
+            "body {body:?}: {envelope}"
+        );
+        assert_eq!(
+            fs::read_to_string(project.join("docs/a.md")).unwrap(),
+            before
+        );
+    }
+}
+
 #[test]
 fn scaffold_force_refuses_overwriting_baseline_locked_doc() {
     let tmp = scratch();
