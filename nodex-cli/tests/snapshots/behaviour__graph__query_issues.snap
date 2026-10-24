@@ -307,7 +307,7 @@ exit: 0
           ],
           "type": "unresolved_reference"
         },
-        "message": "references reference \"../does-not-exist.md\" (L14) does not resolve: nothing in scope resolves this target",
+        "message": "reference to \"../does-not-exist.md\" at L14 (references) does not resolve: nothing in scope resolves this target",
         "node_id": "adr-gamma",
         "path": "docs/decisions/gamma.md",
         "rule_id": "unresolved_reference",

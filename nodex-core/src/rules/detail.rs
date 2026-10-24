@@ -850,7 +850,7 @@ impl ViolationDetails {
                 cause,
                 ..
             } => format!(
-                "{relation} reference {raw_target:?} ({location}) does not resolve: {cause}"
+                "reference to {raw_target:?} at {location} ({relation}) does not resolve: {cause}"
             ),
             Self::SupersededReference {
                 relation,
@@ -859,8 +859,8 @@ impl ViolationDetails {
                 current,
                 ..
             } => format!(
-                "{relation} reference {target:?} ({location}) names a retired document another \
-                 supersedes; cite {} instead",
+                "reference to {target:?} at {location} ({relation}) names a retired document \
+                 another supersedes; cite {} instead",
                 current
                     .iter()
                     .map(|id| format!("{id:?}"))
