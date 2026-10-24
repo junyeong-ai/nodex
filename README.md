@@ -7,19 +7,9 @@
 
 **Turn markdown files into a queryable, validated document graph.**
 
-nodex scans your project's markdown files, extracts YAML frontmatter and link relationships, and builds an immutable document graph you can search, validate, diff, and report on — all through a JSON-first CLI. No agents, no servers, no AI dependencies. Just a Rust binary with a stable JSON contract.
+nodex scans your project's markdown files, extracts YAML frontmatter and link relationships, and builds an immutable document graph you can search, validate, diff, and report on — all through a JSON-first CLI, from one Rust binary with a stable JSON contract.
 
 ---
-
-## Upgrading
-
-Run `nodex build --full` in each project after upgrading and regenerate clients from `nodex export envelope-schema`. Queries reject incompatible snapshot formats with `GRAPH_OUTDATED`, naming the recorded and supported schema versions. Each [release's notes](https://github.com/junyeong-ai/nodex/releases) state the compatibility changes it makes and the steps they need.
-
-From a release before 0.55:
-
-- Inferred ids default to `{kind}-{path_slug}`. To keep ids inferred under the earlier `{kind}-{stem}` fallback, declare `template = "{kind}-{stem}"`, or write each document's current id into its frontmatter before upgrading (the previous binary's `migrate --apply` does so only for files without frontmatter); rebuilding alone does not preserve them.
-- Convert `[statuses.flow]` to `[[statuses.flow]]`. Queries verify snapshot content by default; `--allow-stale` asks for a membership-only snapshot read.
-- Scan diagnostics cover the entries a walk reaches rather than the subtrees it skips.
 
 ## Table of Contents
 
@@ -34,7 +24,8 @@ From a release before 0.55:
 9. [Configuration](#configuration) — an example `nodex.toml` and what each section controls
 10. [Architecture](#architecture) — workspace and design principles
 11. [Install](#install)
-12. [License](#license)
+12. [Upgrading](#upgrading)
+13. [License](#license)
 
 Per-command and per-key semantics live in the reference the Claude Code skill ships with: [commands](.claude/skills/nodex/reference/commands.md) and [configuration](.claude/skills/nodex/reference/config.md).
 
@@ -48,11 +39,11 @@ This makes routine questions hard to answer:
 
 | Question | What `grep` does | What you actually need |
 |---|---|---|
-| "What replaced this ADR?" | nothing — supersession isn't text | The full supersession lineage from any member; the current doc is a non-terminal (`active`) tip (a fork can have several) |
+| "What replaced this ADR?" | nothing — supersession isn't text | The full supersession lineage from any member; the current doc is a live (non-terminal) tip (a fork can have several) |
 | "What depends on this doc?" | finds files mentioning its name, misses `related:` frontmatter | All incoming edges, regardless of source |
 | "Which docs still cite a replaced decision?" | finds the link, not that its target was replaced | Live citations of a terminal doc whose lineage continues, each naming the doc to cite instead |
-| "Which docs are isolated?" | nothing — absence isn't searchable | Nodes with zero incoming edges |
-| "Which docs are stale?" | nothing — dates aren't compared | Active docs past review threshold |
+| "Which docs are isolated?" | nothing — absence isn't searchable | Live docs nothing references — no incoming edge, no predecessor's `superseded_by` |
+| "Which docs are stale?" | nothing — dates aren't compared | Live (non-terminal) docs whose last review passed the threshold |
 | "What changed between these refs?" | line diff at best | Added / removed nodes, status transitions, field changes |
 | "Find auth docs" | every file containing "auth" | Ranked by id / title / tag, each hit with its per-field score breakdown |
 
@@ -62,8 +53,8 @@ nodex makes the implicit graph explicit. It parses your markdown once, builds a 
 
 - **Graph, not folders** — supersession chains, backlinks, cross-references are first-class
 - **Config, not code** — all project-specific rules live in `nodex.toml`; zero hardcoded domain logic
-- **Incremental & parallel** — Rust + rayon parallel reads, SHA256 per-file cache invalidates only what changed
-- **JSON-first contract** — every operational command emits a stable envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) with classified error codes (clap's `--help` / `help` / `--version` surfaces aside)
+- **Incremental & parallel** — Rust + rayon parallel reads, SHA-256 per-file cache invalidates only what changed
+- **JSON-first contract** — every operational command emits a stable envelope (`{ok, data, warnings}` / `{ok, error: {code, message}}`) with classified error codes
 - **Pure CLI** — no daemons, no servers, no AI / network dependencies; everything is a synchronous local process
 
 ---
@@ -148,7 +139,7 @@ created: 2025-02-01
 Start from the [GraphQL API decision](../decisions/0002-graphql-api.md).
 ```
 
-A minimal `nodex.toml` says how to read them (every key is described in the [configuration reference](.claude/skills/nodex/reference/config.md)):
+A minimal `nodex.toml` says how to read them (the [configuration reference](.claude/skills/nodex/reference/config.md) and the template `nodex init` writes describe every key):
 
 ```toml
 [scope]
@@ -208,10 +199,11 @@ $ nodex query chain adr-0001-rest-api --pretty
   { "id": "adr-0002-graphql-api", "title": "GraphQL API",  "status": "active",     ... }
 ], "total": 2 }, "snapshot": {
   "verification": "content", "unbuildable": 0, "unfollowed": 0
-} }   //  oldest → newest — in this linear lineage the current doc is the last entry (the
-                    //  only `active` tip): GraphQL replaced REST. Anchor on ANY member, even the current
-                    //  doc, for the whole lineage. (supersedes is a DAG — a fork/consolidation can have
-                    //  several tips; read currency from `status`, not position.)
+} }
+//  oldest → newest — in this linear lineage the current doc is the last entry (the only `active`
+//  tip): GraphQL replaced REST. Anchor on any member, even the current doc, for the whole lineage.
+//  (supersedes is a DAG — a fork or consolidation can have several tips; read currency from
+//  `status`, not position.)
 ```
 
 **3. "What points at the current decision?"** — every incoming edge, regardless of where it came from:
@@ -374,11 +366,11 @@ flowchart LR
 | Stage | What it does |
 |---|---|
 | **Scan** | Walks `[scope]`'s include / exclude globs; a `conditional_exclude` rule drops a terminal parent's sub-artifacts, and the build names them |
-| **Cache** | Reuses `_index/cache.json` for every file whose SHA-256 is unchanged; the cache is keyed on the parse-affecting settings and the binary version, so tuning a check keeps it |
+| **Cache** | Reuses `_index/cache.json` for every file whose SHA-256 is unchanged |
 | **Read** | Reads files in parallel; a file that is unreadable or not UTF-8 becomes an error-severity `parse_failure`, never a silent drop |
 | **Parse** | Parses frontmatter, extracts Markdown links and runs configured patterns, in parallel |
 | **Dedupe ids** | Refuses the build when two documents resolve to one id (`DUPLICATE_ID`) |
-| **Resolve** | Turns each link target into a node id by exact match; an unmatched target becomes an unresolved edge carrying its cause |
+| **Resolve** | Turns each link target into a node id by the lookup rules under [Edge Types](#edge-types); an unmatched target becomes an unresolved edge carrying its cause |
 | **Validate** | Refuses a cycle in `supersedes` (`CYCLE_DETECTED`) |
 | **Graph** | Sorts nodes and edges, indexes adjacency in both directions, and writes `_index/graph.json` |
 
@@ -386,7 +378,7 @@ flowchart LR
 
 ### Verified Snapshots
 
-Queries answer from `_index/graph.json` without re-parsing. Before answering, a query verifies that the snapshot still matches the configuration, the scope's membership and each document's content, and refuses drift with `GRAPH_OUTDATED`; `--allow-stale` reads with a membership check alone and reports drift as a warning. Queries never rebuild: `nodex build` re-parses only the files whose content changed, and `nodex build --full` ignores the cache. An incompatible snapshot schema is `GRAPH_OUTDATED` in either mode, naming the recorded and supported versions. Each query's envelope carries `snapshot` — what the read verified, and how many documents the snapshot could not parse ([queries](.claude/skills/nodex/reference/commands.md#query), [`nodex status`](.claude/skills/nodex/reference/commands.md#status)).
+Queries answer from `_index/graph.json` without re-parsing. Before answering, a query verifies that the snapshot still matches the configuration, the scope's membership and each document's content, and refuses drift with `GRAPH_OUTDATED`. `--allow-stale` skips the content comparison (`snapshot.verification: "membership"`): configuration or membership drift becomes a `snapshot_divergence` warning instead of a refusal, and an edited document goes undetected. Queries never rebuild: `nodex build` re-parses only the files whose content changed, and `nodex build --full` ignores the cache. An incompatible snapshot schema is `GRAPH_OUTDATED` in either mode, naming the recorded and supported versions. Only queries and `nodex status` read the snapshot; `check` builds from the working tree itself and needs no prior build. Each query's envelope carries `snapshot` — what the read verified, and how many documents the snapshot could not parse ([queries](.claude/skills/nodex/reference/commands.md#query), [`nodex status`](.claude/skills/nodex/reference/commands.md#status)).
 
 ---
 
@@ -394,7 +386,7 @@ Queries answer from `_index/graph.json` without re-parsing. Before answering, a 
 
 | Command | Answers |
 |---|---|
-| `nodex init` | Writes an annotated `nodex.toml`, pinned to the running binary |
+| `nodex init` | Writes an annotated `nodex.toml`; its `[meta] nodex_version` pin names the running binary's minor and is left commented out |
 | `nodex build [--full]` | Builds the graph snapshot; `--full` ignores the cache |
 | `nodex status` | Whether the snapshot matches the working tree, and where it diverges |
 | `nodex check` | Every registered rule over the project; `--content` gates proposed bytes, `--staged` the next commit, `--since <ref>` a history range |
@@ -404,7 +396,7 @@ Queries answer from `_index/graph.json` without re-parsing. Before answering, a 
 | `nodex query search <kw>` | id, title and tag matches, with each field's contribution to the score |
 | `nodex query nodes` | Documents matching kind, status, tag, field, missing-field and body-text filters, projected to the fields asked for |
 | `nodex query node <id>` | One document with its edges and, on request, its body; `--path` looks it up by file |
-| `nodex query backlinks <id>` | Every document linking to it |
+| `nodex query backlinks <id>` | Every edge into it, one per citing document and relation |
 | `nodex query chain <id>` | The whole supersession lineage, oldest first, from any member |
 | `nodex query dependents <id>` | What references it, directly or within `--depth` hops |
 | `nodex query neighborhood <id>` | Everything within N hops in either direction |
@@ -445,7 +437,7 @@ Every operational command emits JSON to stdout; only clap's help surfaces (`--he
 }
 ```
 - `warnings` is omitted when empty.
-- List queries return `data: { items: [...], total: N }` — always both fields. For plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`), `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete. Selection queries (`similar`, `recent`) deliberately select in core: their `total` is the size of the selection itself.
+- List queries return `data: { items: [...], total: N }` — always both fields. For plain listings (`nodes`, `search`, `backlinks`, `orphans`, `stale`, `components`), `total` counts every match and a `--limit` cap announces itself via `returned` (omitted otherwise), so a capped response never reads as complete. Selection queries (`similar`, `recent`) deliberately select in core: their `total` is the size of the selection itself. Four leaves return an object-shaped report instead: `query node`, `query issues`, `query neighborhood` and `query dependents`.
 
 **Error:**
 ```json
@@ -477,13 +469,13 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
-| `GRAPH_OUTDATED` | The snapshot schema is incompatible, or a lookup or requested body does not match the indexed revision — rebuild with `nodex build` (`--full` for schema mismatch) |
+| `GRAPH_OUTDATED` | A query found the snapshot drifted from the configuration, the scope's membership or (by default) document content, a requested body does not match the indexed revision, or the snapshot schema is incompatible — rebuild with `nodex build` (`--full` for schema mismatch) |
 | `WRITE_CONFLICT` | A document changed after the mutation read it; reread and retry against its current revision. |
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
 | `SYMLINK_TARGET` | A write seam refused a target whose final component is a symlink — the writer never follows one |
 | `CONTENT_VIOLATIONS` | A write command's gate refused the write: what it would write introduces Error-severity `check` violations (each listed as `rule_id: message`) |
-| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, an argument names what the config does not declare (`--fields`, `--where`, `--name`, a `lifecycle` status the kind does not allow) or carries a value the command cannot act on (`--content` without `=`, `--depth 0`, `rename` of a directory, `retarget X X`), or `rules.immutable_baseline` names a ref git cannot resolve while an immutability lock reads it |
+| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, an argument names what the config does not declare (`--fields`, `--where`, `--name`, a `lifecycle` status the kind does not allow) or carries a value the command cannot act on (`--content` without `=`, `--depth 0`, `rename` of a directory, `retarget X X`), `rules.immutable_baseline` names a ref git cannot resolve while an immutability lock reads it, or a write would leave a document in a state an armed lock refuses (the message names the lock) |
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed or refused (e.g., not a work tree, missing ref, an index with unmerged entries) — most often from `diff`, `impact`, `check --since` and `check --staged` |
@@ -565,7 +557,7 @@ The dependency runs one way: nodex emits, and external tools — linters, IDE pl
 | `stale_review` | warning | Live documents whose `reviewed` date is `[detection].stale_days` or more days old; a missing date counts as `unjudged` |
 | `orphan` | warning | Live documents nothing references — no incoming edge, no predecessor's `superseded_by` — outside the configured exemptions |
 | `superseded_reference` | warning | Live documents citing a terminal document whose lineage continues in a live one; `details.current` names where it continues |
-| `git_drift` | warning | Live documents whose linked documents or `covers` paths gained more than `git_drift_threshold` commits since `reviewed` (opt-in) |
+| `git_drift` | warning | Live documents whose linked documents and `covers` paths gained, summed over them, more than `git_drift_threshold` commits since `reviewed` (opt-in) |
 | `frontmatter_immutable/<name>` | error | A field the block locks changed after the block's `trigger` armed it |
 | `body_immutable/<name>` | error | The body changed after the block's `trigger` armed it: `frozen` refuses any edit, `append_only` keeps the locked body as a prefix |
 | `status_transition` | error | A status moved where `[[statuses.flow]]` declares no move, a move out of a terminal status included |
@@ -585,7 +577,7 @@ nodex check --content docs/a.md=- --content docs/b.md=b.md   # several proposals
 nodex check --staged                                          # the project as the next commit records it
 ```
 
-`check --content <path>=<source>` validates content before it is written; `<source>` is `-` (stdin) or a file. Every proposal is overlaid on the working tree in one build, so a batch — a supersession and the referrers it rewrites — is judged as one change. The gate fails (exit 1) on what the proposals introduce, wherever in the graph it lands; an error a document already carried never blocks an edit. Locks judge the proposed documents against the configured baseline, or the working tree where none is configured, and status flows judge the step the proposal would commit. Nothing is written, the cache included ([details](.claude/skills/nodex/reference/commands.md#check)).
+`check --content <path>=<source>` validates content before it is written; `<source>` is `-` (stdin) or a file. Every proposal is overlaid on the working tree in one build, so a batch — a supersession and the referrers it rewrites — is judged as one change. The gate fails (exit 1) on what the proposals introduce, wherever in the graph it lands; an error a document already carried does not block an edit, except a lock's. Locks judge each proposed document absolutely against the configured baseline, or the working tree where none is configured, so a document that already drifted from an armed lock fails every proposal that keeps the drift. Status flows judge the step the proposal would commit. Nothing is written, the cache included ([details](.claude/skills/nodex/reference/commands.md#check)).
 
 `check --staged` judges what the next commit records rather than the working tree: it writes the index as a tree from a copy — the index itself is never locked or written — and checks that tree under the `nodex.toml` it carries. Under `git commit -a` and `git commit <path>` it reads the index git names in `GIT_INDEX_FILE` ([details](.claude/skills/nodex/reference/commands.md#check---staged)).
 
@@ -595,7 +587,7 @@ nodex check --staged                                          # the project as t
 exec nodex check --staged
 ```
 
-The writing commands ask the same question before they write: `rename`, `retarget`, `lifecycle` and a `scaffold` given `--body` or `--field` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`).
+The writing commands ask the same question before they write: `rename`, `retarget` and `lifecycle` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`), and so does `scaffold` given `--body` or `--field`; without them it writes, reports its new document's own error-severity findings as warnings to fill in, and refuses only findings on other documents. A lock refuses with `CONFIG_ERROR` instead, naming the lock: `lifecycle`, `rename` and `scaffold` refuse a write that would leave a document in a state an armed lock refuses, one that drifted before the write included, while `retarget` keeps the locked part back and warns.
 
 ### Locks and Status Flows
 
@@ -651,7 +643,7 @@ More: [locks and triggers](.claude/skills/nodex/reference/config.md#diff-aware-r
 
 ## Configuration
 
-All behavior comes from `nodex.toml`, and `nodex init` writes an annotated starter pinned to the running binary. Loading validates the whole file and refuses an inconsistent one with `CONFIG_ERROR` — a terminal status missing from `allowed`, a pattern that does not compile, a rule naming an undeclared kind — so a misconfiguration fails before any command runs. Self-consistency that depends on the document being acted on, such as a `lifecycle` action never writing a status the project rejects, is enforced at that command's write seam instead. `nodex export config` and `nodex export rules` show what a project resolved to, and the [configuration reference](.claude/skills/nodex/reference/config.md) describes every key.
+All behavior comes from `nodex.toml`. `nodex init` writes an annotated starter whose `[meta] nodex_version` pin, naming the running binary's minor, is commented out; uncomment it to arm the [binary-version pin](#binary-version-pin). Loading validates the whole file and refuses an inconsistent one with `CONFIG_ERROR` — a terminal status missing from `allowed`, a pattern that does not compile, a rule naming an undeclared kind — so a misconfiguration fails before any command runs. `nodex export config` and `nodex export rules` show what a project resolved to, and the [configuration reference](.claude/skills/nodex/reference/config.md) describes the keys, with `[similarity]`, `[search]` and `[report]` documented in the template `nodex init` writes.
 
 ```toml
 [scope]
@@ -790,11 +782,11 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 5. **One guarded write path.** Everything nodex writes into a project — documents and its own artifacts alike — goes through one core seam that refuses `..`, absolute paths and symlinked targets, keeps the write inside the root and replaces the file atomically. A batch rewrite (`rename`, `retarget`, `migrate --apply`) plans every file first and is judged once against the locks before any file is written. The guards live in core, not in each command.
 
-6. **No silent skips, no vacuous passes.** A rule that cannot run is named in `skipped_rules`, and a rule that ran reports in `rule_coverage` how much it guarded, because a rule that examined nothing passes exactly as one that examined everything does. Every command that reads the working tree says what it read (`scope_coverage`), so a migration that saw no file does not read as one that finished.
+6. **No silent skips, no vacuous passes.** A rule that cannot run is named in `skipped_rules`, and a rule that ran reports in `rule_coverage` how much it guarded, because a rule that examined nothing passes exactly as one that examined everything does. Every command that reads the working tree warns (`scope_coverage`) when what it read and what the project declares do not line up, so a migration that saw no file does not read as one that finished.
 
-7. **One-way export.** External tools consume nodex's `export schema` / `export enums` manifests. nodex never parses an external file to derive its own vocabulary; the dependency direction is fixed.
+7. **One-way export.** nodex emits its vocabulary for other tools ([Manifests](#manifests)) and never derives its own from theirs.
 
-A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value at the command's write seam (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
+A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value where that command writes (as `lifecycle set --status` does). See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
 
 ---
 
@@ -812,7 +804,7 @@ curl -fsSL https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/inst
 iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/install.ps1 | iex
 ```
 
-The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and installs the Claude Code skill: an interactive run asks where (user level by default); `--skill user|project|none` (`-Skill` on Windows) or `NODEX_SKILL_LEVEL` decides without asking.
+The installer detects your platform, downloads a verified prebuilt binary, installs it to `~/.local/bin` (or `%USERPROFILE%\.local\bin` on Windows), and installs the Claude Code skill: an interactive run asks where (user level by default); `--skill user|project|none` (`-Skill` on Windows) or `NODEX_SKILL_LEVEL` decides without asking. `scripts/uninstall.sh` (`uninstall.ps1` on Windows) removes the binary and the user-level skill; `--help` lists its flags.
 
 ### Supported platforms
 
@@ -840,6 +832,18 @@ Every command accepts `--check-version <semver-req>` as a global flag — refuse
 ```bash
 nodex --check-version ">=0.61, <0.62" build
 ```
+
+---
+
+## Upgrading
+
+Run `nodex build --full` in each project after upgrading and regenerate clients from `nodex export envelope-schema`. Queries reject incompatible snapshot formats with `GRAPH_OUTDATED`, naming the recorded and supported schema versions. Each [release's notes](https://github.com/junyeong-ai/nodex/releases) state the compatibility changes it makes and the steps they need.
+
+From a release before 0.55:
+
+- Inferred ids default to `{kind}-{path_slug}`. To keep ids inferred under the earlier `{kind}-{stem}` fallback, give the catch-all id rule that template — `[[identity.id_rules]]` with `kind = "*"` and `template = "{kind}-{stem}"`, declared after any narrower rule because the first match wins — or write each document's current id into its frontmatter before upgrading (the previous binary's `migrate --apply` does so only for files without frontmatter); rebuilding alone does not preserve them.
+- Convert `[statuses.flow]` to `[[statuses.flow]]`. Queries verify snapshot content by default; `--allow-stale` asks for a membership-only snapshot read.
+- Scan diagnostics cover the entries a walk reaches rather than the subtrees it skips.
 
 ---
 

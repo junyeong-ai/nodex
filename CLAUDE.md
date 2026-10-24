@@ -17,8 +17,11 @@ cargo build --release      # produces target/release/nodex
 (`.github/workflows/`); read the script for the exact steps. It is not a
 complete CI proxy: CI also checks the MSRV (`rust-version` in the root
 Cargo.toml) and runs the tests on a multi-OS matrix, so a failure specific
-to another platform — a Windows checkout's CRLF line endings, for one —
-shows up only there. zizmor's online audits, which resolve each pinned
+to another platform — a Windows checkout's CRLF line endings, or an import
+only `#[cfg(unix)]` tests use, which CI's `-D warnings` refuses on Windows —
+shows up only there. `RUSTFLAGS="-D warnings" cargo check --workspace --tests
+--all-features --target x86_64-pc-windows-msvc` (after `rustup target add
+x86_64-pc-windows-msvc`) catches the second locally. zizmor's online audits, which resolve each pinned
 action on GitHub, run locally only when `GH_TOKEN` is set. With
 `cargo-nextest`, `cargo-audit` or `zizmor` missing, check.sh degrades
 (falls back to `cargo test` / skips that audit) and says so: a degraded

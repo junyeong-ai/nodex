@@ -22,7 +22,7 @@ Invariants behind what the reference states:
 - `may_be_empty` is read by the coverage disclosure alone, never by the walk: a scope that behaved one way and disclosed another is the defect it exists to prevent. Where a message carries a cause (a `prune_dirs` entry the pattern lies under), the cause rides the message it silences rather than becoming a carve-out, because the walk can miss a pattern in more ways than there are detectors for.
 - Directory pruning preserves every admitted document: [Parsing, scope and cache](../../nodex-core/CLAUDE.md#parsing-scope-and-cache).
 - Only a frontmatter relation's `field` and `relation` affect parsing; its `retarget` policy does not invalidate the parse cache.
-- A version pin is a value that ages: the init template states none as a literal (`nodex init` writes the running binary's own), and every pin the docs teach is held to the binary by `every_documented_version_pin_admits_the_binary_beside_it`.
+- A version pin is a value that ages: the init template states none as a literal (`nodex init` writes the running binary's own, commented out), and every pin the docs teach is held to the binary by `every_documented_version_pin_admits_the_binary_beside_it`.
 
 **Decision:** "Does this vary by project?" → Yes = config, No = code.
 
@@ -64,36 +64,10 @@ So a rule reports its reach as well as its findings. `Rule::check` returns
 `rule_coverage` alongside `skipped_rules` — together a total census of the
 registry. `subjects` is the population the rule **guards**, never the
 offending subset and never the slice that changed on this run, so zero has
-one meaning everywhere: this rule is in effect over nothing.
-
-The count leaves the same pass as the violations, never a second traversal —
-a reach that could disagree with the verdict would be worse than no reach at
-all. A rule that judges a record against a prior state guards only what it
-can be judged against: a diff carries its per-node channels over the ids both
-snapshots hold, so a record the baseline has no node for is outside the
-population however it looks now. What the scope selected and the rule could
-not judge is reported beside the reach (`unjudged`), so one response carries
-both without anything having to attribute a missing prior state to a cause.
-It is a difference, not a defect, and what a non-zero points at is the
-rule's own question: a lock reading against a baseline counts a record
-authored since it, which costs nothing, alongside one whose baseline record
-went missing, which does — and cannot tell them apart. Each rule's cause is
-what names the remedy.
-
-A rule judging steps counts the same way per step: `status_entry` guards every
-record a step holds under the flow — one a parent already held has its answer
-— and `status_transition` the records some step held on a parent, `unjudged`
-counting the ones that only ever entered. Both count as `unjudged` a record
-the flow governs that the step the run ends at does not carry — a document
-git ignores, which no commit can record — however an earlier step judged it,
-since what a past step judged is no answer for where the record stands now. A document a commit could not parse
-is read back from the commit before the change that broke it rather than
-counted apart, because a count is all an unjudged record would leave behind,
-and a later step holding the same id would hide it. Where that reading is cut
-off — a shallow clone whose earlier state lies beyond its cut, or a commit
-whose tree the build refuses, which the envelope names (`history_unread`) —
-the records arriving at that step are counted rather than judged, and that
-count is the one thing no later step takes back.
+one meaning everywhere: this rule is in effect over nothing. What the scope
+selected and the rule could not judge is reported beside the reach as
+`unjudged`. How each rule counts both: `.claude/rules/adding-a-validation-rule.md`
+(Counting the population).
 
 ## Symmetric guards
 

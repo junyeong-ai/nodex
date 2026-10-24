@@ -45,7 +45,8 @@ resolve independently because it has no result channel; never rediscover per
 node. `tracked_path` maps project paths to git and `locate` maps checkouts back to
 the project, including projects nested inside larger repositories.
 
-`git::bare` alone names the executable; every invocation goes through `scoped`
+`git::bare` alone names the executable; every invocation but the probe that
+lists what to clear (`overriding_variables`) goes through `scoped`
 (`git::command`, `Repository::command`, `checkout_command`). These clear environment
 variables that redirect/reinterpret git while retaining discovery bounds
 (GIT_CEILING_DIRECTORIES / GIT_DISCOVERY_ACROSS_FILESYSTEM); clippy disallows other
@@ -78,8 +79,9 @@ safety: `src/git.rs` rustdoc.
 - `frozen_at` / `frozen_record_lost` protect recreation of a frozen record that
   disappears from the project. Identity travels by id: a record moved elsewhere
   no longer occupies the old path, so a free old path is not itself frozen.
-- `mutate::introduced` runs the whole registry before and after a proposal and
-  takes a count-aware multiset delta. Unrelated standing violations do not block
+- `mutate::introduced` runs every registered rule whose configured severity is
+  Error (`gate_rules`) before and after a proposal and takes a count-aware
+  multiset delta (`rules::introduced_violations`). Unrelated standing violations do not block
   a write; duplicated findings still introduce another violation. Without a
   configured baseline, authored bytes compare against the working tree.
   Configured locks use the baseline probe for authored content and transformations.
@@ -91,7 +93,9 @@ safety: `src/git.rs` rustdoc.
   ∪ parse failures, not inferred from missing nodes. Explicitly proposed paths
   are excluded from the advisory. Eviction itself advises rather than refuses;
   an error-classified dangling reference it introduces still refuses normally.
-  Every gated write and `check --content` surfaces `Introduced::advisories`.
+  Every gated write surfaces `Introduced::advisories`; `check --content`, which
+  runs `rules::introduced_violations` directly, appends `mutate::evicted` itself
+  (`nodex-cli/src/commands/check.rs`), so an advisory added to one goes to both.
 - `migrate` needs no introduced gate only because injected defaults preserve the
   fields the bare document already inferred. The conditional-exclude parent
   probe must use the same frontmatter parser and `parser::Completion` as builds;
@@ -118,8 +122,7 @@ safety: `src/git.rs` rustdoc.
 - `RuleRun::subjects` and `unjudged` state reach for every evaluated rule;
   `rule_coverage` and `skipped_rules` partition the registry. Reach is measured
   before any `--since` report narrowing. Counting conventions and new-rule
-  procedure: `.claude/rules/config-driven.md` (No silent vacuous passes) and
-  `.claude/rules/adding-a-validation-rule.md`.
+  procedure: `.claude/rules/adding-a-validation-rule.md`.
 - `rules::Since::Baseline` arms locks without narrowing. `Since::Narrowed` asks
   each rule's `touched_by` per finding. The default is `GraphDiff::touched_ids`
   (record, authored edge or annotation); node-less findings remain. Orphan widens
