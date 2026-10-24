@@ -362,8 +362,8 @@ pub fn scaffold(
     }
     if let Some(lock) = probe.frozen_record_lost(&rel_path, &proposed.graph, config) {
         return Err(Error::Config(format!(
-            "scaffold target {target:?} cannot be rewritten at rules.immutable_baseline; \
-             supersede the record instead — {lock}"
+            "scaffold of {target:?} cannot complete: it would write over a record the baseline \
+             froze there ({lock}); supersede the record instead of replacing it"
         )));
     }
 
@@ -394,7 +394,7 @@ pub fn scaffold(
     // stay scaffoldable and the same findings ride the envelope as
     // fill-me-in advisories.
     let refusal = if spec.body.is_some() || !spec.fields.is_empty() {
-        introduced.refusal("proposed content")
+        introduced.refusal(format!("scaffold of {target:?}"))
     } else {
         // A config-derived default is a placeholder, and a placeholder's own
         // findings are the list of fields to fill in. Nothing else is: a
@@ -402,7 +402,9 @@ pub fn scaffold(
         // id strands every reference to the old one, and a filename that
         // duplicates somebody's number is a conflict *with* them — neither is
         // a to-do list, and no shape of input makes them one.
-        introduced.owned_by_others(&id).refusal("proposed content")
+        introduced
+            .owned_by_others(&id)
+            .refusal(format!("scaffold of {target:?}"))
     };
     if let Some(refusal) = refusal {
         return Err(refusal);
