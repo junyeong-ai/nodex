@@ -1902,11 +1902,11 @@ fn a_lock_that_refuses_only_the_write_does_not_send_the_operator_to_revert() {
     let message = refusal(&mut moving());
     assert!(
         message.contains("frontmatter_immutable/kind-locked")
-            && message.contains("reports nothing to clear"),
+            && message.contains("nothing to revert"),
         "the refusal says the move is the cause, not a drift: {message}"
     );
     assert!(
-        !message.contains("names the same violation"),
+        !message.contains("`nodex check` reports the difference"),
         "and never claims a `check` finding that does not exist: {message}"
     );
 
@@ -1923,7 +1923,7 @@ fn a_lock_that_refuses_only_the_write_does_not_send_the_operator_to_revert() {
     );
     let message = refusal(&mut moving());
     assert!(
-        message.contains("names the same violation"),
+        message.contains("`nodex check` reports the difference"),
         "so the refusal may send the operator there: {message}"
     );
 }
@@ -1976,8 +1976,7 @@ fn a_lifecycle_write_a_lock_refuses_names_which_of_the_two_refused_it() {
     assert_eq!(judged(nodex(project).arg("check"))["total"], 0);
     let message = refusal();
     assert!(
-        message.contains("frontmatter_immutable/sealed")
-            && message.contains("reports nothing to revert"),
+        message.contains("frontmatter_immutable/sealed") && message.contains("nothing to revert"),
         "review is what would write the frozen field: {message}"
     );
 
@@ -1985,7 +1984,7 @@ fn a_lifecycle_write_a_lock_refuses_names_which_of_the_two_refused_it() {
     assert_eq!(judged(nodex(project).arg("check"))["total"], 1);
     let message = refusal();
     assert!(
-        message.contains("`nodex check` names the field"),
+        message.contains("`nodex check` reports the difference"),
         "now the drift is the remedy: {message}"
     );
 }
@@ -2017,7 +2016,7 @@ fn a_scaffold_over_a_frozen_record_says_the_scaffold_is_what_would_move_it() {
     assert_eq!(judged(nodex(tmp.path()).arg("check"))["total"], 0);
     let message = refusal();
     assert!(
-        message.contains("body_immutable/adr-frozen") && message.contains("as it stands is fine"),
+        message.contains("body_immutable/adr-frozen") && message.contains("nothing to revert"),
         "the scaffold is the cause: {message}"
     );
 
@@ -2029,8 +2028,8 @@ fn a_scaffold_over_a_frozen_record_says_the_scaffold_is_what_would_move_it() {
     assert_eq!(judged(nodex(tmp.path()).arg("check"))["total"], 1);
     let message = refusal();
     assert!(
-        message.contains("supersede the record instead")
-            && !message.contains("as it stands is fine"),
+        message.contains("`nodex check` reports the difference")
+            && !message.contains("nothing to revert"),
         "now the drift is what the operator must clear: {message}"
     );
 }

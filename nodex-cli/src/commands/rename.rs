@@ -291,34 +291,10 @@ pub fn run(
             .refusing(new_rel)
             .or_else(|| refusals.refusing(old_rel))
         {
-            let lock = refusal.lock();
-            // A lock's refusal is absolute — a part that already differs from
-            // the baseline is enough — and its remedy is that drift rather
-            // than this move. Every other rule judged the document the move
-            // would produce, so what it said is the remedy, and a lock's
-            // wording over it would send the operator to revert a document
-            // that is fine and to look for a finding `check` does not report.
-            return Err(CoreError::Config(match (refusal.absolute(), refusal.drifted()) {
-                (true, true) => format!(
-                    "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
-                     document in a state its baseline locks — {lock}. Plain `nodex check` names \
-                     the same violation on the document as it stands; clear that, or supersede \
-                     the record instead of moving it"
-                ),
-                (true, false) => format!(
-                    "rename cannot complete: moving {old_path:?} to {new_path:?} would leave this \
-                     document in a state its baseline locks — {lock} — {finding}. The document \
-                     where it stands is fine and `nodex check` reports nothing to clear: the move \
-                     itself is what would change the frozen field. Leave it where it is, or \
-                     supersede the record",
-                    finding = refusal.findings().join("; ")
-                ),
-                (false, _) => format!(
-                    "rename cannot complete: moving {old_path:?} to {new_path:?} would produce a \
-                     document that does not satisfy {lock} — {finding}",
-                    finding = refusal.findings().join("; ")
-                ),
-            })
+            return Err(CoreError::Config(format!(
+                "rename of {old_path:?} to {new_path:?} cannot complete: {}",
+                refusal.explain()
+            ))
             .into());
         }
     }
@@ -387,7 +363,7 @@ pub fn run(
             nodex_core::Kept::Parts(parts) => format!(
                 "{shown} was rewritten, except in {}, which is locked — the reference there \
                  will surface as an unresolved edge",
-                super::held_back_parts(&parts)
+                nodex_core::named_parts(&parts)
             ),
         });
     }

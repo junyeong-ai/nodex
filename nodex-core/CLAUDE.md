@@ -71,7 +71,9 @@ safety: `src/git.rs` rustdoc.
   diff-aware locks against the baseline, step rules about the step a write would
   commit. Locks (`Rule::is_lock`) refuse absolute drift, even if it predates the
   write; other rules refuse only introduced Error-severity findings. Do not
-  re-derive lock rules in a command. `ViolationDetails::part` identifies a
+  re-derive lock rules in a command. `Refusal::explain` is the one wording of a
+  refusal and its remedy (a drift to revert, a change the lock forbids, another
+  rule's finding); writing commands and `narrow`'s `HeldBack::reason` use it. `ViolationDetails::part` identifies a
   `DocumentPart`; `narrow` holds that part and re-gates the surviving bytes.
   Document-wide findings and composed plans (`Planned::composed`, a move's
   destination) cannot be narrowed and are held whole. Run only the rules that

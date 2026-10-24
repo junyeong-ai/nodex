@@ -64,8 +64,8 @@ pub use model::{
 };
 pub use mutate::{
     BaselineBinding, BaselineProbe, GraphedBaseline, HeldBack, Introduced, Kept, Narrowing,
-    PlanOutcome, Planned, ProposalDiff, Refusal, Refusals, evicted, introduced, narrow, plan_file,
-    stage_plan, write_plan,
+    PlanOutcome, Planned, ProposalDiff, Refusal, Refusals, evicted, introduced, named_parts,
+    narrow, plan_file, stage_plan, write_plan,
 };
 pub use query::annotations::{
     AnnotationEntry, AnnotationGroup, AnnotationOptions, AnnotationSourceRef, find_annotations,

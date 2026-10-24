@@ -374,7 +374,7 @@ pub fn run(
                 format!("{shown} is locked ({lock}); it was not migrated"),
             )),
             nodex_core::Kept::Parts(parts) => {
-                kept.insert(held.rel_path, super::held_back_parts(&parts));
+                kept.insert(held.rel_path, nodex_core::named_parts(&parts));
             }
         }
     }
