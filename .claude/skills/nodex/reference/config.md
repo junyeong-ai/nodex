@@ -41,7 +41,7 @@ An annotation pattern reads every line outside a code block, inline code include
 
 ## Identity
 
-An authored `kind:` or `id:` takes precedence; otherwise `identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. Each `id_rules` entry names the `kind` it applies to, `"*"` for any kind, so a `"*"` rule declared before a narrower one takes its documents first. A document no kind rule classifies is `generic`, and one no id rule names takes the inferred id `{kind}-{path_slug}`. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
+An authored `kind:` or `id:` takes precedence; otherwise `identity.kind_rules` and `identity.id_rules` are tried in declaration order and the first match wins, so declare the narrow globs before the broad ones. Each `id_rules` entry names the `kind` it applies to, `"*"` for any kind, so a `"*"` rule declared before a narrower one takes its documents first; the build reports a rule an earlier one covers as never applying (`scope_coverage`). A document no kind rule classifies is `generic`, and one no id rule names takes the inferred id `{kind}-{path_slug}`. An inferred id changes when its path or the template changes, so give a record whose identity must survive a move an explicit `id:`, or move it with `nodex rename`, which anchors it.
 
 ## Scope
 

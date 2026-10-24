@@ -754,7 +754,8 @@ fn build_inner(
 /// what keeps them out of the graph. `id_rules` are asked of the graph's nodes
 /// instead: an id rule is keyed on a kind, and a dropped file has no kind until
 /// it is read, so an id rule whose every document a terminal parent dropped is
-/// reported as applying to no node.
+/// reported as applying to no node. One an earlier rule covers is reported as
+/// never applying, from the declarations alone.
 fn scope_coverage_warnings(
     config: &Config,
     selected: &[PathBuf],
@@ -862,11 +863,44 @@ fn scope_coverage_warnings(
         }
     }
 
-    for rule in &config.identity.id_rules {
-        if nodes.is_empty() {
-            break;
+    // An absent glob is the rule saying "any path of this kind", which is what
+    // a reader needs; `{:?}` on the `Option` would hand them this crate's own
+    // `Some(..)` instead.
+    let id_rules = &config.identity.id_rules;
+    let describe = |index: usize| {
+        let rule = &id_rules[index];
+        let scope = match &rule.glob {
+            Some(glob) => format!("glob {glob:?}"),
+            None => "any path".to_string(),
+        };
+        format!("identity.id_rules[{index}] (kind {:?}, {scope})", rule.kind)
+    };
+    for (index, rule) in id_rules.iter().enumerate() {
+        // Id resolution takes the first rule selecting a document, so a rule
+        // an earlier one selects everything of can never apply, whatever the
+        // corpus holds. Covering is read off the declarations alone where they
+        // settle it — the earlier kind is `*` or the same, its glob absent or
+        // the same — and never guessed between two different globs. Whether a
+        // rule selects anything is the corpus's to say, below, by its own kind
+        // and glob, so a catch-all declared last — the recommended order — is
+        // not reported for having nothing left over.
+        let shadowing = id_rules[..index].iter().position(|earlier| {
+            (earlier.kind == "*" || earlier.kind == rule.kind)
+                && earlier
+                    .glob
+                    .as_ref()
+                    .is_none_or(|glob| rule.glob.as_ref() == Some(glob))
+        });
+        if let Some(earlier) = shadowing {
+            out.push(format!(
+                "{} can never apply: {}, declared before it, selects every document it would; \
+                 declare it before that rule, or remove it",
+                describe(index),
+                describe(earlier)
+            ));
+            continue;
         }
-        if rule.may_be_empty {
+        if nodes.is_empty() || rule.may_be_empty {
             continue;
         }
         let glob = rule.glob.as_deref().map(matcher);
@@ -877,17 +911,7 @@ fn scope_coverage_warnings(
                     .is_none_or(|m| m.is_match(crate::path_guard::forward_string(&n.path)))
         });
         if !applies {
-            // An absent glob is the rule saying "any path of this kind", which
-            // is what a reader needs; `{:?}` on the `Option` would hand them
-            // this crate's own `Some(..)` instead.
-            let scope = match &rule.glob {
-                Some(glob) => format!("glob {glob:?}"),
-                None => "any path".to_string(),
-            };
-            out.push(format!(
-                "identity.id_rules entry (kind {:?}, {scope}) applied to no node",
-                rule.kind
-            ));
+            out.push(format!("{} applied to no node", describe(index)));
         }
     }
 
@@ -1547,11 +1571,58 @@ mod tests {
                 "scope.conditional_exclude child_glob \"absent/*.notes.md\" matched no files, so \
                  the rule drops nothing"
                     .to_string(),
-                "identity.id_rules entry (kind \"spec\", glob \"elsewhere/**/*.md\") applied to \
-                 no node"
+                "identity.id_rules[0] (kind \"spec\", glob \"elsewhere/**/*.md\") applied to no \
+                 node"
                     .to_string(),
             ],
             "an include that may be empty takes no sibling's report with it"
+        );
+    }
+
+    /// Id resolution takes the first rule selecting a document, so a rule an
+    /// earlier one covers never applies — reported from the declarations, and
+    /// whatever `may_be_empty` says, since that attribute is about a corpus
+    /// with nothing to name yet. The order the pattern recommends, a catch-all
+    /// declared last, stays quiet when the narrow rule names every document:
+    /// the catch-all is there for the documents still to come.
+    #[test]
+    fn an_id_rule_an_earlier_one_covers_is_reported_and_a_trailing_catch_all_is_not() {
+        let mut config = Config::default();
+        config.kinds.allowed = vec!["generic".into(), "adr".into()];
+        let rule = |kind: &str, glob: Option<&str>| IdRule {
+            kind: kind.into(),
+            glob: glob.map(Into::into),
+            template: "{kind}-{stem}".into(),
+            may_be_empty: true,
+        };
+        config.identity.id_rules = vec![
+            rule("*", None),
+            rule("adr", None),
+            rule("adr", Some("docs/adr/**")),
+        ];
+        let paths = vec![PathBuf::from("docs/a.md")];
+        let nodes = build_map(vec![node("a", "adr")]);
+        assert_eq!(
+            scope_coverage_warnings(&config, &paths, &nodes),
+            vec![
+                "identity.id_rules[1] (kind \"adr\", any path) can never apply: \
+                 identity.id_rules[0] (kind \"*\", any path), declared before it, selects every \
+                 document it would; declare it before that rule, or remove it"
+                    .to_string(),
+                "identity.id_rules[2] (kind \"adr\", glob \"docs/adr/**\") can never apply: \
+                 identity.id_rules[0] (kind \"*\", any path), declared before it, selects every \
+                 document it would; declare it before that rule, or remove it"
+                    .to_string(),
+            ]
+        );
+
+        config.identity.id_rules = vec![rule("adr", None), rule("*", None)];
+        for rule in &mut config.identity.id_rules {
+            rule.may_be_empty = false;
+        }
+        assert_eq!(
+            scope_coverage_warnings(&config, &paths, &nodes),
+            Vec::<String>::new()
         );
     }
 
