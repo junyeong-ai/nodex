@@ -143,8 +143,8 @@ impl Rule for FrontmatterImmutableRule {
         ctx.since.is_some()
     }
 
-    fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
-        "no diff context — set `--since <ref>` or `rules.immutable_baseline`".to_string()
+    fn skip_reason(&self, ctx: &RuleContext<'_>) -> String {
+        super::lock_skip_reason(ctx.config)
     }
 
     fn subject_unit(&self) -> SubjectUnit {

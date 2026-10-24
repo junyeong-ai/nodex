@@ -223,6 +223,22 @@ pub(crate) fn lock_holds(
         && config.lock_arms(lock.trigger, lock.statuses, status)
 }
 
+/// Why a lock has no baseline to compare against this run, for both lock
+/// families. A configured `rules.immutable_baseline` that supplied none is
+/// inert for a reason the `baseline_inert` warning beside it names, so sending
+/// the operator to set the key they already set would point at the wrong fix.
+pub(crate) fn lock_skip_reason(config: &Config) -> String {
+    match &config.rules.immutable_baseline {
+        Some(baseline) => format!(
+            "rules.immutable_baseline {baseline:?} supplied no baseline this run — the \
+             `baseline_inert` warning says why"
+        ),
+        None => "no baseline to compare against — set `rules.immutable_baseline`, or pass \
+                 `--since <ref>`"
+            .to_string(),
+    }
+}
+
 fn lock_population(
     ctx: &RuleContext<'_>,
     lock: crate::config::LockArming<'_>,
