@@ -1062,6 +1062,19 @@ impl Refusal {
         }
     }
 
+    /// The refusal for a write that would land over a record the baseline froze
+    /// at that path ([`BaselineProbe::frozen_record_lost`]): no rule reads a
+    /// replacement, so the baseline answers it, in a lock's voice.
+    pub fn replacing_frozen(subject: impl Into<String>, lock: &str) -> crate::error::Error {
+        crate::error::Error::Locked {
+            subject: subject.into(),
+            reason: format!(
+                "it would write over a record the baseline froze there ({lock}); supersede the \
+                 record instead of replacing it"
+            ),
+        }
+    }
+
     /// One rule to name when a write is held back.
     pub fn lock(&self) -> &str {
         self.parts
@@ -1364,6 +1377,9 @@ pub enum ProposalDiff {
 pub struct Introduced {
     violations: Vec<crate::rules::Violation>,
     evicted: Vec<Warning>,
+    /// The lock rules among those judged (`Rule::is_lock`): a finding of one
+    /// is refused as a lock and is never a placeholder to fill in.
+    locks: std::collections::BTreeSet<String>,
 }
 
 impl Introduced {
@@ -1375,17 +1391,29 @@ impl Introduced {
     /// `subject` is what the seam was asked to do — `scaffold of "a.md"`,
     /// `rename of "a.md" to "b.md"` — so one typed code reads as the command
     /// the operator ran.
+    ///
+    /// A lock's finding here is a part this write changes — the standing
+    /// project does not carry it — so it is refused in a lock's voice, as
+    /// [`Refusal::error`] words every refusal.
     pub fn refusal(&self, subject: impl Into<String>) -> Option<crate::error::Error> {
-        let findings: Vec<String> = self
+        let mut refusal = Refusal::default();
+        for violation in self
             .violations
             .iter()
             .filter(|v| v.severity == crate::rules::Severity::Error)
-            .map(Self::finding)
-            .collect();
-        (!findings.is_empty()).then(|| crate::error::Error::ContentViolations {
-            subject: subject.into(),
-            findings,
-        })
+        {
+            let cause = match self.locks.contains(&violation.rule_id) {
+                true => Cause::Changed,
+                false => Cause::Introduced,
+            };
+            refusal.record(
+                violation.details.part(),
+                violation.rule_id.clone(),
+                cause,
+                Self::finding(violation),
+            );
+        }
+        (!refusal.findings.is_empty()).then(|| refusal.error(subject))
     }
 
     /// The findings this document does not own.
@@ -1404,16 +1432,19 @@ impl Introduced {
     ///
     /// An eviction is never filtered: it is a document the proposal drops
     /// *without naming it*, so it is somebody else's by construction, and no
-    /// licence to skip advising about one's own placeholder reaches it.
+    /// licence to skip advising about one's own placeholder reaches it. Nor
+    /// is a lock's finding: a placeholder written over a record a lock
+    /// freezes replaces that record, which no field left to fill in excuses.
     pub fn owned_by_others(&self, id: &str) -> Self {
         Self {
             violations: self
                 .violations
                 .iter()
-                .filter(|v| v.node_id.as_deref() != Some(id))
+                .filter(|v| v.node_id.as_deref() != Some(id) || self.locks.contains(&v.rule_id))
                 .cloned()
                 .collect(),
             evicted: self.evicted.clone(),
+            locks: self.locks.clone(),
         }
     }
 
@@ -1490,6 +1521,11 @@ pub fn introduced(
     // bytes, and no unwritten byte is a commit.
     let history = crate::rules::git_drift::DriftHistory::of(config, root);
     Ok(Introduced {
+        locks: gate_rules(config)
+            .iter()
+            .filter(|rule| rule.is_lock())
+            .map(|rule| rule.id().to_string())
+            .collect(),
         evicted: evicted(before, &after, proposal),
         violations: crate::rules::introduced_violations(
             crate::rules::run_rules(

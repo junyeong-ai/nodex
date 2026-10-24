@@ -291,13 +291,10 @@ pub fn run(
         // back onto its own path loses nothing, which the project as it
         // stands cannot say because the record is missing from it either way.
         if let Some(lock) = probe.frozen_record_lost(new_rel, &proposed.graph, &config) {
-            return Err(CoreError::Locked {
-                subject: format!("rename of {old_path:?} to {new_path:?}"),
-                reason: format!(
-                    "it would write over a record the baseline froze there ({lock}); supersede \
-                     the record instead of replacing it"
-                ),
-            }
+            return Err(nodex_core::Refusal::replacing_frozen(
+                format!("rename of {old_path:?} to {new_path:?}"),
+                &lock,
+            )
             .into());
         }
         if let Some(refusal) = refusals

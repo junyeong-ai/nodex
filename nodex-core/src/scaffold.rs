@@ -358,13 +358,10 @@ pub fn scaffold(
         return Err(refusal.error(format!("scaffold of {target:?}")));
     }
     if let Some(lock) = probe.frozen_record_lost(&rel_path, &proposed.graph, config) {
-        return Err(Error::Locked {
-            subject: format!("scaffold of {target:?}"),
-            reason: format!(
-                "it would write over a record the baseline froze there ({lock}); supersede the \
-                 record instead of replacing it"
-            ),
-        });
+        return Err(crate::mutate::Refusal::replacing_frozen(
+            format!("scaffold of {target:?}"),
+            &lock,
+        ));
     }
 
     // 6. Validate through the write plane's one proposal gate: the
