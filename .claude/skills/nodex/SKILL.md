@@ -103,7 +103,7 @@ Use `scaffold`, `rename`, `retarget` and `lifecycle` for guarded graph changes.
 Classification globs do not choose creation paths; scaffold needs `--path` or a
 `scaffold.paths` template. Scaffold without `--body` / `--field` writes even when
 the new document has error-severity findings and reports them in
-`build_recommended` warnings, so run `nodex check` after it; with `--body` or
+`violations_introduced` warnings, so run `nodex check` after it; with `--body` or
 `--field`, an introduced error refuses the write (`CONTENT_VIOLATIONS`).
 `migrate --apply` injects inferred defaults into bare Markdown.
 
@@ -201,7 +201,8 @@ Envelope-level, same discipline. The full published set:
 `scope_coverage` (scope/identity declarations or walk boundaries left coverage gaps) ·
 `cache` (cache IO failed; the next run repeats work) ·
 `snapshot_divergence` (snapshot drift, or a failed probe: rebuild for drift, fix the
-named path for IO) · `build_recommended` (message names a required follow-up) ·
+named path for IO) · `violations_introduced` (a write landed with error findings to
+fill in) · `id_changed` (a write left a document under a different id) ·
 `binary_compat` (outside the project's version pin) ·
 `gate_suppression` (displayed findings differ from the judged set; has_errors/exit
 still answer for all judgments) · `baseline_inert` (a baseline/project/document

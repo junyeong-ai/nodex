@@ -294,7 +294,7 @@ The baseline is paired with the working tree **by node id**, so a lock guards a 
 
 - an explicit `id:` in frontmatter survives any move (`id_stability: already_anchored`);
 - an id derived from `identity.id_rules` survives `nodex rename`, which writes the derived id in explicitly before moving the file (`anchored`) — but not `mv` / `git mv`, which change the path and therefore the id;
-- a **bare-markdown** document cannot be anchored — `rename` will not invent a frontmatter block for a path operation — so its id does change and `id_stability: bare_no_frontmatter` says so.
+- a **bare-markdown** document cannot be anchored — `rename` will not invent a frontmatter block for a path operation — so its id does change and `id_stability: changed` says so.
 
 So: move a locked document with `nodex rename`, and give it an id that is not derived from its path.
 

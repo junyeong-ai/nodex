@@ -487,10 +487,17 @@ pub fn run(
     // this rename did not repoint, and `total_updated: 0` over a corpus that
     // was never read is what a correct no-op rename looks like.
     warnings.extend(before.warnings.iter().cloned());
-    if let IdStability::BareNoFrontmatter { warning } = &stability {
+    if let IdStability::Changed { from, to } = &stability {
         warnings.push(nodex_core::Warning::new(
-            nodex_core::WarningCode::BuildRecommended,
-            warning.clone(),
+            nodex_core::WarningCode::IdChanged,
+            format!(
+                "{old_path} has no frontmatter, so its id follows its path and goes from {from:?} \
+                 to {to:?}: a reference naming {from:?} no longer resolves to it, and the \
+                 immutability baseline, which pairs records by id, holds nothing for {to:?}. To \
+                 keep {from:?}, give the document a frontmatter block with `id: {from}`; run \
+                 before a rename, `nodex migrate --apply` writes that block and the rename then \
+                 anchors the id"
+            ),
         ));
     }
     warnings.extend(introduced.advisories());
@@ -1191,18 +1198,9 @@ fn plan_moved_document(
                 original: raw.clone(),
                 destination: destination(raw),
                 anchor: None,
-                stability: IdStability::BareNoFrontmatter {
-                    warning: format!(
-                        "renamed file has no frontmatter; its inferred id changed from \
-                         {inferred_old_id:?} to {inferred_new_id:?}. Other documents \
-                         referencing {inferred_old_id:?} via `related` / `supersedes` / \
-                         `implements` / `superseded_by` will become stale, and any \
-                         immutability lock held against {inferred_old_id:?} no longer \
-                         governs this document — the locks pair with the baseline by id. \
-                         Add an explicit `id:` frontmatter to the file (or run \
-                         `nodex migrate --apply` to generate one) and re-run rename to \
-                         re-anchor."
-                    ),
+                stability: IdStability::Changed {
+                    from: inferred_old_id,
+                    to: inferred_new_id,
                 },
             });
         }

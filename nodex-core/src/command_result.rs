@@ -121,12 +121,10 @@ pub enum IdStability {
     Anchored { id: String },
     /// The move landed, but the prepared content preserving this id did not.
     AnchorFailed { id: String },
-    /// The doc has no frontmatter at all (a bare markdown file). The
-    /// runtime infers an id from the path, which the rename has
-    /// changed; the caller must either add frontmatter to the moved
-    /// file or audit cross-references manually. Surfaced as a warning,
-    /// never silently skipped.
-    BareNoFrontmatter { warning: String },
+    /// The doc has no frontmatter block to anchor an id in (a bare
+    /// markdown file), so the id its path derives went from `from` to
+    /// `to`. Surfaced as an `id_changed` warning as well.
+    Changed { from: String, to: String },
 }
 
 /// `rename <old> <new>` result.

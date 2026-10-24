@@ -33,7 +33,7 @@ use crate::config::{Config, FieldType, parse_when};
 use crate::error::{Error, Result};
 use crate::model::{Graph, Kind};
 use crate::parser::identity::infer_id;
-use crate::warning::{Warning, WarningCode};
+use crate::warning::Warning;
 
 /// User-supplied scaffold parameters. All override fields are optional;
 /// [`scaffold`] fills in the rest from config.
@@ -430,10 +430,6 @@ pub fn scaffold(
             None => staged.expect_absent()?,
         }
         .commit()?;
-        warnings.push(Warning::new(
-            WarningCode::BuildRecommended,
-            "run `nodex build` to include this document in the graph",
-        ));
         true
     } else {
         false

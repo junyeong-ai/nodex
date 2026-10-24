@@ -1429,7 +1429,7 @@ impl Introduced {
     pub fn advisories(&self) -> Vec<Warning> {
         self.violations
             .iter()
-            .map(|v| Warning::new(WarningCode::BuildRecommended, Self::finding(v)))
+            .map(|v| Warning::new(WarningCode::ViolationsIntroduced, Self::finding(v)))
             .chain(self.evicted.iter().cloned())
             .collect()
     }

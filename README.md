@@ -495,7 +495,8 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 |---|---|
 | `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing, a document no `identity` rule names, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
 | `snapshot_divergence` | Snapshot drift or a failed freshness probe — rebuild for drift; resolve the probe error named in the message |
-| `build_recommended` | A mutation left a follow-up before the graph is consistent (the message names it) |
+| `violations_introduced` | A write landed with Error-severity findings it introduced instead of refusing them: a `scaffold` from config defaults alone, whose findings on its new document are the placeholders to fill in (one warning per finding) |
+| `id_changed` | A write left a document under a different id: `rename` of a document with no frontmatter to anchor its path-derived id in. References naming the old id no longer resolve to it, and the baseline holds nothing under the new one |
 | `binary_compat` | The binary is outside the `[meta] nodex_version` pin — reads run, writes refuse |
 | `gate_suppression` | The listed violations are not the set judged (`--severity`, or a `--since` ref that does not carry the project); `has_errors` and the exit code still answer for every violation judged |
 | `baseline_inert` | A git ref leaned on had nothing where it was asked — locks not enforced, inert for one document, or one side of a `diff` / `impact` comparison missing a path |
@@ -787,7 +788,7 @@ The split keeps `nodex-core` reusable — embedding it in another Rust tool does
 
 7. **One-way export.** nodex emits its vocabulary for other tools ([Manifests](#manifests)) and never derives its own from theirs.
 
-A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value where that command writes (as `lifecycle set --status` does). One exception is by design: `scaffold` without `--body` or `--field` writes a placeholder whose own error findings are the fields left to fill in, and reports them as `build_recommended` warnings. See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
+A meta-invariant ties them together: **anything nodex itself writes must pass nodex's own `check`.** If `scaffold`, `migrate`, or `lifecycle` could produce a document the same config rejects, that's considered a bug — closed by rejecting the config shape at load time (`Config::validate`), deriving the written value from config, or validating a user-supplied value where that command writes (as `lifecycle set --status` does). One exception is by design: `scaffold` without `--body` or `--field` writes a placeholder whose own error findings are the fields left to fill in, and reports them as `violations_introduced` warnings. See [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md).
 
 ---
 

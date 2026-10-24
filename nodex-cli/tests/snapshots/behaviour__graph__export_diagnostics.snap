@@ -44,17 +44,18 @@ exit: 0
     "warning_codes": [
       "baseline_inert",
       "binary_compat",
-      "build_recommended",
       "cache",
       "document_evicted",
       "file_skipped",
       "gate_suppression",
       "history_unread",
+      "id_changed",
       "ranking_unscored",
       "reference_kept",
       "scope_coverage",
       "snapshot_divergence",
-      "threshold_undeclared"
+      "threshold_undeclared",
+      "violations_introduced"
     ]
   },
   "ok": true
