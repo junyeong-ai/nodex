@@ -173,10 +173,6 @@ pub(crate) fn adr(root: &std::path::Path, id: &str, status: &str, body: &str) {
     );
 }
 
-/// `(rule, node, commit)` for every flow finding `check --since <since>`
-/// reports, whatever the exit code.
-/// A check's report, whatever its verdict: a run this fixture expects to red
-/// still has a reach and a violation list to read.
 /// The whole envelope, whatever the exit code: a `check` that found
 /// something exits non-zero and still answers.
 pub(crate) fn reported(cmd: &mut Command) -> Value {
@@ -186,6 +182,8 @@ pub(crate) fn reported(cmd: &mut Command) -> Value {
     envelope
 }
 
+/// A check's report, whatever its verdict: a run expected to red still has a
+/// reach and a violation list to read.
 pub(crate) fn judged(cmd: &mut Command) -> Value {
     reported(cmd)["data"].clone()
 }
