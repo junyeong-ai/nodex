@@ -631,7 +631,7 @@ flow를 선언하면 `status_transition`과 `status_entry`가 등록되고, `lif
 
 ### 바이너리 버전 핀
 
-`nodex.toml`의 `[meta] nodex_version = ">=0.62, <0.63"`은 프로젝트 문서를 **쓸** 수 있는 바이너리를 고정합니다. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings`에 치명적이지 않은 경고를 붙이고, 쓰기 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH`로 거부합니다. 이 명령들의 `--dry-run`은 아무것도 쓰지 않으므로 경고만 붙이고 읽기처럼 실행됩니다. 그래프를 읽는 일은 그래프를 손상시킬 수 없으므로 변경만 막습니다. 그래서 CI나 컨트리뷰터마다 검사를 다시 짜지 않고도 프로젝트가 도구 버전을 고정합니다. 전역 `--check-version` CLI 플래그는 불일치하면 *모든* 명령을 거부하는 별도의 하드 게이트입니다.
+`nodex.toml`의 `[meta] nodex_version = ">=0.63, <0.64"`은 프로젝트 문서를 **쓸** 수 있는 바이너리를 고정합니다. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings`에 치명적이지 않은 경고를 붙이고, 쓰기 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH`로 거부합니다. 이 명령들의 `--dry-run`은 아무것도 쓰지 않으므로 경고만 붙이고 읽기처럼 실행됩니다. 그래프를 읽는 일은 그래프를 손상시킬 수 없으므로 변경만 막습니다. 그래서 CI나 컨트리뷰터마다 검사를 다시 짜지 않고도 프로젝트가 도구 버전을 고정합니다. 전역 `--check-version` CLI 플래그는 불일치하면 *모든* 명령을 거부하는 별도의 하드 게이트입니다.
 
 ---
 
@@ -824,7 +824,7 @@ cd nodex
 모든 명령은 전역 플래그 `--check-version <semver-req>`를 받아, 설치된 바이너리가 요구사항을 만족하지 않으면 실행을 거부합니다.
 
 ```bash
-nodex --check-version ">=0.62, <0.63" build
+nodex --check-version ">=0.63, <0.64" build
 ```
 
 ---
