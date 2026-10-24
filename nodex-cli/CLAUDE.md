@@ -57,9 +57,10 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
 - Every invocation uses one `Repository` (`ensure_repository` supplies typed
   GIT_ERROR). Graph at `Repository::locate(checkout)` so nested projects stay
   scoped. Ask git whether a tree carries the project before checkout
-  (`carries_project`; `ref_state` / `recorded` for a ref, whose resolved commit
-  answers every later question); disk stats cannot distinguish an absent
-  project from a gitlink's empty directory.
+  (`carries_project`; `ResolvedRef` for a named ref, resolved once where it
+  enters, so its tree, the `--since` range and git drift's `since..HEAD` are
+  asked of one commit); disk stats cannot distinguish an absent project from
+  a gitlink's empty directory.
 - `baseline_graph` builds the baseline under the judged config and retains its
   warnings. `diff_against_ref` / `baseline_diff` use that graph for reads;
   `write_baseline` passes it into `BaselineBinding::snapshot` for locks. Preserve
