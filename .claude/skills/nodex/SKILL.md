@@ -9,7 +9,7 @@ description: >-
   ADR supersession or broken document links.
 allowed-tools: Bash(nodex *)
 metadata:
-  version: 0.61.2
+  version: 0.61.3
 ---
 
 # nodex
