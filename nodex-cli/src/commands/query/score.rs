@@ -23,7 +23,7 @@ pub(crate) fn run_similar(
     if let Some(kind) = args.kind.as_deref()
         && !config.kinds.allowed.iter().any(|k| k == kind)
     {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "--kind {kind:?} is not in kinds.allowed ({:?}); pick a known kind or omit the flag",
             config.kinds.allowed
         ))

@@ -126,10 +126,7 @@ pub fn transition(
         .refusals(root, config, &proposal, today)?
         .refusing(rel_path)
     {
-        return Err(Error::Config(format!(
-            "lifecycle {action_name} cannot complete: {}",
-            refusal.explain()
-        )));
+        return Err(refusal.error(format!("lifecycle {action_name}")));
     }
 
     // The whole registry, over the project this transition produces. The
@@ -239,16 +236,25 @@ pub fn prepare_transition(
     // it actually uses. The kind comes from the document itself
     // (frontmatter, else path inference), matching how the builder
     // classifies it.
+    // A status the operator named is an argument the vocabulary refuses; the
+    // one `supersede` writes is the config's to allow.
     if let Some(target) = action.target_status() {
         let allowed = config.allowed_statuses_for(node.kind.as_str());
         if !allowed.iter().any(|s| s == target) {
-            return Err(Error::Config(format!(
-                "lifecycle {} writes status \"{target}\", but kind \"{}\" does not allow it; \
-                 add \"{target}\" to statuses.allowed (or the kind's status enum) to enable \
-                 this action",
-                action.name(),
-                node.kind.as_str(),
-            )));
+            let kind = node.kind.as_str();
+            return Err(match action {
+                Action::SetStatus { .. } => Error::InvalidArgument(format!(
+                    "lifecycle set --status {target:?} names a status kind {kind:?} does not \
+                     allow ({allowed:?}); pick one of them, or add {target:?} to \
+                     statuses.allowed (or the kind's status enum)"
+                )),
+                _ => Error::Config(format!(
+                    "lifecycle {} writes status {target:?}, but kind {kind:?} does not allow it; \
+                     add {target:?} to statuses.allowed (or the kind's status enum) to enable \
+                     this action",
+                    action.name(),
+                )),
+            });
         }
     }
 

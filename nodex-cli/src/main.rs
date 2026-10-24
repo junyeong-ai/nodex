@@ -452,8 +452,8 @@ mod tests {
             let error_codes = published("error-codes");
             let warning_codes = published("warning-codes");
             for code in &diagnostics.error_codes {
-                if !error_codes.contains(&code.code) {
-                    missing.push(format!("{page}: error code {}", code.code));
+                if !error_codes.contains(code) {
+                    missing.push(format!("{page}: error code {code}"));
                 }
             }
             for code in &diagnostics.warning_codes {

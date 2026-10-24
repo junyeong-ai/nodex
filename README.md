@@ -474,13 +474,14 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
 | `SYMLINK_TARGET` | A write was refused because its target's final component is a symlink: nodex never writes through one |
-| `CONTENT_VIOLATIONS` | The write gate refused the write: what it would write introduces Error-severity `check` violations (each listed as `rule_id: message`) |
-| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, an argument names what the config does not declare (`--fields`, `--where`, `--name`, a `lifecycle` status the kind does not allow) or carries a value the command cannot act on (`--content` without `=`, `--depth 0`, `rename` of a directory, `retarget X X`), `rules.immutable_baseline` names a ref git cannot resolve while an immutability lock reads it, or a write would leave a document in a state an armed lock refuses (the message names the lock and the remedy; `retarget --supersede` refuses when one holds the predecessor's status change) |
+| `CONTENT_VIOLATIONS` | The write gate refused the write: what it would write introduces Error-severity `check` violations (each listed as `path: rule_id: message`) |
+| `LOCKED` | A write would change what an armed immutability lock holds, or the document already differs from its baseline where one does. The message names the lock and the part, and says which remedy applies: revert a drift `nodex check` reports, or leave the frozen part unmade and supersede the record |
+| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, or declares what this run cannot honour: `rules.immutable_baseline` names a ref git cannot resolve while a lock reads it, `detection.git_drift_threshold` is set without git, or `lifecycle supersede` writes `superseded` where the kind does not allow it |
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed or refused (e.g., not a work tree, missing ref, an index with unmerged entries) — most often from `diff`, `impact`, `check --since` and `check --staged` |
-| `INVALID_ARGUMENT` | clap parse failure |
-| `INTERNAL_ERROR` | Anything unclassified (bug) |
+| `INVALID_ARGUMENT` | The command cannot act on its arguments: a clap parse failure, a value the config does not declare (`--fields`, `--where`, `--name`, `--kind`, `--relations`, a `lifecycle set --status` the kind does not allow), a malformed or zero value (`--content` without `=`, `--depth 0`, `--limit 0`, a `--check-version` that is not SemVer), a path the scope would not graph or the filesystem spells differently, `rename` of a directory, `retarget X X`. The message lists what is accepted; correct the argument, not `nodex.toml` |
+| `INTERNAL_ERROR` | A defect in nodex: an unclassified cause, or an invariant of its own output that failed |
 
 <!-- /published:error-codes -->
 
@@ -587,7 +588,7 @@ nodex check --staged                                          # the project as t
 exec nodex check --staged
 ```
 
-The writing commands ask the same question before they write: `rename`, `retarget` and `lifecycle` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`), and so does `scaffold` given `--body` or `--field`; without them it writes, reports its new document's own error-severity findings as warnings to fill in, and refuses only findings on other documents. A lock refuses with `CONFIG_ERROR` instead, naming the lock and the part it freezes, and saying which remedy applies: revert a drift `nodex check` reports, or leave unmade a change the lock forbids. `lifecycle`, `rename` and `scaffold` refuse a write that would leave a document in a state an armed lock refuses, one that drifted before the write included, while `retarget` keeps the locked part back and warns (`file_skipped`), except under `--supersede`: the predecessor's status change is required, so a lock that holds it refuses the whole command, with the same explanation, before anything is written.
+The writing commands ask the same question before they write: `rename`, `retarget` and `lifecycle` refuse a write that introduces an error-severity finding (`CONTENT_VIOLATIONS`), and so does `scaffold` given `--body` or `--field`; without them it writes, reports its new document's own error-severity findings as warnings to fill in, and refuses only findings on other documents. A lock refuses with `LOCKED` instead, naming the lock and the part it freezes, and saying which remedy applies: revert a drift `nodex check` reports, or leave unmade a change the lock forbids. `lifecycle`, `rename` and `scaffold` refuse a write that would leave a document in a state an armed lock refuses, one that drifted before the write included, while `retarget` keeps the locked part back and warns (`file_skipped`), except under `--supersede`: the predecessor's status change is required, so a lock that holds it refuses the whole command, with the same explanation, before anything is written.
 
 ### Locks and Status Flows
 

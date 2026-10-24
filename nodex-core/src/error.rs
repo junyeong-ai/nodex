@@ -97,8 +97,32 @@ pub enum Error {
     #[error("no frontmatter block to edit in {0}; `nodex migrate --apply` writes one")]
     FrontmatterAbsent(PathBuf),
 
+    /// `nodex.toml` declares something this binary cannot honour: a value
+    /// load-time validation refuses, or a requirement the environment does
+    /// not meet (a baseline ref that does not resolve, a drift threshold
+    /// without git). The remedy is the config or the environment.
     #[error("config error: {0}")]
     Config(String),
+
+    /// The invocation cannot be served as given: a malformed or
+    /// out-of-vocabulary flag value, a path the project would not graph, a
+    /// spelling the filesystem does not use. The remedy is the arguments; the
+    /// message names a config alternative where one exists.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
+    /// A write would change what an immutability lock holds, or the document
+    /// already differs from its baseline where a lock holds it. Neither is
+    /// cleared by different content: `reason` says whether to revert a drift
+    /// or leave the frozen part unmade, and a changed decision belongs in a
+    /// successor that supersedes the record.
+    #[error("{subject} cannot complete: {reason}")]
+    Locked { subject: String, reason: String },
+
+    /// An invariant of nodex's own output failed — a defect in nodex, never
+    /// in the project or the invocation.
+    #[error("internal error: {0}")]
+    Internal(String),
 
     #[error("graph cycle: {chain:?}")]
     Cycle { chain: Vec<String> },
@@ -202,6 +226,9 @@ impl Error {
             Self::Io { .. } => "IO_ERROR",
             Self::Parse { .. } | Self::FrontmatterAbsent(_) => "PARSE_ERROR",
             Self::Config(_) => "CONFIG_ERROR",
+            Self::InvalidArgument(_) => "INVALID_ARGUMENT",
+            Self::Locked { .. } => "LOCKED",
+            Self::Internal(_) => "INTERNAL_ERROR",
             Self::Cycle { .. } => "CYCLE_DETECTED",
             Self::DuplicateId { .. } => "DUPLICATE_ID",
             Self::Transition { .. } => "INVALID_TRANSITION",

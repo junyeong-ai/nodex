@@ -106,7 +106,7 @@ fn impact_relations_are_the_after_refs_vocabulary() {
     fs::write(root.join("nodex.toml"), &declaring).unwrap();
     assert_eq!(
         error_code(nodex(root).args(["impact", "HEAD", "HEAD~1", "--relations", "depends_on"])),
-        "CONFIG_ERROR",
+        "INVALID_ARGUMENT",
         "a relation only the working tree declares names no edge of either graph"
     );
 }

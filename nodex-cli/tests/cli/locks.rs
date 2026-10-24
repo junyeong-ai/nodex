@@ -863,7 +863,7 @@ fn rename_refuses_a_move_that_would_change_a_locked_path_derived_field() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR"),
+        Some("LOCKED"),
         "the seam refuses what `check` would red after the move: {envelope}"
     );
     assert!(
@@ -1402,7 +1402,7 @@ fn scaffold_force_refuses_overwriting_a_frontmatter_frozen_record() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR"),
+        Some("LOCKED"),
         "a frontmatter-only project has frozen records too: {envelope}"
     );
     assert!(
@@ -1661,7 +1661,7 @@ fn scaffold_force_refuses_overwriting_baseline_locked_doc() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("LOCKED")
     );
     assert!(
         envelope
@@ -1697,7 +1697,7 @@ fn scaffold_refuses_recreating_deleted_locked_doc() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("LOCKED")
     );
     assert!(
         envelope
@@ -1735,7 +1735,7 @@ fn scaffold_refuses_relocating_a_frozen_record_under_its_own_id() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR"),
+        Some("LOCKED"),
         "the write plane refuses what `check` reds: {envelope}"
     );
     assert!(

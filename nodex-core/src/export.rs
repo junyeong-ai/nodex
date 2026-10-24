@@ -640,25 +640,6 @@ pub struct FlagEntry {
 
 // ─── diagnostics manifest (error / exit codes) ─────────────────────────
 
-/// Where an error `code` originates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CodeOrigin {
-    /// Produced by the core `Error` enum (`error::Error::code`).
-    Core,
-    /// Owned by the CLI envelope classifier, never the core enum:
-    /// `INVALID_ARGUMENT` (clap parse failure) and `INTERNAL_ERROR`
-    /// (the unclassified-cause fallback — a bug).
-    Cli,
-}
-
-/// One error `code` the JSON envelope can carry.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct ErrorCodeEntry {
-    pub code: String,
-    pub origin: CodeOrigin,
-}
-
 /// One process exit code and its meaning.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ExitCodeEntry {
@@ -676,10 +657,9 @@ pub struct ExitCodeEntry {
 pub struct DiagnosticsManifest {
     /// Nodex binary version that produced this manifest.
     pub version: String,
-    /// Every error `code` the envelope can carry, sorted, each tagged by
-    /// origin — a closed vocabulary a consumer can codegen as an
-    /// exhaustive match.
-    pub error_codes: Vec<ErrorCodeEntry>,
+    /// Every error `code` the envelope can carry (`error.code`), sorted — a
+    /// closed vocabulary a consumer can codegen as an exhaustive match.
+    pub error_codes: Vec<String>,
     /// Every advisory warning `code` the envelope can carry
     /// (`warnings[].code`), sorted — the closed counterpart to
     /// `error_codes` on the success plane.
@@ -688,17 +668,22 @@ pub struct DiagnosticsManifest {
     pub exit_codes: Vec<ExitCodeEntry>,
 }
 
-/// Error codes the core `Error` enum emits. An enum's variants are not
-/// enumerable without instances, so this list and the representatives in
-/// `diagnostics_manifest_matches_error_code_vocabulary` are both written by
-/// hand and that test proves only that the two agree. A new `Error` variant
-/// is forced by the compiler into `Error::code` and nowhere else — adding it
-/// here and there is the manual step, and a code missing from the published
-/// vocabulary is what skipping it costs.
-const CORE_ERROR_CODES: &[&str] = &[
+/// Error codes the core `Error` enum emits, which is every code the envelope
+/// carries: the CLI classifier spells a clap parse failure `INVALID_ARGUMENT`
+/// and an unclassified cause `INTERNAL_ERROR`, two codes the enum also owns.
+/// An enum's variants are not enumerable without instances, so this list and
+/// the representatives in `diagnostics_manifest_matches_error_code_vocabulary`
+/// are both written by hand and that test proves only that the two agree. A
+/// new `Error` variant is forced by the compiler into `Error::code` and
+/// nowhere else — adding it here and there is the manual step, and a code
+/// missing from the published vocabulary is what skipping it costs.
+const ERROR_CODES: &[&str] = &[
     "IO_ERROR",
     "PARSE_ERROR",
     "CONFIG_ERROR",
+    "INVALID_ARGUMENT",
+    "LOCKED",
+    "INTERNAL_ERROR",
     "CYCLE_DETECTED",
     "DUPLICATE_ID",
     "INVALID_TRANSITION",
@@ -714,26 +699,10 @@ const CORE_ERROR_CODES: &[&str] = &[
     "GIT_ERROR",
 ];
 
-/// Codes the CLI envelope classifier owns — never produced by the core
-/// `Error` enum (`format.rs`: a clap parse failure / the unclassified
-/// fallback). Listed so the published vocabulary is the complete set a
-/// consumer can receive.
-const CLI_ERROR_CODES: &[&str] = &["INVALID_ARGUMENT", "INTERNAL_ERROR"];
-
 /// Build the [`DiagnosticsManifest`] — pure introspection, no config.
 pub fn export_diagnostics() -> DiagnosticsManifest {
-    let mut error_codes: Vec<ErrorCodeEntry> = CORE_ERROR_CODES
-        .iter()
-        .map(|c| ErrorCodeEntry {
-            code: (*c).to_string(),
-            origin: CodeOrigin::Core,
-        })
-        .chain(CLI_ERROR_CODES.iter().map(|c| ErrorCodeEntry {
-            code: (*c).to_string(),
-            origin: CodeOrigin::Cli,
-        }))
-        .collect();
-    error_codes.sort_by(|a, b| a.code.cmp(&b.code));
+    let mut error_codes: Vec<String> = ERROR_CODES.iter().map(|c| (*c).to_string()).collect();
+    error_codes.sort();
     let warning_codes = warning_code_strings();
     DiagnosticsManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -820,10 +789,13 @@ pub fn export_envelope_schema(inline_refs: bool) -> Result<EnvelopeSchemaManifes
 /// anywhere. Fail-closed and exact:
 ///
 /// - an unresolvable reference (external URI, pointer outside the
-///   entry's `$defs`, missing definition) is [`Error::Config`] — never
+///   entry's `$defs`, missing definition) is [`Error::Internal`] — never
 ///   truncation or silent retention;
 /// - a definition ring is detected by the active reference path (no
-///   depth cap) and is [`Error::Cycle`] naming the ring.
+///   depth cap) and is [`Error::Internal`] naming the ring.
+///
+/// Each is a defect in the shipped types rather than in any request: the
+/// schemas are derived from them, so every one is the same for every caller.
 ///
 /// Keywords beside a `$ref` apply conjunctively in draft 2020-12, so
 /// they are preserved around the inlined target via `allOf`. The walk
@@ -850,13 +822,13 @@ fn inline_value(
         Value::Object(obj) => {
             if let Some(reference) = obj.get("$ref") {
                 let Some(name) = reference.as_str().and_then(|r| r.strip_prefix("#/$defs/")) else {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Internal(format!(
                         "envelope-schema: unresolvable $ref {reference} — only \
                          `#/$defs/<name>` references are inlineable"
                     )));
                 };
                 let Some(target) = defs.get(name) else {
-                    return Err(Error::Config(format!(
+                    return Err(Error::Internal(format!(
                         "envelope-schema: unresolvable $ref \"#/$defs/{name}\" — \
                          no such definition in the entry's $defs"
                     )));
@@ -864,7 +836,10 @@ fn inline_value(
                 if active.iter().any(|n| n == name) {
                     let mut chain = active.clone();
                     chain.push(name.to_string());
-                    return Err(Error::Cycle { chain });
+                    return Err(Error::Internal(format!(
+                        "envelope-schema: definitions form a ring {} that cannot be inlined",
+                        chain.join(" → ")
+                    )));
                 }
                 active.push(name.to_string());
                 let resolved = inline_value(target, defs, active)?;
@@ -891,7 +866,7 @@ fn inline_value(
                     }
                     Some(Value::Array(branches)) => branches.insert(0, resolved),
                     Some(other) => {
-                        return Err(Error::Config(format!(
+                        return Err(Error::Internal(format!(
                             "envelope-schema: `allOf` beside $ref \"#/$defs/{name}\" is not \
                              an array (got {other}) — the schema is malformed"
                         )));
@@ -2544,7 +2519,7 @@ mod tests {
         let p = || PathBuf::from("x");
         // One representative of every `Error` variant. The compiler forces
         // a new variant to gain a `code` arm, but it cannot force it into
-        // this list or into `CORE_ERROR_CODES` — an enum's variants are not
+        // this list or into `ERROR_CODES` — an enum's variants are not
         // enumerable without instances. So both are maintained by hand and
         // this test only proves they agree with *each other*: adding a
         // variant means adding it in all three places, and a code missing
@@ -2559,6 +2534,12 @@ mod tests {
                 source: ParseError::FrontmatterShape,
             },
             Error::Config("x".into()),
+            Error::InvalidArgument("x".into()),
+            Error::Locked {
+                subject: "x".into(),
+                reason: "y".into(),
+            },
+            Error::Internal("x".into()),
             Error::Cycle { chain: vec![] },
             Error::DuplicateId {
                 id: "x".into(),
@@ -2604,27 +2585,10 @@ mod tests {
         let produced: BTreeSet<&str> = variants.iter().map(|e| e.code()).collect();
 
         let manifest = export_diagnostics();
-        let core_listed: BTreeSet<&str> = manifest
-            .error_codes
-            .iter()
-            .filter(|e| e.origin == CodeOrigin::Core)
-            .map(|e| e.code.as_str())
-            .collect();
+        let listed: BTreeSet<&str> = manifest.error_codes.iter().map(String::as_str).collect();
         assert_eq!(
-            produced, core_listed,
-            "every Error::code() must be published (and no stale core code listed)"
-        );
-
-        // The two CLI-classifier codes are present and tagged `cli`.
-        let cli_listed: BTreeSet<&str> = manifest
-            .error_codes
-            .iter()
-            .filter(|e| e.origin == CodeOrigin::Cli)
-            .map(|e| e.code.as_str())
-            .collect();
-        assert_eq!(
-            cli_listed,
-            BTreeSet::from(["INVALID_ARGUMENT", "INTERNAL_ERROR"])
+            produced, listed,
+            "every Error::code() must be published (and no stale code listed)"
         );
 
         // Exit codes are the documented 0/1/2 contract.
@@ -3208,12 +3172,9 @@ mod tests {
             }
         });
         let err = inline_schema_refs(&entry).unwrap_err();
-        let Error::Cycle { chain } = err else {
-            panic!("expected Error::Cycle, got {err:?}");
-        };
         assert!(
-            chain.contains(&"A".to_string()) && chain.contains(&"B".to_string()),
-            "the chain names the ring: {chain:?}"
+            matches!(&err, Error::Internal(msg) if msg.contains("A → B → A")),
+            "the error names the ring: {err:?}"
         );
     }
 
@@ -3225,7 +3186,7 @@ mod tests {
         });
         let err = inline_schema_refs(&missing).unwrap_err();
         assert!(
-            matches!(&err, Error::Config(msg) if msg.contains("unresolvable")),
+            matches!(&err, Error::Internal(msg) if msg.contains("unresolvable")),
             "missing definition must refuse: {err:?}"
         );
 
@@ -3234,7 +3195,7 @@ mod tests {
         });
         let err = inline_schema_refs(&external).unwrap_err();
         assert!(
-            matches!(&err, Error::Config(msg) if msg.contains("unresolvable")),
+            matches!(&err, Error::Internal(msg) if msg.contains("unresolvable")),
             "non-$defs reference must refuse: {err:?}"
         );
     }
@@ -3770,7 +3731,7 @@ mod tests {
         });
         let err = inline_schema_refs(&malformed).unwrap_err();
         assert!(
-            matches!(&err, Error::Config(msg) if msg.contains("allOf")),
+            matches!(&err, Error::Internal(msg) if msg.contains("allOf")),
             "non-array allOf must refuse: {err:?}"
         );
     }

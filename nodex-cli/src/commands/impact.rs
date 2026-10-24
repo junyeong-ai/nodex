@@ -27,7 +27,7 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
     let repository = ensure_repository(root, "nodex impact")?;
 
     if args.depth == 0 {
-        return Err(nodex_core::error::Error::Config(
+        return Err(nodex_core::error::Error::InvalidArgument(
             "--depth 0 expands nothing; pass a value >= 1".into(),
         )
         .into());
@@ -60,7 +60,7 @@ pub fn run(root: &Path, args: ImpactArgs, pretty: bool) -> Result<()> {
         .collect();
     if !unknown.is_empty() {
         let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "--relations contains unknown value(s) {unknown:?}; known to {}'s config: {known_sorted:?}",
             args.after
         ))

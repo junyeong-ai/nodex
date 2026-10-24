@@ -75,7 +75,7 @@ nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags]
                   [--limit N] [--fields id,title,...]
 ```
 Generic listing: AND across categories, OR within. Empty filter = all nodes in id order. Tag matching is case-insensitive.
-`--fields` projects: spine fields (`id`, `title`, `kind`, `status`, `path`) in place; any project-declared field (other built-ins, `attrs` keys) under a nested `attrs` object. An undeclared field is `CONFIG_ERROR`.
+`--fields` projects: spine fields (`id`, `title`, `kind`, `status`, `path`) in place; any project-declared field (other built-ins, `attrs` keys) under a nested `attrs` object. An undeclared field is `INVALID_ARGUMENT`.
 `--missing F1,F2` selects documents missing every named field, using schema presence semantics; nonempty collections, objects, `false` and `0` are present.
 `--where field=value` (repeatable) narrows by exact equality over the same vocabulary's scalar fields, `path` included. A collection built-in like `tags` is rejected — use `--tag`.
 `--body-contains TEXT` keeps the documents whose body (frontmatter excluded) contains TEXT, case-insensitively. It reads each document the other filters select at the revision the snapshot indexed, so a document changed since the build refuses with `GRAPH_OUTDATED`, `--allow-stale` included. It answers which documents; read or search those files for the lines.
@@ -143,7 +143,7 @@ nodex query dependents <id> [--depth N --relations a,b]   # default 1 hop
 ```bash
 nodex query annotations [--name <block>] [--with-frontmatter f1,f2] [--min-count N]
 ```
-`--name` exact-matches a declared `[[annotations]]` block name (not a glob); an unknown name is `CONFIG_ERROR`. Results group by annotation `name`, then by capture `key`: `items[{name, entries[{key, count, sources}]}]`. `--with-frontmatter` enriches each source with selected node frontmatter (built-in or project-declared; unknown names rejected). `--min-count N` drops entries below the count and removes emptied groups — the natural primitive for promotion candidates and repeated topics.
+`--name` exact-matches a declared `[[annotations]]` block name (not a glob); an unknown name is `INVALID_ARGUMENT`. Results group by annotation `name`, then by capture `key`: `items[{name, entries[{key, count, sources}]}]`. `--with-frontmatter` enriches each source with selected node frontmatter (built-in or project-declared; unknown names rejected). `--min-count N` drops entries below the count and removes emptied groups — the natural primitive for promotion candidates and repeated topics.
 
 Annotations are for pre-graph identifiers — TODO topics, promotion candidates, open research questions — markers that intentionally do not resolve to a node. The block `detection.superseded_reference_ok_annotation` names is the exception in what it holds: its key is the id of a target a document cites as history, which `superseded_reference` compares without resolving. A block named `promotes` (matching, say, `[PROMOTES: <id>]`) is queried as `nodex query annotations --name promotes`.
 
@@ -317,7 +317,7 @@ nodex lifecycle set       <id> --status <status>  # any value in statuses.allowe
 nodex lifecycle supersede <id> --to <new-id>      # → superseded; pre-checks successor + DAG
 ```
 
-`supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the kind's status vocabulary before writing. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (where the project requires `superseded_by` for `superseded`, as the `nodex init` template does, use `supersede`), and any other rule the project's own `check` would red, including effects on other documents, and that refusal is `CONTENT_VIOLATIONS`; a move the status flow does not declare, or one out of a terminal status, is refused before the gate with `INVALID_TRANSITION`. A violation the document already carried never refuses it, except a lock's: a document that has drifted from an armed lock is refused with `CONFIG_ERROR`, naming the lock.
+`supersede` is its own action because it carries a structural payload: a successor plus a supersession-DAG check. Every other transition goes through `set`, whose target is validated against the kind's status vocabulary before writing. `set` refuses a transition that would introduce a check violation — a `cross_field` rule the target status governs while the required field is absent (where the project requires `superseded_by` for `superseded`, as the `nodex init` template does, use `supersede`), and any other rule the project's own `check` would red, including effects on other documents, and that refusal is `CONTENT_VIOLATIONS`; a move the status flow does not declare, or one out of a terminal status, is refused before the gate with `INVALID_TRANSITION`. A violation the document already carried never refuses it, except a lock's: a document that has drifted from an armed lock is refused with `LOCKED`, naming the lock.
 
 Terminal statuses block further transitions except `review`; `set` can never un-terminalize a doc. `set` and `supersede` write `updated: <today>`, unless the document's kind forbids `updated` (`[[schema.overrides]] forbidden`).
 

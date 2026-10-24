@@ -114,7 +114,7 @@ pub fn scaffold(
         .allowed
         .contains(&spec.kind.as_str().to_string())
     {
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidArgument(format!(
             "unknown kind {:?}; allowed: {:?}",
             spec.kind.as_str(),
             config.kinds.allowed
@@ -151,7 +151,7 @@ pub fn scaffold(
             .iter()
             .any(|allowed| allowed == ext)
     }) {
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidArgument(format!(
             "scaffold target must end with one of {:?}; got {}",
             config.parser.extensions,
             rel_path.display()
@@ -276,7 +276,7 @@ pub fn scaffold(
             "it is outside scope.include / inside scope.exclude; adjust the path or the scope \
              config in nodex.toml"
         };
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidArgument(format!(
             "scaffold target {:?} would never be graphed — {cause}",
             crate::path_guard::forward_string(&rel_path)
         )));
@@ -290,7 +290,7 @@ pub fn scaffold(
     // same predicate the rule uses decides here, so they cannot disagree;
     // the caller supplies `--path` with a conforming name instead.
     if let Some(rule) = crate::rules::naming::first_filename_violation(config, &rel_path) {
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidArgument(format!(
             "scaffold target {:?} violates rules.naming pattern {:?} (glob {:?}); pass --path \
              with a conforming filename, or set sequential = true / adjust the naming rule",
             crate::path_guard::forward_string(&rel_path),
@@ -355,16 +355,16 @@ pub fn scaffold(
     let refusals = probe.refusals(root, config, &proposal, today)?;
     let target = crate::path_guard::forward_string(&rel_path);
     if let Some(refusal) = refusals.refusing(&rel_path) {
-        return Err(Error::Config(format!(
-            "scaffold of {target:?} cannot complete: {}",
-            refusal.explain()
-        )));
+        return Err(refusal.error(format!("scaffold of {target:?}")));
     }
     if let Some(lock) = probe.frozen_record_lost(&rel_path, &proposed.graph, config) {
-        return Err(Error::Config(format!(
-            "scaffold of {target:?} cannot complete: it would write over a record the baseline \
-             froze there ({lock}); supersede the record instead of replacing it"
-        )));
+        return Err(Error::Locked {
+            subject: format!("scaffold of {target:?}"),
+            reason: format!(
+                "it would write over a record the baseline froze there ({lock}); supersede the \
+                 record instead of replacing it"
+            ),
+        });
     }
 
     // 6. Validate through the write plane's one proposal gate: the
@@ -465,7 +465,7 @@ fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
     let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for (key, _) in fields {
         if reserved.contains(&key.as_str()) {
-            return Err(Error::Config(format!(
+            return Err(Error::InvalidArgument(format!(
                 "field {key:?} is reserved (the reserved keys are {reserved:?}): each has a \
                  canonical source — a dedicated flag, config derivation (`status` via \
                  `statuses.initial`, change it through `lifecycle set`), or the structural \
@@ -473,7 +473,7 @@ fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
             )));
         }
         if !seen.insert(key.as_str()) {
-            return Err(Error::Config(format!(
+            return Err(Error::InvalidArgument(format!(
                 "field {key:?} is supplied more than once; frontmatter keys are unique"
             )));
         }
@@ -485,7 +485,7 @@ fn validate_field_keys(fields: &[(String, String)]) -> Result<()> {
 
 fn infer_path(kind: &Kind, title: &str, graph: &Graph, config: &Config) -> Result<PathBuf> {
     let template = config.scaffold.paths.get(kind.as_str()).ok_or_else(|| {
-        Error::Config(format!(
+        Error::InvalidArgument(format!(
             "no scaffold.paths template for kind {:?}; supply --path or declare a creation path",
             kind.as_str()
         ))
@@ -536,7 +536,7 @@ fn next_filename_stem(
         let stem = format!("{padded}-{slug}");
         if matcher.is_match(dir.join(format!("{stem}.{extension}"))) {
             if next.is_none() {
-                return Err(Error::Config(format!(
+                return Err(Error::InvalidArgument(format!(
                     "sequence numbering is exhausted at {maximum}; supply --path or change the numbering rule"
                 )));
             }
@@ -1036,7 +1036,7 @@ mod tests {
             crate::test_today(),
         )
         .unwrap_err();
-        assert!(matches!(err, Error::Config(_)));
+        assert!(matches!(err, Error::InvalidArgument(_)));
     }
 
     #[test]
@@ -1116,8 +1116,8 @@ mod tests {
             )
             .unwrap_err();
             match err {
-                Error::Config(msg) => assert!(msg.contains("reserved"), "{msg}"),
-                other => panic!("expected Config error, got {other:?}"),
+                Error::InvalidArgument(msg) => assert!(msg.contains("reserved"), "{msg}"),
+                other => panic!("expected InvalidArgument error, got {other:?}"),
             }
         }
         let mut s = spec("note", "Hello", Some("note-hello"), Some("misc/hello.md"));
@@ -1136,8 +1136,8 @@ mod tests {
         )
         .unwrap_err();
         match err {
-            Error::Config(msg) => assert!(msg.contains("more than once"), "{msg}"),
-            other => panic!("expected Config error, got {other:?}"),
+            Error::InvalidArgument(msg) => assert!(msg.contains("more than once"), "{msg}"),
+            other => panic!("expected InvalidArgument error, got {other:?}"),
         }
     }
 
@@ -1197,8 +1197,8 @@ mod tests {
         )
         .unwrap_err();
         match err {
-            Error::Config(msg) => assert!(msg.contains(".md"), "{msg}"),
-            _ => panic!("expected Config error"),
+            Error::InvalidArgument(msg) => assert!(msg.contains(".md"), "{msg}"),
+            other => panic!("expected InvalidArgument error, got {other:?}"),
         }
     }
 }

@@ -6,78 +6,25 @@ exit: 0
 {
   "data": {
     "error_codes": [
-      {
-        "code": "ALREADY_EXISTS",
-        "origin": "core"
-      },
-      {
-        "code": "CONFIG_ERROR",
-        "origin": "core"
-      },
-      {
-        "code": "CONTENT_VIOLATIONS",
-        "origin": "core"
-      },
-      {
-        "code": "CYCLE_DETECTED",
-        "origin": "core"
-      },
-      {
-        "code": "DUPLICATE_ID",
-        "origin": "core"
-      },
-      {
-        "code": "GIT_ERROR",
-        "origin": "core"
-      },
-      {
-        "code": "GRAPH_MISSING",
-        "origin": "core"
-      },
-      {
-        "code": "GRAPH_OUTDATED",
-        "origin": "core"
-      },
-      {
-        "code": "INTERNAL_ERROR",
-        "origin": "cli"
-      },
-      {
-        "code": "INVALID_ARGUMENT",
-        "origin": "cli"
-      },
-      {
-        "code": "INVALID_TRANSITION",
-        "origin": "core"
-      },
-      {
-        "code": "IO_ERROR",
-        "origin": "core"
-      },
-      {
-        "code": "NOT_FOUND",
-        "origin": "core"
-      },
-      {
-        "code": "PARSE_ERROR",
-        "origin": "core"
-      },
-      {
-        "code": "PATH_ESCAPES_ROOT",
-        "origin": "core"
-      },
-      {
-        "code": "SYMLINK_TARGET",
-        "origin": "core"
-      },
-      {
-        "code": "VERSION_MISMATCH",
-        "origin": "core"
-      },
-      {
-        "code": "WRITE_CONFLICT",
-        "origin": "core"
-      }
+      "ALREADY_EXISTS",
+      "CONFIG_ERROR",
+      "CONTENT_VIOLATIONS",
+      "CYCLE_DETECTED",
+      "DUPLICATE_ID",
+      "GIT_ERROR",
+      "GRAPH_MISSING",
+      "GRAPH_OUTDATED",
+      "INTERNAL_ERROR",
+      "INVALID_ARGUMENT",
+      "INVALID_TRANSITION",
+      "IO_ERROR",
+      "LOCKED",
+      "NOT_FOUND",
+      "PARSE_ERROR",
+      "PATH_ESCAPES_ROOT",
+      "SYMLINK_TARGET",
+      "VERSION_MISMATCH",
+      "WRITE_CONFLICT"
     ],
     "exit_codes": [
       {

@@ -108,13 +108,15 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Refuse to proceed unless the running binary version satisfies the
 /// SemVer requirement (e.g. `"0.5"`, `">=0.5,<0.6"`). Surfaces a
-/// typed [`Error::Config`] on a malformed requirement and a typed
+/// typed [`Error::InvalidArgument`] on a malformed requirement — load
+/// validates the `meta.nodex_version` pin, so the requirement here is one a
+/// caller passed — and a typed
 /// [`Error::VersionMismatch`] on a real mismatch, so both the CLI and
 /// downstream library callers can gate on the same `error.code()`
 /// without each re-implementing semver parsing.
 pub fn verify_version(requirement: &str) -> Result<()> {
     let req = semver::VersionReq::parse(requirement).map_err(|e| {
-        crate::error::Error::Config(format!(
+        crate::error::Error::InvalidArgument(format!(
             "version requirement {requirement:?} is not valid SemVer: {e}"
         ))
     })?;
@@ -226,7 +228,6 @@ mod tests {
     #[test]
     fn verify_version_rejects_malformed_requirement() {
         let err = verify_version("not a semver requirement!").unwrap_err();
-        matches!(err, Error::Config(_));
-        assert_eq!(err.code(), "CONFIG_ERROR");
+        assert_eq!(err.code(), "INVALID_ARGUMENT");
     }
 }

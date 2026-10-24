@@ -111,7 +111,7 @@ fn declared_relations_are_visible_in_graph_queries_and_schema() {
             .any(|entry| entry["id"] == "source")
     );
     let rejected = run(root, &["query", "nodes", "--where", "sources=a"], 2);
-    assert_eq!(rejected["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(rejected["error"]["code"], "INVALID_ARGUMENT");
     let missing = run(root, &["query", "nodes", "--missing", "sources"], 0);
     assert_eq!(missing["data"]["total"], 2);
     let projection = run(

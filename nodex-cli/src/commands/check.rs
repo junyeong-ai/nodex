@@ -445,7 +445,7 @@ fn resolve_content_target(
         // not out of scope — it is the same document, and blessing bytes there
         // while reporting that nodex governs nothing is the misleading green.
         if let Some((_, named)) = scan.aliases.iter().find(|(unused, _)| unused == path) {
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "path {:?} names the document the graph carries as {:?}; use that path so the \
                  gate checks the right node",
                 nodex_core::path_guard::forward_string(path),
@@ -575,28 +575,28 @@ fn parse_proposals(
     let mut overlay = Vec::with_capacity(pairs.len());
     for pair in pairs {
         let Some((raw_path, source)) = pair.split_once('=') else {
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--content expects PATH=SOURCE, got {pair:?} (no '='); e.g. \
                  --content docs/a.md=- or --content docs/a.md=draft.md"
             ))
             .into());
         };
         if raw_path.is_empty() {
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--content {pair:?} has an empty PATH"
             ))
             .into());
         }
         let path = nodex_core::path_guard::normalize_doc_path(root, raw_path)?;
         if !seen.insert(path.clone()) {
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--content names {path:?} more than once; each target path may appear once"
             ))
             .into());
         }
         if source == "-" {
             if stdin_used {
-                return Err(nodex_core::error::Error::Config(
+                return Err(nodex_core::error::Error::InvalidArgument(
                     "--content reads stdin (`-`) for at most one proposal; stdin is a single \
                      stream — write the other proposals to files"
                         .to_string(),

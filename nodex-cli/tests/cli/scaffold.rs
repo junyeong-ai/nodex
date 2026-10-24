@@ -20,7 +20,7 @@ fn scaffold_uses_explicit_creation_templates_and_refuses_glob_inversion() {
         .unwrap();
     assert_eq!(result.status.code(), Some(2));
     let error: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(error["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
     assert!(!root.join("specs/payment-policy.md").exists());
     fs::write(
         root.join("nodex.toml"),
@@ -169,7 +169,7 @@ fn scaffold_rejects_non_md_extension() {
     assert_eq!(parsed.get("ok"), Some(&Value::Bool(false)));
     assert_eq!(
         parsed.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
 }
 
@@ -242,7 +242,7 @@ fn scaffold_refuses_a_target_outside_the_project_scope() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
     assert!(
         !root.join("notes/loose.md").exists(),
@@ -365,7 +365,7 @@ fn scaffold_and_retarget_refuse_reference_unsafe_ids() {
             serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
         assert_eq!(
             envelope.pointer("/error/code").and_then(Value::as_str),
-            Some("CONFIG_ERROR")
+            Some("INVALID_ARGUMENT")
         );
         assert!(!root.join("docs/t.md").exists(), "nothing written");
     }
@@ -591,7 +591,7 @@ fn scaffold_field_reserved_key_refused() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
     assert!(
         envelope
@@ -616,7 +616,7 @@ fn scaffold_field_reserved_key_refused() {
         serde_json::from_str(String::from_utf8_lossy(&out_path.stdout).trim()).expect("json");
     assert_eq!(
         env_path.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR"),
+        Some("INVALID_ARGUMENT"),
         "{env_path}"
     );
     assert!(!tmp.path().join("docs/t.md").exists());
@@ -637,7 +637,7 @@ fn scaffold_duplicate_field_key_refused() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
     assert!(!tmp.path().join("docs/t.md").exists());
 }

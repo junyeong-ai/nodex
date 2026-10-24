@@ -1712,7 +1712,10 @@ fn a_rename_refused_by_a_rule_that_is_not_a_lock_says_which_rule_and_what_it_sai
         .output()
         .expect("rename ran");
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR", "{envelope}");
+    assert_eq!(
+        envelope["error"]["code"], "CONTENT_VIOLATIONS",
+        "{envelope}"
+    );
     let message = envelope["error"]["message"].as_str().expect("a message");
     assert!(
         message.contains("status_entry") && message.contains("enters statuses.flow"),

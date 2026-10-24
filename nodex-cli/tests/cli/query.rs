@@ -45,7 +45,7 @@ fn similar_status_filters_candidates_without_changing_the_target() {
         .unwrap();
     assert_eq!(rejected.status.code(), Some(2));
     let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
-    assert_eq!(rejected["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(rejected["error"]["code"], "INVALID_ARGUMENT");
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn query_similar_limit_zero_rejected() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
     let msg = env
         .pointer("/error/message")
@@ -446,7 +446,7 @@ fn query_similar_min_score_infinity_rejected() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
     let msg = env
         .pointer("/error/message")
@@ -477,7 +477,7 @@ fn query_similar_min_score_nan_rejected() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
 }
 
@@ -495,7 +495,7 @@ fn query_recent_rejects_unknown_kind() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
 }
 
@@ -553,7 +553,7 @@ fn query_similar_rejects_unknown_kind() {
     // `--kind not-in-allowed` would silently mismatch every doc on
     // the kind component and return an empty list — a quiet "no
     // duplicates" instead of an honest "your argument is invalid".
-    // The contract is fail-fast with CONFIG_ERROR.
+    // The contract is fail-fast with INVALID_ARGUMENT.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -571,7 +571,7 @@ fn query_similar_rejects_unknown_kind() {
         .expect("json envelope");
     assert_eq!(
         env.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
 }
 
@@ -1153,7 +1153,7 @@ fn query_nodes_where_rejects_unknown_field_and_malformed_clause() {
             serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
         assert_eq!(
             parsed.pointer("/error/code").and_then(Value::as_str),
-            Some("CONFIG_ERROR"),
+            Some("INVALID_ARGUMENT"),
             "for {args:?}: {parsed}"
         );
     };
@@ -1199,7 +1199,7 @@ fn query_nodes_where_filters_by_path() {
 #[test]
 fn query_nodes_fields_rejects_an_undeclared_field() {
     // A field that is neither a spine field nor declared by the project
-    // is a CONFIG_ERROR, never a silently dropped projection.
+    // is an INVALID_ARGUMENT, never a silently dropped projection.
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -1217,7 +1217,7 @@ fn query_nodes_fields_rejects_an_undeclared_field() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
     assert_eq!(
         parsed.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR"),
+        Some("INVALID_ARGUMENT"),
         "undeclared --fields entry rejected: {parsed}"
     );
 }
@@ -1361,7 +1361,7 @@ fn query_nodes_rejects_unknown_field() {
         .expect("ran");
     assert!(!output.status.success(), "unknown field must fail loud");
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()
@@ -1454,7 +1454,7 @@ fn query_backlinks_stale_components_limit_report_honest_counts() {
         let output = nodex(tmp.path()).args(&args).output().expect("ran");
         assert!(!output.status.success(), "{args:?} must reject zero");
         let env: Value = serde_json::from_slice(&output.stdout).expect("JSON");
-        assert_eq!(env["error"]["code"], "CONFIG_ERROR", "{args:?}");
+        assert_eq!(env["error"]["code"], "INVALID_ARGUMENT", "{args:?}");
     }
 }
 
@@ -1472,7 +1472,7 @@ fn query_search_rejects_unknown_status() {
         .expect("ran");
     assert!(!output.status.success(), "unknown status must fail loud");
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()
@@ -1485,7 +1485,7 @@ fn query_search_rejects_unknown_status() {
 fn query_search_rejects_empty_keyword() {
     // An empty keyword is a substring of every document, so it would
     // "match" the whole corpus — the opposite of a keyword search. It is
-    // refused loud (CONFIG_ERROR), symmetric with the unknown-status and
+    // refused loud (INVALID_ARGUMENT), symmetric with the unknown-status and
     // zero-limit guards.
     let tmp = scratch();
     seed_listing_corpus(tmp.path());
@@ -1496,7 +1496,7 @@ fn query_search_rejects_empty_keyword() {
         .expect("ran");
     assert!(!output.status.success(), "empty keyword must fail loud");
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()
@@ -1551,7 +1551,7 @@ fn query_nodes_rejects_unknown_kind() {
         .expect("ran");
     assert!(!output.status.success(), "unknown kind must fail loud");
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()
@@ -1571,7 +1571,7 @@ fn query_nodes_rejects_unknown_status() {
         .expect("ran");
     assert!(!output.status.success());
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
 }
 
 #[test]
@@ -1585,7 +1585,7 @@ fn query_nodes_rejects_empty_csv_entry() {
         .expect("ran");
     assert!(!output.status.success());
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
 }
 
 #[test]
@@ -1599,7 +1599,7 @@ fn query_nodes_rejects_zero_limit() {
         .expect("ran");
     assert!(!output.status.success());
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
 }
 
 /// Append a `[[annotations]]` declaration to the project's nodex.toml.
@@ -1649,7 +1649,7 @@ fn query_annotations_groups_by_pattern_and_key() {
 }
 
 #[test]
-fn query_annotations_unknown_filter_emits_typed_config_error() {
+fn query_annotations_unknown_filter_emits_typed_argument_error() {
     let tmp = scratch();
     init_project(tmp.path());
     append_annotations_block(tmp.path());
@@ -1662,7 +1662,7 @@ fn query_annotations_unknown_filter_emits_typed_config_error() {
     assert!(!output.status.success(), "typo must fail exit code");
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
     assert_eq!(env["ok"], false);
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()
@@ -1739,7 +1739,7 @@ fn query_annotations_with_frontmatter_rejects_unknown_field() {
     assert!(!output.status.success(), "unknown field must fail");
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
     assert_eq!(env["ok"], false);
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()
@@ -1815,7 +1815,7 @@ fn query_dependents_names_direct_dependents_unless_asked_for_more_hops() {
 }
 
 #[test]
-fn query_dependents_unknown_relation_emits_typed_config_error() {
+fn query_dependents_unknown_relation_emits_typed_argument_error() {
     let tmp = scratch();
     init_project(tmp.path());
     write_doc(
@@ -1831,7 +1831,7 @@ fn query_dependents_unknown_relation_emits_typed_config_error() {
         .expect("ran");
     assert!(!output.status.success());
     let env: Value = serde_json::from_slice(&output.stdout).expect("JSON envelope");
-    assert_eq!(env["error"]["code"], "CONFIG_ERROR");
+    assert_eq!(env["error"]["code"], "INVALID_ARGUMENT");
     assert!(
         env["error"]["message"]
             .as_str()

@@ -2455,7 +2455,7 @@ fn snapshot_locks_use_one_baseline_across_proposals_index_issues_and_writes() {
         .unwrap();
     assert_eq!(error.status.code(), Some(2));
     let envelope: Value = serde_json::from_slice(&error.stdout).unwrap();
-    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR", "{envelope}");
+    assert_eq!(envelope["error"]["code"], "LOCKED", "{envelope}");
     assert!(root.join("docs/a.md").exists());
     write_doc(
         root,

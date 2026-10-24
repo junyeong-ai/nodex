@@ -582,7 +582,7 @@ fn nodes_body_contains_reads_the_governed_bodies_at_their_indexed_revision() {
 
     assert_eq!(
         error_code(nodex(root).args(["query", "nodes", "--body-contains", ""])),
-        "CONFIG_ERROR"
+        "INVALID_ARGUMENT"
     );
 
     write_doc(
