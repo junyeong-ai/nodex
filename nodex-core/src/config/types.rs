@@ -112,9 +112,9 @@ pub struct ScopeConfig {
     // absent — which silently empties the graph and lets `check` pass on
     // an unscanned corpus.
     #[serde(default = "default_scope_include")]
-    pub include: Vec<IncludePattern>,
+    pub include: Vec<ScopePattern>,
     #[serde(default)]
-    pub exclude: Vec<String>,
+    pub exclude: Vec<ScopePattern>,
     #[serde(default)]
     pub conditional_exclude: Vec<ConditionalExclude>,
     /// Directory basenames pruned during the walk at any depth, before
@@ -163,38 +163,46 @@ impl ScopeConfig {
     pub fn include_globs(&self) -> Vec<String> {
         self.include.iter().map(|p| p.glob.clone()).collect()
     }
+
+    /// The exclude globs in declaration order, under the same discipline as
+    /// [`Self::include_globs`].
+    pub fn exclude_globs(&self) -> Vec<String> {
+        self.exclude.iter().map(|p| p.glob.clone()).collect()
+    }
 }
 
-fn default_scope_include() -> Vec<IncludePattern> {
-    vec![IncludePattern::from("**/*.md")]
+fn default_scope_include() -> Vec<ScopePattern> {
+    vec![ScopePattern::from("**/*.md")]
 }
 
-/// A `scope.include` entry: the glob, and whether selecting nothing is a
-/// state the project expects.
+/// A `scope.include` or `scope.exclude` entry: the glob, and whether
+/// selecting nothing is a state the project expects.
 ///
-/// A declaration that matches no file is normally a mis-scope worth saying
-/// out loud — a typo'd path validates green over a corpus nobody read. But
-/// whether an area is *allowed* to be idle is a fact about the project, not
-/// about globs: a `specs/**/*.md` between milestones is empty on purpose,
-/// and a warning it earns on every command trains an operator to skip the
-/// channel that also carries the typo. So the project says which it is, at
-/// the declaration, and [`Self::may_be_empty`] is read only by the
-/// disclosure — never by the walk, which cannot behave differently for a
-/// pattern that says nothing about what it selects.
+/// A declaration that selects nothing is normally a mis-scope worth saying
+/// out loud — a typo'd include validates green over a corpus nobody read, and
+/// an exclude spelled the gitignore way (`docs/drafts`, `!docs/keep.md`)
+/// keeps nothing out. But whether a declaration is *allowed* to be idle is a
+/// fact about the project, not about globs: a `specs/**/*.md` between
+/// milestones is empty on purpose, as is an exclude guarding a directory
+/// that does not exist yet, and a warning either earns on every command
+/// trains an operator to skip the channel that also carries the typo. So the
+/// project says which it is, at the declaration, and [`Self::may_be_empty`]
+/// is read only by the disclosure — never by the walk, which cannot behave
+/// differently for a pattern that says nothing about what it selects.
 ///
 /// Written either way: `"docs/**/*.md"` for the ordinary case, or
 /// `{ glob = "specs/**/*.md", may_be_empty = true }` where emptiness is
 /// expected. The table form is the extension point for anything else a
 /// pattern comes to carry, so a second attribute is not a second spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(into = "IncludeRepr")]
-pub struct IncludePattern {
+#[serde(into = "ScopePatternRepr")]
+pub struct ScopePattern {
     pub glob: String,
     pub may_be_empty: bool,
 }
 
-/// An include entry: a glob, written bare where nothing else needs saying
-/// about it, or as a table where it does.
+/// A scope entry: a glob, written bare where nothing else needs saying about
+/// it, or as a table where it does.
 // Serialization and schema only. The input side is a hand-written visitor:
 // an untagged enum erases which spelling was meant, so a table with a
 // typo'd key parses as the other variant's failure and reports "data did
@@ -202,9 +210,9 @@ pub struct IncludePattern {
 // mistake every other block in this config refuses by name.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
-enum IncludeRepr {
+enum ScopePatternRepr {
     Glob(String),
-    Declared(IncludeDeclared),
+    Declared(ScopePatternDeclared),
 }
 
 /// The table spelling: the glob, plus whether selecting nothing is a state
@@ -217,37 +225,36 @@ enum IncludeRepr {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(inline)]
-struct IncludeDeclared {
+struct ScopePatternDeclared {
     glob: String,
     #[serde(default)]
     may_be_empty: bool,
 }
 
-impl<'de> Deserialize<'de> for IncludePattern {
+impl<'de> Deserialize<'de> for ScopePattern {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct SpellingVisitor;
 
         impl<'de> serde::de::Visitor<'de> for SpellingVisitor {
-            type Value = IncludePattern;
+            type Value = ScopePattern;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str("a glob string, or a table with `glob` and an optional `may_be_empty`")
             }
 
             fn visit_str<E: serde::de::Error>(self, glob: &str) -> Result<Self::Value, E> {
-                Ok(IncludePattern::from(glob))
+                Ok(ScopePattern::from(glob))
             }
 
             fn visit_map<M: serde::de::MapAccess<'de>>(
                 self,
                 map: M,
             ) -> Result<Self::Value, M::Error> {
-                IncludeDeclared::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(
-                    |declared| Self::Value {
+                ScopePatternDeclared::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(|declared| Self::Value {
                         glob: declared.glob,
                         may_be_empty: declared.may_be_empty,
-                    },
-                )
+                    })
             }
         }
 
@@ -255,13 +262,13 @@ impl<'de> Deserialize<'de> for IncludePattern {
     }
 }
 
-impl From<IncludePattern> for IncludeRepr {
+impl From<ScopePattern> for ScopePatternRepr {
     /// Round-trips to the spelling the project wrote: a pattern carrying no
     /// attribute is exported as the bare string it came in as, so
     /// `export config` reads back as a config a project could have authored.
-    fn from(pattern: IncludePattern) -> Self {
+    fn from(pattern: ScopePattern) -> Self {
         if pattern.may_be_empty {
-            Self::Declared(IncludeDeclared {
+            Self::Declared(ScopePatternDeclared {
                 glob: pattern.glob,
                 may_be_empty: true,
             })
@@ -271,25 +278,25 @@ impl From<IncludePattern> for IncludeRepr {
     }
 }
 
-impl schemars::JsonSchema for IncludePattern {
+impl schemars::JsonSchema for ScopePattern {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "IncludePattern".into()
+        "ScopePattern".into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
-        concat!(module_path!(), "::IncludePattern").into()
+        concat!(module_path!(), "::ScopePattern").into()
     }
 
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        IncludeRepr::json_schema(generator)
+        ScopePatternRepr::json_schema(generator)
     }
 
     fn inline_schema() -> bool {
-        IncludeRepr::inline_schema()
+        ScopePatternRepr::inline_schema()
     }
 }
 
-impl From<&str> for IncludePattern {
+impl From<&str> for ScopePattern {
     fn from(glob: &str) -> Self {
         Self {
             glob: glob.to_string(),
@@ -555,7 +562,7 @@ pub struct KindRule {
     pub kind: String,
     /// Whether matching no file is a state the project expects. Read only
     /// by the coverage disclosure, for the reason
-    /// [`IncludePattern::may_be_empty`] gives.
+    /// [`ScopePattern::may_be_empty`] gives.
     #[serde(default)]
     pub may_be_empty: bool,
 }
@@ -584,7 +591,7 @@ pub struct IdRule {
     pub template: String,
     /// Whether applying to no node is a state the project expects. Read only
     /// by the coverage disclosure, for the reason
-    /// [`IncludePattern::may_be_empty`] gives.
+    /// [`ScopePattern::may_be_empty`] gives.
     #[serde(default)]
     pub may_be_empty: bool,
 }

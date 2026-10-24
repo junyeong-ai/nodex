@@ -27,7 +27,8 @@ exclude = []
 # empty on purpose — a specs directory between milestones — say so at
 # the declaration and the report goes quiet for that one only:
 # include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
-# The same field is accepted on [[identity.kind_rules]],
+# The same field is accepted on exclude entries — an exclude that keeps
+# nothing out is reported too — and on [[identity.kind_rules]],
 # [[identity.id_rules]] and [[scope.conditional_exclude]] entries.
 # Directory basenames pruned from the walk at any depth (default shown).
 # Tune for your stack; an empty list prunes nothing.

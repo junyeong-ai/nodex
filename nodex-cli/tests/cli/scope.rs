@@ -83,6 +83,50 @@ fn no_declaration_can_claim_away_an_empty_scan() {
     }
 }
 
+#[test]
+fn an_exclude_that_kept_nothing_out_is_reported_unless_it_may_be_empty() {
+    // What an exclude kept out is what the walk declined because of it: a
+    // directory it never had to descend counts as much as a file. A pattern
+    // spelled the gitignore way matches no document path, and one aimed
+    // where no include reaches has nothing to keep out.
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\nexclude = [\n  \"docs/drafts/**\",\n  \
+         \"**/*.wip.md\",\n  \"docs/archive\",\n  \"vendor/**\",\n  \
+         { glob = \"docs/later/**\", may_be_empty = true },\n]\n",
+    )
+    .unwrap();
+    for path in [
+        "docs/a.md",
+        "docs/drafts/b.md",
+        "docs/c.wip.md",
+        "docs/archive/d.md",
+    ] {
+        write_doc(tmp.path(), path, "# Doc\n");
+    }
+    let envelope = run_envelope(nodex(tmp.path()).arg("build"));
+    let mut idle: Vec<&str> = envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(warning_msg)
+        .filter(|m| m.starts_with("scope.exclude pattern"))
+        .collect();
+    idle.sort();
+    assert_eq!(
+        idle,
+        [
+            "scope.exclude pattern \"docs/archive\" excluded nothing the include patterns \
+             select; remove it, or mark it `may_be_empty = true` if what it guards is not always \
+             there (generated, git-ignored or still to come)",
+            "scope.exclude pattern \"vendor/**\" excluded nothing the include patterns select; \
+             remove it, or mark it `may_be_empty = true` if what it guards is not always there \
+             (generated, git-ignored or still to come)",
+        ]
+    );
+}
+
 /// The scan and the graph describe the same document from the same bytes.
 ///
 /// A `conditional_exclude` rule asks whether a parent is terminal. The graph

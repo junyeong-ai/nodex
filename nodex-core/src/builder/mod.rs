@@ -271,6 +271,7 @@ fn build_inner(
         unfollowed_in_scope,
         escaping,
         aliases,
+        excludes_applied,
     } = scan;
 
     // 2. Load cache (unless full rebuild). Invalidates if config
@@ -420,6 +421,7 @@ fn build_inner(
             &unfollowed,
             &unfollowed_in_scope,
             &aliases,
+            &excludes_applied,
         ))
         .expect("snapshot inputs are serialisable");
         crate::hash::sha256_hex(&inputs)
@@ -658,7 +660,7 @@ fn build_inner(
     let mut warnings: Vec<Warning> = empty_scan
         .into_iter()
         .chain(
-            scope_coverage_warnings(config, &selected, &node_map)
+            scope_coverage_warnings(config, &selected, &excludes_applied, &node_map)
                 .into_iter()
                 .map(|m| Warning::new(WarningCode::ScopeCoverage, m)),
         )
@@ -758,6 +760,7 @@ fn build_inner(
 fn scope_coverage_warnings(
     config: &Config,
     selected: &[PathBuf],
+    excludes_applied: &std::collections::BTreeSet<usize>,
     nodes: &IndexMap<String, Node>,
 ) -> Vec<String> {
     // With nothing scanned every declaration trivially matches nothing, so
@@ -823,6 +826,24 @@ fn scope_coverage_warnings(
             "scope.include pattern {:?} matched no files{hint}",
             pattern.glob
         ));
+    }
+
+    // An exclude keeps documents out, so one that kept out nothing reads the
+    // same as one doing its job over a corpus with nothing to exclude — and
+    // the same as a gitignore spelling (`docs/drafts`, `!docs/keep.md`) that
+    // compiles, matches no document path and keeps the drafts in. What it
+    // kept out is the scan's to say: the walk records each pattern that
+    // declined an entry the rest of the scope would have taken, a directory
+    // it never had to descend included.
+    for (index, pattern) in config.scope.exclude.iter().enumerate() {
+        if !pattern.may_be_empty && !excludes_applied.contains(&index) {
+            out.push(format!(
+                "scope.exclude pattern {:?} excluded nothing the include patterns select; remove \
+                 it, or mark it `may_be_empty = true` if what it guards is not always there \
+                 (generated, git-ignored or still to come)",
+                pattern.glob
+            ));
+        }
     }
 
     for rule in &config.identity.kind_rules {
@@ -1114,7 +1135,7 @@ fn dedupe_edges(edges: &mut Vec<crate::model::Edge>) {
 mod tests {
     use super::*;
     use crate::config::{
-        AnnotationConfig, BodyLineRuleConfig, IdRule, IncludePattern, KindRule, KindsConfig,
+        AnnotationConfig, BodyLineRuleConfig, IdRule, KindRule, KindsConfig, ScopePattern,
     };
     use crate::model::{Kind, Node, Status};
     use std::collections::BTreeMap;
@@ -1243,7 +1264,7 @@ mod tests {
         let root = tmp.path();
         std::fs::create_dir(root.join("docs")).unwrap();
         let mut config = Config::default();
-        config.scope.include = vec![IncludePattern {
+        config.scope.include = vec![ScopePattern {
             glob: "docs/**/*.md".into(),
             may_be_empty: false,
         }];
@@ -1297,11 +1318,11 @@ mod tests {
         .unwrap();
         let mut config = Config::default();
         config.scope.include = vec![
-            IncludePattern {
+            ScopePattern {
                 glob: "docs/**/*.md".into(),
                 may_be_empty: false,
             },
-            IncludePattern {
+            ScopePattern {
                 glob: "missing/**/*.md".into(),
                 may_be_empty: false,
             },
@@ -1330,6 +1351,19 @@ mod tests {
                 .iter()
                 .any(|warning| warning.message.contains("missing/**/*.md"))
         );
+
+        // What an exclude kept out is a disclosure too: the same documents,
+        // with the directory it excluded gone, report it as idle.
+        config.scope.exclude = vec!["docs/drafts/**".into()];
+        std::fs::create_dir(root.join("docs/drafts")).unwrap();
+        std::fs::write(root.join("docs/drafts/d.md"), "# D\n").unwrap();
+        let excluding = session.build_of_ref(root, root, &config).unwrap();
+        std::fs::remove_dir_all(root.join("docs/drafts")).unwrap();
+        let idle = session.build_of_ref(root, root, &config).unwrap();
+        let fresh = build_of_ref(root, root, &config).unwrap();
+        let messages = |warnings: &[Warning]| serde_json::to_value(warnings).unwrap();
+        assert_eq!(messages(&idle.warnings), messages(&fresh.warnings));
+        assert_ne!(messages(&excluding.warnings), messages(&idle.warnings));
     }
 
     #[test]
@@ -1343,7 +1377,7 @@ mod tests {
         )
         .unwrap();
         let mut config = Config::default();
-        config.scope.include = vec![IncludePattern {
+        config.scope.include = vec![ScopePattern {
             glob: "docs/**/*.md".into(),
             may_be_empty: false,
         }];
@@ -1434,11 +1468,11 @@ mod tests {
         config.kinds.allowed = vec!["generic".into(), "spec".into()];
         config.scope.include = vec![
             "docs/**/*.md".into(),
-            IncludePattern {
+            ScopePattern {
                 glob: "specs/**/*.md".into(),
                 may_be_empty: true,
             },
-            IncludePattern {
+            ScopePattern {
                 glob: "target/**/*.md".into(),
                 may_be_empty: true,
             },
@@ -1465,7 +1499,7 @@ mod tests {
 
         let paths = vec![PathBuf::from("docs/a.md")];
         let nodes = build_map(vec![node("a", "generic")]);
-        let messages = scope_coverage_warnings(&config, &paths, &nodes);
+        let messages = scope_coverage_warnings(&config, &paths, &Default::default(), &nodes);
         assert_eq!(
             messages,
             vec!["scope.include pattern \"unreachable/**/*.md\" matched no files".to_string()],
@@ -1494,7 +1528,7 @@ mod tests {
         config.kinds.allowed = vec!["generic".into(), "spec".into()];
         config.scope.include = vec![
             "docs/**/*.md".into(),
-            IncludePattern {
+            ScopePattern {
                 glob: "specs/**/*.md".into(),
                 may_be_empty: true,
             },
@@ -1534,7 +1568,7 @@ mod tests {
 
         let paths = vec![PathBuf::from("docs/a.md")];
         let nodes = build_map(vec![node("a", "generic")]);
-        let messages = scope_coverage_warnings(&config, &paths, &nodes);
+        let messages = scope_coverage_warnings(&config, &paths, &Default::default(), &nodes);
         assert_eq!(
             messages,
             vec![
@@ -1768,7 +1802,7 @@ mod tests {
         config.identity.kind_rules = vec![kind_rule("specs/**", "spec")];
         let nodes = build_map(vec![node("loose", "generic")]);
         let paths = vec![PathBuf::from("loose.md")];
-        let warnings = scope_coverage_warnings(&config, &paths, &nodes);
+        let warnings = scope_coverage_warnings(&config, &paths, &Default::default(), &nodes);
         assert!(
             warnings.iter().any(
                 |w| w.contains("loose.md") && w.contains("no identity.kind_rules glob matches")
@@ -1784,7 +1818,7 @@ mod tests {
         let config = config_with(vec![], vec!["generic"]);
         let nodes = build_map(vec![node("loose", "generic")]);
         let paths = vec![PathBuf::from("loose.md")];
-        let warnings = scope_coverage_warnings(&config, &paths, &nodes);
+        let warnings = scope_coverage_warnings(&config, &paths, &Default::default(), &nodes);
         assert!(
             warnings.is_empty(),
             "expected no warnings, got {warnings:?}"
@@ -1799,7 +1833,7 @@ mod tests {
         config.identity.kind_rules = vec![kind_rule("**/*.md", "generic")];
         let nodes = build_map(vec![node("loose", "generic")]);
         let paths = vec![PathBuf::from("loose.md")];
-        let warnings = scope_coverage_warnings(&config, &paths, &nodes);
+        let warnings = scope_coverage_warnings(&config, &paths, &Default::default(), &nodes);
         assert!(
             warnings.is_empty(),
             "expected no warnings, got {warnings:?}"
@@ -1816,7 +1850,7 @@ mod tests {
     fn empty_scan_warns_once_so_a_mis_scoped_project_is_not_a_silent_false_pass() {
         let config = config_with(vec![], vec!["generic"]);
         let nodes = build_map(vec![]);
-        assert!(scope_coverage_warnings(&config, &[], &nodes).is_empty());
+        assert!(scope_coverage_warnings(&config, &[], &Default::default(), &nodes).is_empty());
 
         let warning = scanner::coverage_warning(&scanner::ScopeScan::default(), "graph")
             .expect("an empty scan is disclosed by the scan itself");

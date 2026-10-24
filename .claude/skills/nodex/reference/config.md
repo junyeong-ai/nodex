@@ -45,14 +45,16 @@ An authored `kind:` or `id:` takes precedence; otherwise `identity.kind_rules` a
 
 ## Scope
 
-`scope.include` / `scope.exclude` are glob lists. An `include` entry is written bare or as a table:
+`scope.include` / `scope.exclude` are glob lists over document paths, each entry written bare or as a table:
 
 ```toml
 [scope]
 include = ["docs/**/*.md", { glob = "specs/**/*.md", may_be_empty = true }]
 ```
 
-`may_be_empty` — also accepted on `[[identity.kind_rules]]`, `[[identity.id_rules]]` and `[[scope.conditional_exclude]]` — says that selecting nothing is expected, so a declared area that is idle between milestones stops emitting a `scope_coverage` warning on every command. It is read by the disclosure only, never by the walk. It silences that declaration's own "matched no files" and nothing else — not a sibling's, not the unclassified-document report, not an undescended symlink, and not a scan that read *nothing at all*, which is a fact about the project rather than about a pattern.
+An `include` that matches no file, and an `exclude` that keeps out nothing the includes select, are reported (`scope_coverage`). An exclude matches paths, not directories: `docs/drafts` or `!docs/keep.md` keeps nothing out, while `docs/drafts/**` excludes the directory and the walk never descends it.
+
+`may_be_empty` — also accepted on `scope.exclude` entries, `[[identity.kind_rules]]`, `[[identity.id_rules]]` and `[[scope.conditional_exclude]]` — says that selecting nothing is expected, so a declared area that is idle between milestones stops emitting a `scope_coverage` warning on every command. It is read by the disclosure only, never by the walk. It silences that declaration's own report and nothing else — not a sibling's, not the unclassified-document report, not an undescended symlink, and not a scan that read *nothing at all*, which is a fact about the project rather than about a pattern.
 
 `scope.prune_dirs` names directory basenames pruned at any depth (default `["node_modules", "__pycache__", "target", ".git", ".venv"]`; an empty list disables basename pruning).
 
