@@ -65,14 +65,19 @@ pub enum WarningCode {
     /// be stale, so it is a typed error (`GRAPH_MISSING`, `IO_ERROR`,
     /// `PARSE_ERROR`) that ends the command.
     SnapshotDivergence,
-    /// A mutation left a follow-up the operator should run before the
-    /// graph is consistent again: a scaffolded document is not yet in the
-    /// graph (run `nodex build`), a config-default scaffold left a rule
-    /// unsatisfied (a placeholder to fill), or a rename changed a
-    /// frontmatter-less document's inferred id so cross-references to it
-    /// must be re-anchored (add an explicit `id:` to the moved file). The
-    /// message names the specific action.
-    BuildRecommended,
+    /// A write landed carrying Error-severity findings it introduced, which
+    /// the seam reports rather than refuses: a `scaffold` written from config
+    /// defaults alone, whose findings on its own new document are the
+    /// placeholders left to fill in. `nodex check` goes on reporting them
+    /// until the document is completed; one message per finding, in the
+    /// words `CONTENT_VIOLATIONS` would refuse with.
+    ViolationsIntroduced,
+    /// A write left a document under a different id than it had: references
+    /// naming the old id no longer resolve to it, and the immutability
+    /// baseline, which pairs records by id, holds nothing under the new one.
+    /// `rename` of a document with no frontmatter to anchor its path-derived
+    /// id in; the message names both ids and how to keep the old one.
+    IdChanged,
     /// The running binary falls outside the project's pinned
     /// `meta.nodex_version` range.
     BinaryCompat,
@@ -173,7 +178,8 @@ impl WarningCode {
         Self::ScopeCoverage,
         Self::Cache,
         Self::SnapshotDivergence,
-        Self::BuildRecommended,
+        Self::ViolationsIntroduced,
+        Self::IdChanged,
         Self::BinaryCompat,
         Self::GateSuppression,
         Self::BaselineInert,
@@ -246,7 +252,8 @@ mod tests {
                 WarningCode::ScopeCoverage
                 | WarningCode::Cache
                 | WarningCode::SnapshotDivergence
-                | WarningCode::BuildRecommended
+                | WarningCode::ViolationsIntroduced
+                | WarningCode::IdChanged
                 | WarningCode::BinaryCompat
                 | WarningCode::GateSuppression
                 | WarningCode::BaselineInert
@@ -263,7 +270,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 13);
+        assert_eq!(WarningCode::ALL.len(), 14);
     }
 
     #[test]

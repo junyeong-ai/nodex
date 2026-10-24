@@ -271,7 +271,7 @@ Move plus reference rewrite, one document only — a directory argument is refus
 
 A markdown link destination *spells* a path rather than being one, so `rename` repoints what the destination **names**: `[x](old&#x2e;md)` and `[x](a\(1\).md)` are edges like any other and move with the file. It writes back the spelling the parser reads as the new path — plain where that works (byte-for-byte the author's style), pointy `<…>` or backslash-escaped where the name needs it, so a move to `docs/new one.md` repoints rather than leaving the link behind. A reference no spelling survives (a wikilink whose new target carries `]`) is left untouched and visible, surfacing as an unresolved edge rather than being mangled.
 
-The envelope carries `id_stability: {type: already_anchored | unchanged | anchored | bare_no_frontmatter | anchor_failed}`. When the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so cross-references stay valid. `unchanged` is the move the id template reads nothing of — under an explicit `{kind}-{stem}` template a document changes directory without changing id, and nothing needs anchoring — so what re-keys a record is the part of the path its own `identity.id_rules` template names, not the path.
+The envelope carries `id_stability: {type: already_anchored | unchanged | anchored | changed | anchor_failed}`. When the path change would shift a path-derived id, the previous id is auto-anchored into the moved file's frontmatter so cross-references stay valid. `unchanged` is the move the id template reads nothing of — under an explicit `{kind}-{stem}` template a document changes directory without changing id, and nothing needs anchoring — so what re-keys a record is the part of the path its own `identity.id_rules` template names, not the path.
 
 The source is moved without editing its content first. Preparation or move failure leaves
 its content unchanged. After the move, the prepared destination content is committed
@@ -282,9 +282,9 @@ inspect the destination before rebuilding or retrying. Each file replacement is 
 the move and rewrites are not one filesystem transaction and no rollback is promised.
 
 Bare Markdown receives no invented frontmatter. If its path-derived id changes,
-`bare_no_frontmatter` means identity-scoped locks no longer pair it with the old
-record. Anchor its id or run `migrate --apply` before moving it when identity must
-survive. Write paths require the filesystem's exact case and normalization;
+`id_stability: {type: changed, from, to}` and an `id_changed` warning say so:
+identity-scoped locks no longer pair it with the old record. Anchor its id or run
+`migrate --apply` before moving it when identity must survive. Write paths require the filesystem's exact case and normalization;
 an alternate spelling is refused with the name to use.
 
 `rename` also names every reference it leaves something to say about, once each. Two kinds: one it had a replacement for and **declined to write** (no spelling the move could accept — it goes on naming what it named, and the next build reports the unresolved edge, which `check` and `query issues` report according to configured severity — a project whose `[[detection.unresolved_policy]]` calls that cause an error is one whose write gate refuses the move outright, leaving no warning to read), and one it left standing that **now names somebody else** (the move took the rung out from under it, or carried the referring document to where the same spelling means something different). The second is the one nothing downstream would mention: the graph it produces is valid, so only the command that made it can say so.

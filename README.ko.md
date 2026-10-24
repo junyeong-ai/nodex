@@ -487,7 +487,8 @@ Error code는 typed `nodex_core::error::Error`의 `downcast_ref`로 도출하며
 |---|---|
 | `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언, 어느 `identity` 룰에도 걸리지 않는 문서, walk가 읽지 못한 트리 부분, scope가 받지 않는 `check --content` 경로 |
 | `snapshot_divergence` | 스냅샷 변경 또는 최신성 검사 실패 — 변경 시 재빌드, 검사 실패 시 메시지에 표시된 원인 해결 |
-| `build_recommended` | 변경 명령이 그래프를 일관되게 만들 후속 조치를 남김 (메시지가 지목) |
+| `violations_introduced` | 쓰기가 새로 만든 Error-severity 위반을 거부하지 않고 쓴 채로 알림: 설정 기본값만으로 만든 `scaffold`에서 새 문서의 위반은 채워야 할 자리표시임 (위반마다 경고 하나) |
+| `id_changed` | 쓰기 뒤 문서의 id가 바뀜: 경로에서 도출한 id를 고정할 frontmatter가 없는 문서를 `rename`함. 옛 id를 가리키는 참조는 더 이상 이 문서로 해석되지 않고, baseline에는 새 id의 기록이 없음 |
 | `binary_compat` | 바이너리가 `[meta] nodex_version` 핀 밖 — 읽기는 실행, 쓰기는 거부 |
 | `gate_suppression` | 나열된 위반이 판정한 집합과 다름(`--severity`, 또는 프로젝트를 담지 않은 `--since` ref); `has_errors`와 exit code는 판정한 위반 전체에 대해 답함 |
 | `baseline_inert` | 기준으로 삼은 git ref에 조회한 대상이 없음 — 잠금 미적용, 한 문서에 대해 비활성, 또는 `diff` / `impact` 비교의 한쪽에 경로가 없음 |
@@ -779,7 +780,7 @@ nodex/
 
 7. **단방향 export.** nodex는 다른 도구가 쓸 vocabulary를 내보내고([매니페스트](#매니페스트)), 자기 vocabulary를 그 도구들에서 도출하지 않습니다.
 
-상위 불변 조건 하나가 이 원칙들을 묶습니다: **nodex가 직접 쓰는 모든 것은 nodex 자신의 `check`를 통과해야 합니다.** `scaffold`, `migrate`, `lifecycle`이 같은 설정이 거부할 문서를 만들 수 있다면 버그로 봅니다. 이런 버그는 로드 시점에 그 설정 형태를 거부하거나(`Config::validate`), 쓸 값을 설정에서 도출하거나, 사용자가 준 값을 명령이 쓰는 지점에서 검증해(`lifecycle set --status`처럼) 막습니다. 의도된 예외는 하나입니다. `--body`나 `--field` 없이 실행한 `scaffold`는 자리표시 문서를 쓰고, 그 문서 자신의 error 위반은 채워야 할 필드이므로 `build_recommended` 경고로 알립니다. 자세한 내용은 [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md)에 있습니다.
+상위 불변 조건 하나가 이 원칙들을 묶습니다: **nodex가 직접 쓰는 모든 것은 nodex 자신의 `check`를 통과해야 합니다.** `scaffold`, `migrate`, `lifecycle`이 같은 설정이 거부할 문서를 만들 수 있다면 버그로 봅니다. 이런 버그는 로드 시점에 그 설정 형태를 거부하거나(`Config::validate`), 쓸 값을 설정에서 도출하거나, 사용자가 준 값을 명령이 쓰는 지점에서 검증해(`lifecycle set --status`처럼) 막습니다. 의도된 예외는 하나입니다. `--body`나 `--field` 없이 실행한 `scaffold`는 자리표시 문서를 쓰고, 그 문서 자신의 error 위반은 채워야 할 필드이므로 `violations_introduced` 경고로 알립니다. 자세한 내용은 [`.claude/rules/config-driven.md`](.claude/rules/config-driven.md)에 있습니다.
 
 ---
 

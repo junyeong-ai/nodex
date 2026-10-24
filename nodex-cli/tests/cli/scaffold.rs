@@ -765,10 +765,8 @@ fn scaffold_default_path_still_writes_with_placeholder_warnings() {
         .and_then(Value::as_array)
         .expect("warnings present");
     assert!(
-        warnings
-            .iter()
-            .filter_map(warning_msg)
-            .any(|w| w.contains("required_field")),
+        warnings.iter().any(|w| w["code"] == "violations_introduced"
+            && warning_msg(w).is_some_and(|m| m.contains("required_field"))),
         "the unfilled placeholder is an advisory: {warnings:?}"
     );
     assert!(tmp.path().join("docs/advised.md").exists());

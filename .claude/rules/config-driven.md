@@ -28,7 +28,7 @@ Invariants behind what the reference states:
 
 ## Self-consistency invariant
 
-Tool-written documents (scaffold, migrate, lifecycle) must pass the same config's check. The one exception is by design: a default-only scaffold's own findings are the placeholders left to fill in, so they ride `build_recommended` instead of refusing ([Mutation verdicts and baselines](../../nodex-core/CLAUDE.md#mutation-verdicts-and-baselines)). Enforce the rest by one of:
+Tool-written documents (scaffold, migrate, lifecycle) must pass the same config's check. The one exception is by design: a default-only scaffold's own findings are the placeholders left to fill in, so they ride `violations_introduced` instead of refusing ([Mutation verdicts and baselines](../../nodex-core/CLAUDE.md#mutation-verdicts-and-baselines)). Enforce the rest by one of:
 - Rejecting incompatible config shapes at load time (`Config::validate`), or
 - Deriving tool output from config (cannot produce out-of-vocabulary values), or
 - Validating a user-supplied value at the command's write seam, when validity depends on the document being acted on (`lifecycle set --status` refuses a status the kind's vocabulary rejects, or a terminal state forbids leaving)

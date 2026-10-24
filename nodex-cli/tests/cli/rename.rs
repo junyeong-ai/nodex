@@ -1884,9 +1884,8 @@ fn rename_bare_markdown_warns_about_id_shift() {
     // A bare markdown file (no frontmatter) still gets an inferred
     // id from the path. Renaming it changes that id, but the file
     // has no frontmatter for us to anchor into — silently moving on
-    // would break references. Contract: `id_stability ==
-    // "bare_no_frontmatter"` with an envelope-level warning so the
-    // caller cannot miss it.
+    // would break references. Contract: `id_stability` names both ids
+    // and an `id_changed` warning says so at the envelope.
     let tmp = scratch();
     init_path_derived_project(tmp.path());
     write_doc(tmp.path(), "docs/bare.md", "# Bare\n\nNo frontmatter.\n");
@@ -1895,20 +1894,14 @@ fn rename_bare_markdown_warns_about_id_shift() {
     let envelope =
         run_envelope(nodex(tmp.path()).args(["rename", "docs/bare.md", "docs/bare-renamed.md"]));
     assert_eq!(
-        envelope
-            .pointer("/data/id_stability/type")
-            .and_then(Value::as_str),
-        Some("bare_no_frontmatter")
+        envelope["data"]["id_stability"],
+        serde_json::json!({ "type": "changed", "from": "generic-bare", "to": "generic-bare-renamed" }),
+        "{envelope}"
     );
-    let warnings: Vec<&str> = envelope
-        .get("warnings")
-        .and_then(Value::as_array)
-        .expect("envelope-level warnings array")
-        .iter()
-        .filter_map(warning_msg)
-        .collect();
+    let warnings = envelope["warnings"].as_array().expect("envelope warnings");
     assert!(
-        warnings.iter().any(|w| w.contains("inferred id changed")),
+        warnings.iter().any(|w| w["code"] == "id_changed"
+            && warning_msg(w).is_some_and(|m| m.contains("\"generic-bare\""))),
         "bare-file rename must surface a warning, not silently drift: {warnings:?}"
     );
 }

@@ -98,17 +98,18 @@ exit: 0
                     "enum": [
                       "baseline_inert",
                       "binary_compat",
-                      "build_recommended",
                       "cache",
                       "document_evicted",
                       "file_skipped",
                       "gate_suppression",
                       "history_unread",
+                      "id_changed",
                       "ranking_unscored",
                       "reference_kept",
                       "scope_coverage",
                       "snapshot_divergence",
-                      "threshold_undeclared"
+                      "threshold_undeclared",
+                      "violations_introduced"
                     ],
                     "type": "string"
                   },
@@ -6065,19 +6066,23 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "The doc has no frontmatter at all (a bare markdown file). The\nruntime infers an id from the path, which the rename has\nchanged; the caller must either add frontmatter to the moved\nfile or audit cross-references manually. Surfaced as a warning,\nnever silently skipped.",
+                "description": "The doc has no frontmatter block to anchor an id in (a bare\nmarkdown file), so the id its path derives went from `from` to\n`to`. Surfaced as an `id_changed` warning as well.",
                 "properties": {
-                  "type": {
-                    "const": "bare_no_frontmatter",
+                  "from": {
                     "type": "string"
                   },
-                  "warning": {
+                  "to": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "changed",
                     "type": "string"
                   }
                 },
                 "required": [
                   "type",
-                  "warning"
+                  "from",
+                  "to"
                 ],
                 "type": "object"
               }
