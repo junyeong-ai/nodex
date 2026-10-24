@@ -4,8 +4,8 @@
 #[cfg(unix)]
 use crate::support::envelope_of;
 use crate::support::{
-    LOCKED_PROJECT_CONFIG, git_runner, init_project, nodex, run_envelope, run_json, scratch,
-    snapshot_lock_project, walk_entries, warning_msg, write_doc,
+    LOCKED_PROJECT_CONFIG, git_runner, init_project, nodex, reported, run_envelope, run_json,
+    scratch, snapshot_lock_project, walk_entries, warning_msg, write_doc,
 };
 use assert_cmd::Command;
 use serde_json::Value;
@@ -460,6 +460,81 @@ fn a_baseline_predating_the_project_directory_is_inert_not_an_error() {
             .filter_map(warning_msg)
             .any(|m| m.contains("docs-site") && m.contains("does not carry")),
         "the advisory names the directory the ref does not carry: {envelope}"
+    );
+}
+
+#[test]
+fn a_merge_base_baseline_asks_the_merge_base_whether_it_carries_the_project() {
+    // Under `merge_base` the ref only says where to start: the lock reads
+    // the merge base, so whether there is a project to read is the merge
+    // base's to answer. A branch that deleted the project after forking
+    // still binds the lock at the fork point, and a branch that added a
+    // project of its own forks from a commit that has none.
+    let tmp = scratch();
+    let repo = tmp.path();
+    let git = git_runner(repo);
+    git(&["init", "-q", "-b", "main"]);
+    write_doc(repo, "README.md", "before the project existed\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "root only"]);
+    git(&["branch", "independent"]);
+
+    let project = repo.join("docs-site");
+    let configure = |baseline: &str| {
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("nodex.toml"),
+            LOCKED_PROJECT_CONFIG.replace(
+                "immutable_baseline = \"HEAD\"",
+                &format!(
+                    "immutable_baseline = \"{baseline}\"\nimmutable_baseline_mode = \"merge_base\""
+                ),
+            ),
+        )
+        .unwrap();
+    };
+    let archived = "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: archived\n---\n# A\n";
+    configure("dropped");
+    write_doc(&project, "docs/a.md", archived);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "introduce the project"]);
+    git(&["checkout", "-q", "-b", "dropped"]);
+    git(&["rm", "-rq", "docs-site"]);
+    git(&["commit", "-q", "-m", "drop the project"]);
+    git(&["checkout", "-q", "independent"]);
+    configure("dropped");
+    write_doc(&project, "docs/a.md", archived);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "a project of its own"]);
+    git(&["checkout", "-q", "main"]);
+
+    write_doc(&project, "docs/a.md", &format!("{archived}Edited.\n"));
+    let envelope = reported(nodex(&project).arg("check"));
+    let violations: Vec<&str> = envelope
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .expect("violations")
+        .iter()
+        .filter_map(|v| v.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        violations,
+        ["body_immutable/frozen"],
+        "the fork point carries the project, so the lock binds there: {envelope}"
+    );
+    nodex(&project).arg("check").assert().code(1);
+
+    configure("independent");
+    let envelope = run_envelope(nodex(&project).arg("check"));
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .expect("warnings")
+            .iter()
+            .filter_map(warning_msg)
+            .any(|m| m.contains("selected commit") && m.contains("does not carry")),
+        "the merge base carries no project, so the lock is inert and says why: {envelope}"
     );
 }
 
