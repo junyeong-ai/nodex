@@ -38,7 +38,7 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 
 ## status
 
-`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`. A probe, not a gate: it exits 0 whenever the probe runs, whatever state it reports.
+`data.state` ∈ `absent | unreadable | schema_mismatch | outdated | current`. A probe, not a gate: it exits 0 whenever the probe runs, whatever state it reports. `current` says the snapshot matches what the scan reads, not that the scan read anything or that `check` passes: a scope that matches no file reads `current` beside a `scope_coverage` warning.
 
 `outdated` carries `divergence: {config_changed, added_paths, removed_paths, changed_paths}` — content probed against each node's recorded `content_hash`. `config_changed` is keyed on the parse+scan surface (scope, output, parser, identity, `[[annotations]]`, `rules.body_line`, the status each kind starts at — the resolved global initial and, where a `[[statuses.flow]]` `initial` differs from it, that `initial` with the kinds the flow governs — and `statuses.terminal` where a `conditional_exclude` reads it) and never on similarity / detection tuning.
 
@@ -63,8 +63,11 @@ No rebuild is performed. Files may change after the probe.
 ```bash
 nodex query search <kw> [--status x,y] [--limit N]
 ```
-id / title / tags are score-then-id ranked. Document text is a `query nodes`
-filter, `--body-contains`.
+`<kw>` matches id, title and tags as a case-insensitive substring. The score adds
+the `[search]` weight of each field it matched — an id or title equal to `<kw>`
+outscores one merely containing it — and each entry's `components` shows the
+parts; equal scores order by id. Document text is a `query nodes` filter,
+`--body-contains`.
 
 ```bash
 nodex query nodes [--kind K1,K2] [--status S1,S2] [--tag T1,T2 --all-tags]
@@ -83,7 +86,7 @@ nodex query node --path <file>
 ```
 `query node --with-body` compares the file's exact content revision with the indexed node before attaching text. `GRAPH_OUTDATED` requires rebuilding; metadata and body are never mixed across revisions.
 
-Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects the body between those inclusive file lines — the numbering every reported location uses — and returns `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope.
+Authored and resolved metadata plus incoming and outgoing edges; internal content and line fingerprints are excluded. Self-edges are visible. `--body-lines START:END` selects the body between those inclusive file lines — the numbering every reported location uses — and returns `body_range: {start, end, body_start, body_end}`; a range reaching outside the body is refused. `--with-body` attaches the body text with canonical line endings, saving a separate file read; body-less docs get `""` and the key is absent when not asked. `--path` is the reverse lookup with the same envelope; a `./`-prefixed or absolute path under the root names the same document as its project-relative form.
 
 Each edge's `references` lists the sites that author it, one per syntax, decoded target and line range: `source`, `syntax` (`markdown`, `wikilink`, `pattern`, `frontmatter`), the decoded `target` and a `location` — one-based `start_line` and inclusive `end_line` for a body site, including the reference definition or code span that supplies its meaning, and the authored `field` for frontmatter. Unresolved listings add the names the resolution sought. Their `sources`, like a reference finding's `details.sources`, pair each site with its lock `protection` and the `rules` constraining it.
 
@@ -191,7 +194,19 @@ corrections under its final body heading without rewriting the frozen prefix.
 ```bash
 nodex check --since <ref>
 ```
-Builds the graph at `<ref>`, diffs it against the working tree (the index under `--staged`) under that tree's config, and narrows the report to findings that change answers for. A configured `rules.immutable_baseline` remains the lock baseline; otherwise `<ref>` supplies it. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `orphan` also the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` — so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record; `superseded_reference` also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale; `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always; and every `status_transition` / `status_entry` finding, each about a step inside the range, a move the range went on to undo included. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. A `<ref>` git cannot resolve is refused (`GIT_ERROR`); one that does not carry the project — a subdirectory project added after it — widens back to the whole project and says so (`baseline_inert`, `gate_suppression`).
+Builds the graph at `<ref>`, diffs it against the working tree (the index under `--staged`) under that tree's config, and narrows the report to findings that change answers for. A configured `rules.immutable_baseline` remains the lock baseline; otherwise `<ref>` supplies it.
+
+Which findings those are is each rule's to say:
+
+- By default, a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept.
+- `orphan`: also the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` — so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record.
+- `superseded_reference`: also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale.
+- `git_drift`, whose reading is git's: a finding when the commits `<ref>..HEAD` added one it counts, on a measured document or a covered code path outside the graph alike.
+- Locks (`body_immutable`, `frontmatter_immutable`): every finding, because each is drift from the lock's baseline, and a configured baseline is not the range.
+- A node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`): always.
+- `status_transition` / `status_entry`: every finding, each about a step inside the range, a move the range went on to undo included.
+
+`rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. A `<ref>` git cannot resolve is refused (`GIT_ERROR`); one that does not carry the project — a subdirectory project added after it — widens back to the whole project and says so (`baseline_inert`, `gate_suppression`).
 
 A CI job needs the history the range names, and `actions/checkout` fetches one commit by default: a clone that lacks `<ref>` is refused with `GIT_ERROR`, and so is a range its shallow cut crosses wherever a rule judges the range's steps: a status flow, or a lock under the default `immutable_history = "steps"`. Check out with `fetch-depth: 0` ([baseline](config.md#diff-aware-rules), [status flow](config.md#status-flow)).
 
@@ -200,7 +215,11 @@ A CI job needs the history the range names, and `actions/checkout` fetches one c
 ```bash
 nodex check --staged
 ```
-Writes the index git is committing as a tree — from a copy, so the index itself is never locked or written — checks it out, and runs `check` over that project under the tree's own `nodex.toml` — the config the commit carries. The baseline and the history are a plain `check`'s; the step rules judge the move from `HEAD` (and every `MERGE_HEAD`) to the index, so a staged move the working tree has since undone is judged and an unstaged one is not. The index is `GIT_INDEX_FILE` when git names one — the hooks of `git commit -a` and `git commit <path>` get the index those commits make; a relative one is read against the work tree's top level, as git reads it — and the working tree's otherwise. `GIT_ERROR` for an index with unmerged entries, one that does not record the project's directory, or a `GIT_INDEX_FILE` naming no file. The index is graphed as a ref is: a staged link resolving outside the repository is not read, and a `scope_coverage` warning names it. Two commits make a step the hook cannot see whole, and both are judged from `HEAD`: `git commit --amend` makes its step from `HEAD^`, and `git merge` runs `pre-merge-commit` before it records the merged head; gate merges in `pre-commit` or with `check --since`. Mutually exclusive with `--content`; combines with `--since`.
+Writes the index git is committing as a tree — from a copy, so the index itself is never locked or written — checks it out, and runs `check` over that project under the tree's own `nodex.toml` — the config the commit carries. The baseline and the history are a plain `check`'s; the step rules judge the move from `HEAD` (and every `MERGE_HEAD`) to the index, so a staged move the working tree has since undone is judged and an unstaged one is not.
+
+The index is `GIT_INDEX_FILE` when git names one — the hooks of `git commit -a` and `git commit <path>` get the index those commits make; a relative one is read against the work tree's top level, as git reads it — and the working tree's otherwise. `GIT_ERROR` for an index with unmerged entries, one that does not record the project's directory, or a `GIT_INDEX_FILE` naming no file. The index is graphed as a ref is: a staged link resolving outside the repository is not read, and a `scope_coverage` warning names it.
+
+Two commits make a step the hook cannot see whole, and both are judged from `HEAD`: `git commit --amend` makes its step from `HEAD^`, and `git merge` runs `pre-merge-commit` before it records the merged head; gate merges in `pre-commit` or with `check --since`. Mutually exclusive with `--content`; combines with `--since`.
 
 ## diff / impact
 
