@@ -2016,7 +2016,7 @@ exit: 0
               },
               "may_be_empty": {
                 "default": false,
-                "description": "Whether applying to no node is a state the project expects. Read only\nby the coverage disclosure, for the reason\n[`IncludePattern::may_be_empty`] gives.",
+                "description": "Whether applying to no node is a state the project expects. Read only\nby the coverage disclosure, for the reason\n[`ScopePattern::may_be_empty`] gives.",
                 "type": "boolean"
               },
               "template": {
@@ -2061,31 +2061,6 @@ exit: 0
             ],
             "type": "object"
           },
-          "IncludePattern": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "additionalProperties": false,
-                "description": "The table spelling: the glob, plus whether selecting nothing is a state\nthe project expects.",
-                "properties": {
-                  "glob": {
-                    "type": "string"
-                  },
-                  "may_be_empty": {
-                    "default": false,
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "glob"
-                ],
-                "type": "object"
-              }
-            ],
-            "description": "An include entry: a glob, written bare where nothing else needs saying\nabout it, or as a table where it does."
-          },
           "KindRule": {
             "additionalProperties": false,
             "description": "Map file path to document kind using glob patterns.\n\nRules are evaluated in order — first matching glob wins.\nOrder matters: reordering rules changes which kind is inferred.\nIf no rule matches, `FALLBACK_KIND` (\"generic\") is assigned.",
@@ -2100,7 +2075,7 @@ exit: 0
               },
               "may_be_empty": {
                 "default": false,
-                "description": "Whether matching no file is a state the project expects. Read only\nby the coverage disclosure, for the reason\n[`IncludePattern::may_be_empty`] gives.",
+                "description": "Whether matching no file is a state the project expects. Read only\nby the coverage disclosure, for the reason\n[`ScopePattern::may_be_empty`] gives.",
                 "type": "boolean"
               }
             },
@@ -2212,7 +2187,7 @@ exit: 0
               "exclude": {
                 "default": [],
                 "items": {
-                  "type": "string"
+                  "$ref": "#/$defs/ScopePattern"
                 },
                 "type": "array"
               },
@@ -2226,7 +2201,7 @@ exit: 0
                   "**/*.md"
                 ],
                 "items": {
-                  "$ref": "#/$defs/IncludePattern"
+                  "$ref": "#/$defs/ScopePattern"
                 },
                 "type": "array"
               },
@@ -2246,6 +2221,31 @@ exit: 0
               }
             },
             "type": "object"
+          },
+          "ScopePattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The table spelling: the glob, plus whether selecting nothing is a state\nthe project expects.",
+                "properties": {
+                  "glob": {
+                    "type": "string"
+                  },
+                  "may_be_empty": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "glob"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A scope entry: a glob, written bare where nothing else needs saying about\nit, or as a table where it does."
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",

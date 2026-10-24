@@ -24,7 +24,7 @@ use crate::parser::Completion;
 #[derive(Serialize)]
 pub(crate) struct ScopeMembership<'a> {
     include: Vec<&'a str>,
-    exclude: &'a [String],
+    exclude: Vec<&'a str>,
     conditional_exclude: Vec<ExcludeRule<'a>>,
     prune_dirs: &'a [String],
     follow_symlinks: bool,
@@ -50,18 +50,21 @@ impl<'a> ScopeMembership<'a> {
             prune_dirs,
             follow_symlinks,
         } = scope;
-        Self {
-            include: include
+        let globs = |patterns: &'a [crate::config::ScopePattern]| -> Vec<&'a str> {
+            patterns
                 .iter()
                 .map(|pattern| {
-                    let crate::config::IncludePattern {
+                    let crate::config::ScopePattern {
                         glob,
                         may_be_empty: _,
                     } = pattern;
                     glob.as_str()
                 })
-                .collect(),
-            exclude,
+                .collect()
+        };
+        Self {
+            include: globs(include),
+            exclude: globs(exclude),
             conditional_exclude: conditional_exclude
                 .iter()
                 .map(|rule| {
@@ -146,7 +149,7 @@ impl<'a> ScanConfig<'a> {
     /// `output.dir`. `Config::validate_scope` compiles exactly this
     /// list at load, so load-accept implies scan-success.
     pub(crate) fn effective_exclude_patterns(&self) -> Vec<String> {
-        let mut patterns = self.scope.exclude.to_vec();
+        let mut patterns: Vec<String> = self.scope.exclude.iter().map(|g| g.to_string()).collect();
         patterns.push(format!("{}/**", self.output_dir.trim_end_matches('/')));
         patterns
     }
@@ -303,6 +306,11 @@ pub struct ScopeScan {
     /// explanation, and because a write seam naming an unused one has to say
     /// which name to use instead.
     pub aliases: Vec<(PathBuf, PathBuf)>,
+    /// The `scope.exclude` patterns, by position, that kept out an entry the
+    /// walk reached and the rest of the policy would have taken: a document,
+    /// or a directory an include could reach below. A pattern missing here
+    /// excluded nothing on this scan.
+    pub excludes_applied: BTreeSet<usize>,
 }
 
 impl ScopeScan {
@@ -486,6 +494,7 @@ fn scan(
         mut escaping,
         dir_names,
         aliased,
+        excluded,
     } = found;
 
     // Overlay paths join or leave the candidate set under the same static
@@ -572,6 +581,10 @@ fn scan(
         unfollowed_in_scope,
         escaping,
         aliases,
+        excludes_applied: excluded
+            .into_iter()
+            .filter(|&index| index < scan.scope.exclude.len())
+            .collect(),
     })
 }
 
@@ -582,7 +595,7 @@ fn scan(
 struct WalkPolicy<'a> {
     include: &'a GlobSet,
     exclude: &'a GlobSet,
-    excluded_subtrees: &'a GlobSet,
+    excluded_subtrees: &'a SubtreeExcludes,
     leads: &'a [IncludeLead],
     prune_dirs: &'a [String],
     follow_symlinks: bool,
@@ -611,7 +624,22 @@ impl WalkPolicy<'_> {
     /// not constrain descent.
     fn could_admit_below(&self, rel: &str, segments: &[&str]) -> bool {
         self.leads.iter().any(|lead| lead.could_reach(segments))
-            && !self.excluded_subtrees.is_match(rel)
+            && !self.excluded_subtrees.globs.is_match(rel)
+    }
+
+    /// The exclude patterns that alone keep the walk out of a directory an
+    /// include could reach below.
+    fn excluding_below(&self, rel: &str, segments: &[&str]) -> Vec<usize> {
+        match self.leads.iter().any(|lead| lead.could_reach(segments)) {
+            true => self
+                .excluded_subtrees
+                .globs
+                .matches(rel)
+                .into_iter()
+                .map(|index| self.excluded_subtrees.patterns[index])
+                .collect(),
+            false => Vec::new(),
+        }
     }
 }
 
@@ -655,14 +683,41 @@ impl WalkPolicy<'_> {
     /// directory and no document — needs the lead's positional reading, and
     /// that one is deliberately the permissive half.
     fn admits(&self, rel_path: &Path) -> bool {
+        self.judge(rel_path).admitted()
+    }
+
+    /// The policy's verdict on one candidate: whether everything but the
+    /// exclude patterns takes it, and which exclude patterns refuse it.
+    fn judge(&self, rel_path: &Path) -> Judged {
         let rel_str = crate::path_guard::forward_string(rel_path);
         let segments: Vec<&str> = rel_str.split('/').collect();
-        !segments
+        let selected = !segments
             .iter()
             .any(|s| self.prune_dirs.iter().any(|d| d == s))
             && self.include.is_match(&rel_str)
-            && !self.exclude.is_match(&rel_str)
-            && hidden_admitted(self.leads, &rel_str)
+            && hidden_admitted(self.leads, &rel_str);
+        Judged {
+            selected,
+            excluding: match selected {
+                true => self.exclude.matches(&rel_str),
+                false => Vec::new(),
+            },
+        }
+    }
+}
+
+/// What the static policy says of one candidate path.
+struct Judged {
+    /// Whether everything but `scope.exclude` takes it.
+    selected: bool,
+    /// The exclude patterns, by position, that match it; empty unless
+    /// selected, since a pattern only keeps out what would otherwise come in.
+    excluding: Vec<usize>,
+}
+
+impl Judged {
+    fn admitted(&self) -> bool {
+        self.selected && self.excluding.is_empty()
     }
 }
 
@@ -707,6 +762,8 @@ struct WalkFindings {
     /// names. Proposals still resolve by entry whenever links are followed:
     /// their submitted spelling may lie in a subtree the walk excluded.
     aliased: bool,
+    /// [`ScopeScan::excludes_applied`], over every effective exclude pattern.
+    excluded: BTreeSet<usize>,
 }
 
 /// The overlay bytes for `rel_path`, when the path is overlaid.
@@ -1223,7 +1280,13 @@ fn walk_dir(
                 // `scope.prune_dirs` basenames (node_modules / target / …)
                 // are pruned at any depth regardless of include patterns;
                 // dot-prefixed trees are also caught by the hidden guard.
-                if !policy.walks(&segments) || !policy.could_admit_below(&rel_str, &segments) {
+                if !policy.walks(&segments) {
+                    continue;
+                }
+                if !policy.could_admit_below(&rel_str, &segments) {
+                    found
+                        .excluded
+                        .extend(policy.excluding_below(&rel_str, &segments));
                     continue;
                 }
                 let target = resolve();
@@ -1257,12 +1320,15 @@ fn walk_dir(
                     ancestors: descended.clone(),
                 });
             } else if file_type.is_some_and(|file_type| file_type.is_file()) {
-                if policy.admits(rel) {
+                let judged = policy.judge(rel);
+                if judged.admitted() {
                     if policy.confine.is_some() && policy.escapes(resolve().as_deref()) {
                         found.escaping.push(rel.to_path_buf());
                     } else {
                         found.paths.push(rel.to_path_buf());
                     }
+                } else {
+                    found.excluded.extend(judged.excluding);
                 }
             } else if policy.walks(&segments) {
                 // Neither a directory nor a file: an entry whose target is
@@ -1384,14 +1450,24 @@ pub(crate) fn build_globset(patterns: &[impl AsRef<str>], key: &str) -> Result<G
         .map_err(|e| Error::Config(format!("{key} globset build error: {e}")))
 }
 
+/// The exclude patterns that keep out every descendant of a directory they
+/// match, compiled to match the directory itself.
+#[derive(Default)]
+struct SubtreeExcludes {
+    globs: GlobSet,
+    /// The position, among the exclude patterns, each of `globs` came from.
+    patterns: Vec<usize>,
+}
+
 /// A valid glob followed by `/**` excludes every descendant of each path
 /// that glob matches only when compilation preserves that concatenation.
 /// Recursive wildcards can change meaning when compiled in isolation, so
 /// verify the factorisation against globset's whole-pattern regex.
-fn build_subtree_excludes(patterns: &[String]) -> Result<GlobSet> {
+fn build_subtree_excludes(patterns: &[String]) -> Result<SubtreeExcludes> {
     let mut builder = GlobSetBuilder::new();
+    let mut owners = Vec::new();
     let universal = Glob::new("**").expect("valid recursive glob");
-    for pattern in patterns {
+    for (index, pattern) in patterns.iter().enumerate() {
         if let Some(prefix) = pattern.strip_suffix("/**")
             && let Ok(glob) = Glob::new(prefix)
         {
@@ -1399,18 +1475,23 @@ fn build_subtree_excludes(patterns: &[String]) -> Result<GlobSet> {
                 Glob::new(pattern).expect("scope.exclude patterns are compiled before pruning");
             if whole.regex() == universal.regex() {
                 builder.add(whole);
+                owners.push(index);
             } else if glob
                 .regex()
                 .strip_suffix('$')
                 .is_some_and(|prefix| whole.regex() == format!("{prefix}/.*$"))
             {
                 builder.add(glob);
+                owners.push(index);
             }
         }
     }
-    builder
-        .build()
-        .map_err(|e| Error::Config(format!("scope.exclude subtree globset build error: {e}")))
+    Ok(SubtreeExcludes {
+        globs: builder.build().map_err(|e| {
+            Error::Config(format!("scope.exclude subtree globset build error: {e}"))
+        })?,
+        patterns: owners,
+    })
 }
 
 #[cfg(test)]
@@ -1671,7 +1752,7 @@ mod tests {
             ("**/**//**", "a", false),
         ] {
             let subtrees = build_subtree_excludes(&[pattern.into()]).unwrap();
-            assert_eq!(subtrees.is_match(directory), excluded, "{pattern:?}");
+            assert_eq!(subtrees.globs.is_match(directory), excluded, "{pattern:?}");
             if excluded {
                 let files = Glob::new(pattern).unwrap().compile_matcher();
                 for suffix in ["a.md", "a/b.md", ".hidden/a.txt", "한글/문서.md"] {
@@ -1697,7 +1778,7 @@ mod tests {
         let include = build_globset(&["docs/**/*.md"], "scope.include").unwrap();
         let exclude = build_globset(&["docs/private/**"], "scope.exclude").unwrap();
         let excluded_subtrees = build_subtree_excludes(&["docs/private/**".into()]).unwrap();
-        let empty = GlobSet::empty();
+        let empty = SubtreeExcludes::default();
         let mut paths = Vec::new();
         for (patterns, subtrees, expected) in [
             (vec!["**"], &empty, 38),
@@ -1834,7 +1915,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.include = vec!["docs/**/*.md".into()];
-        config.scope.exclude = vec!["docs/shared".to_string()];
+        config.scope.exclude = vec!["docs/shared".into()];
 
         let scan = scan_scope(root, &config).unwrap();
         assert!(
@@ -1868,7 +1949,7 @@ mod tests {
         let mut config = Config::default();
         config.scope.follow_symlinks = true;
         config.scope.include = vec!["docs/**/*.md".into()];
-        config.scope.exclude = vec!["docs/alias/**".to_string()];
+        config.scope.exclude = vec!["docs/alias/**".into()];
         assert_eq!(
             scan_scope(root, &config).unwrap().paths,
             vec![PathBuf::from("docs/real/a.md")]
@@ -2918,7 +2999,7 @@ mod tests {
 
         let mut config = Config::default();
         config.scope.include = vec!["**/*.md".into()];
-        config.scope.exclude = vec!["docs/_index/**".to_string()];
+        config.scope.exclude = vec!["docs/_index/**".into()];
 
         let paths = scan_scope(dir.path(), &config).unwrap().paths;
         assert_eq!(paths.len(), 1);

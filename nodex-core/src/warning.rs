@@ -31,7 +31,8 @@ use serde::{Deserialize, Serialize};
 pub enum WarningCode {
     /// What was read and what the project governs did not line up: a
     /// declaration that selected nothing (a `scope.include` or `identity`
-    /// glob matching no file), a document no `identity` rule names, a part
+    /// glob matching no file, a `scope.exclude` that kept nothing out), a
+    /// document no `identity` rule names, a part
     /// of the tree the walk never read (an undescended directory symlink, an
     /// empty scan), or a path handed to `check --content` that the scope does
     /// not admit — where a clean verdict certifies nothing at all.

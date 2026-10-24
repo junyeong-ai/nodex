@@ -4067,7 +4067,7 @@ fn the_schema_publishes_the_keys_the_visitor_accepts() {
     // then refuses, or refusing one it would have taken.
     let mut generator = schemars::SchemaGenerator::default();
     let schema = serde_json::to_value(
-        <crate::config::IncludePattern as schemars::JsonSchema>::json_schema(&mut generator),
+        <crate::config::ScopePattern as schemars::JsonSchema>::json_schema(&mut generator),
     )
     .expect("the schema serialises");
     let table = schema["anyOf"]
