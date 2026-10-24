@@ -781,7 +781,7 @@ checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
 name = "nodex-cli"
-version = "0.61.4"
+version = "0.62.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -800,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "nodex-core"
-version = "0.61.4"
+version = "0.62.0"
 dependencies = [
  "chrono",
  "fluent-uri",
