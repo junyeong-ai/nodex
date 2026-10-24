@@ -207,24 +207,10 @@ fn export_diagnostics_emits_code_vocabularies_without_a_project() {
         .as_array()
         .expect("error_codes array")
         .iter()
-        .filter_map(|e| e["code"].as_str())
+        .filter_map(Value::as_str)
         .collect();
-    // A core code and both CLI-classifier codes are published.
     assert!(codes.contains(&"CONFIG_ERROR"), "{codes:?}");
-    assert!(codes.contains(&"INVALID_ARGUMENT"), "{codes:?}");
-    assert!(codes.contains(&"INTERNAL_ERROR"), "{codes:?}");
-    // The CLI-owned codes are tagged `cli`, core codes `core`.
-    let origin = |code: &str| -> Option<String> {
-        data["error_codes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|e| e["code"] == code)
-            .and_then(|e| e["origin"].as_str())
-            .map(String::from)
-    };
-    assert_eq!(origin("CONFIG_ERROR").as_deref(), Some("core"));
-    assert_eq!(origin("INVALID_ARGUMENT").as_deref(), Some("cli"));
+    assert!(codes.is_sorted(), "{codes:?}");
 
     let exit: Vec<u64> = data["exit_codes"]
         .as_array()

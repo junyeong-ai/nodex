@@ -311,8 +311,8 @@ fn check_content_reports_per_proposal_verdicts() {
 }
 
 #[test]
-fn check_content_batch_invocation_guards_are_typed_config_errors() {
-    // The three write-seam guards return CONFIG_ERROR, never a panic or a
+fn check_content_batch_invocation_guards_are_typed_argument_errors() {
+    // The three write-seam guards return INVALID_ARGUMENT, never a panic or a
     // silent first-wins: a pair without `=`, a repeated target path, and a
     // second stdin source (one stream).
     let tmp = scratch();
@@ -340,7 +340,7 @@ fn check_content_batch_invocation_guards_are_typed_config_errors() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert_eq!(code_of(&out), "CONFIG_ERROR");
+    assert_eq!(code_of(&out), "INVALID_ARGUMENT");
 
     // Duplicate target path.
     let out = nodex(root)
@@ -353,7 +353,7 @@ fn check_content_batch_invocation_guards_are_typed_config_errors() {
         ])
         .output()
         .unwrap();
-    assert_eq!(code_of(&out), "CONFIG_ERROR");
+    assert_eq!(code_of(&out), "INVALID_ARGUMENT");
 
     // Two stdin sources.
     let out = nodex(root)
@@ -367,7 +367,7 @@ fn check_content_batch_invocation_guards_are_typed_config_errors() {
         .write_stdin("x")
         .output()
         .unwrap();
-    assert_eq!(code_of(&out), "CONFIG_ERROR");
+    assert_eq!(code_of(&out), "INVALID_ARGUMENT");
 }
 
 /// `check --content` judges the project the proposal produces, and a rule

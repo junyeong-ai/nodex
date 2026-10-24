@@ -178,7 +178,7 @@ pub fn validate_explicit_id(id: &str) -> crate::error::Result<()> {
         .chars()
         .any(|c| matches!(c, '[' | ']' | '|' | '`' | '\n' | '\r'));
     if id.is_empty() || !trim_stable || has_metachar {
-        return Err(crate::error::Error::Config(format!(
+        return Err(crate::error::Error::InvalidArgument(format!(
             "node id {id:?} is not reference-safe: an id must be non-empty, without \
              leading/trailing whitespace, and free of the reference metacharacters \
              `[`, `]`, `|`, `` ` ``, and line breaks — references nodex writes for it \

@@ -14,13 +14,13 @@ pub(crate) fn run_annotations(
         && !config.annotations.iter().any(|a| a.name == filter)
     {
         let known: Vec<&str> = config.annotations.iter().map(|a| a.name.as_str()).collect();
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "--name {filter:?} is not a declared annotation pattern; known: {known:?}"
         ))
         .into());
     }
     if min_count == 0 {
-        return Err(nodex_core::error::Error::Config(
+        return Err(nodex_core::error::Error::InvalidArgument(
             "--min-count must be >= 1; omit the flag to keep every entry".into(),
         )
         .into());
@@ -35,7 +35,7 @@ pub(crate) fn run_annotations(
         if !unknown.is_empty() {
             let mut known_sorted: Vec<&str> = universe.iter().map(String::as_str).collect();
             known_sorted.sort_unstable();
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--with-frontmatter contains unknown field(s) {unknown:?}; declared: {known_sorted:?}"
             ))
             .into());

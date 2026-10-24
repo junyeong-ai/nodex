@@ -662,16 +662,12 @@ impl BaselineProbe {
                 continue;
             };
             let cause = cause(&violation);
+            let finding = Introduced::finding(&violation);
             refusals
                 .by_path
                 .entry(rel_path.clone())
                 .or_default()
-                .record(
-                    violation.details.part(),
-                    violation.rule_id,
-                    cause,
-                    violation.message,
-                );
+                .record(violation.details.part(), violation.rule_id, cause, finding);
         }
 
         // A path the proposal *empties* asks a question no rule answers: `check`
@@ -1035,19 +1031,35 @@ impl Refusal {
                 "this write would change {changed}, which the lock named freezes on this \
                  record; the lock refuses the change itself, so there is nothing to revert"
             ),
-            true => {
-                let rules: std::collections::BTreeSet<&str> = self
-                    .parts
-                    .values()
-                    .map(|refused| refused.rule.as_str())
-                    .collect();
-                format!(
-                    "the document this write would produce does not satisfy {}",
-                    rules.into_iter().collect::<Vec<_>>().join(", ")
-                )
-            }
+            true => "it would introduce check violations".to_string(),
         };
         format!("{cause} — {}", self.findings.join("; "))
+    }
+
+    /// The error a writing command refuses with, opened by `subject` — what
+    /// the command was asked to do. A lock's refusal is [`Error::Locked`],
+    /// whose remedy is never different content; any other rule's is the
+    /// [`Error::ContentViolations`] an introduced finding raises at every
+    /// seam.
+    ///
+    /// [`Error::Locked`]: crate::error::Error::Locked
+    /// [`Error::ContentViolations`]: crate::error::Error::ContentViolations
+    pub fn error(&self, subject: impl Into<String>) -> crate::error::Error {
+        let subject = subject.into();
+        match self
+            .parts
+            .values()
+            .any(|refused| refused.cause != Cause::Introduced)
+        {
+            true => crate::error::Error::Locked {
+                subject,
+                reason: self.explain(),
+            },
+            false => crate::error::Error::ContentViolations {
+                subject,
+                findings: self.findings.clone(),
+            },
+        }
     }
 
     /// One rule to name when a write is held back.
@@ -1186,20 +1198,20 @@ pub struct Narrowing {
 
 /// What a baseline's locks cost one plan: the rule refusing its path, the
 /// parts each lock names — empty where the finding is about the document and
-/// no part of the write can be held back on its own — and why.
+/// no part of the write can be held back on its own — and the refusal itself.
 struct Cost {
     lock: String,
     parts: BTreeMap<DocumentPart, String>,
-    reason: String,
+    refusal: Refusal,
 }
 
 /// A write a baseline did not let through whole.
 pub struct HeldBack {
     pub rel_path: PathBuf,
     pub kept: Kept,
-    /// Why, in the words a writing command refused outright would use
-    /// ([`Refusal::explain`]).
-    pub reason: String,
+    /// What refused it: a command that cannot do without the write raises
+    /// [`Refusal::error`].
+    pub refusal: Refusal,
 }
 
 /// What a baseline kept back of one write.
@@ -1253,14 +1265,14 @@ pub fn narrow(
         proposal
     };
 
-    let refused = probe.refusals(root, config, &proposal(&plans), today)?;
+    let mut refused = probe.refusals(root, config, &proposal(&plans), today)?;
     let planned: Vec<(Planned, Option<Cost>)> = plans
         .into_iter()
         .map(|plan| {
-            let cost = refused.refusing(&plan.rel_path).map(|refusal| Cost {
+            let cost = refused.by_path.remove(&plan.rel_path).map(|refusal| Cost {
                 lock: refusal.lock().to_string(),
                 parts: refusal.parts(),
-                reason: refusal.explain(),
+                refusal,
             });
             (plan, cost)
         })
@@ -1297,14 +1309,14 @@ pub fn narrow(
                     held.push(HeldBack {
                         rel_path: plan.rel_path,
                         kept: Kept::Parts(cost.parts.into_iter().collect()),
-                        reason: cost.reason,
+                        refusal: cost.refusal,
                     });
                 }
             }
             None => held.push(HeldBack {
                 rel_path: plan.rel_path,
                 kept: Kept::Whole(cost.lock),
-                reason: cost.reason,
+                refusal: cost.refusal,
             }),
         }
     }

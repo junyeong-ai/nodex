@@ -366,7 +366,7 @@ pub fn run(
 
 fn reject_empty_csv_entries(flag: &str, values: &[String]) -> Result<()> {
     if values.iter().any(|v| v.is_empty()) {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "{flag} contains an empty entry — drop the stray comma"
         ))
         .into());
@@ -381,7 +381,7 @@ fn reject_unknown_vocabulary(flag: &str, values: &[String], allowed: &[String]) 
         .map(String::as_str)
         .collect();
     if !unknown.is_empty() {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "{flag} contains unknown value(s) {unknown:?}; declared: {allowed:?}"
         ))
         .into());
@@ -395,7 +395,7 @@ fn reject_unknown_vocabulary(flag: &str, values: &[String], allowed: &[String]) 
 /// fail fast at the CLI with a clear error that names the flag.
 pub(super) fn reject_zero_usize(value: usize, flag: &str) -> Result<()> {
     if value == 0 {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "{flag} must be > 0 (use a positive cap, or omit for the default behaviour)"
         ))
         .into());
@@ -407,7 +407,7 @@ pub(super) fn reject_zero_usize(value: usize, flag: &str) -> Result<()> {
 /// for flags clap parsed as `u32` (`--depth`, `--days`, …).
 pub(super) fn reject_zero_u32(value: u32, flag: &str) -> Result<()> {
     if value == 0 {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "{flag} must be > 0 (use a positive value, or omit for the default behaviour)"
         ))
         .into());
@@ -424,13 +424,13 @@ pub(super) fn reject_zero_u32(value: u32, flag: &str) -> Result<()> {
 /// cutoff outside that range is degenerate.
 pub(super) fn reject_non_finite_or_out_of_unit_range(value: f64, flag: &str) -> Result<()> {
     if !value.is_finite() {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "{flag} {value} is not a finite number; supply a real cutoff or omit the flag"
         ))
         .into());
     }
     if !(0.0..=1.0).contains(&value) {
-        return Err(nodex_core::error::Error::Config(format!(
+        return Err(nodex_core::error::Error::InvalidArgument(format!(
             "{flag} {value} is out of range; composite scores live in [0.0, 1.0]"
         ))
         .into());

@@ -44,10 +44,11 @@ reads; it does not establish content freshness. Body reads still verify revision
 
 A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 `GRAPH_MISSING` / `GRAPH_OUTDATED`; fix unreadable paths for `IO_ERROR`.
-`CONFIG_ERROR` also refuses an argument the configuration rules out (an undeclared
+`INVALID_ARGUMENT` refuses an argument the configuration rules out (an undeclared
 kind, status, field, relation or annotation name, a `--body-lines` range outside
 the body, a zero cap, a scaffold with no path); the refusal message lists the
-accepted values, so correct the argument rather than `nodex.toml`.
+accepted values, so correct the argument rather than `nodex.toml`. `CONFIG_ERROR`
+is `nodex.toml` itself.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
 and `current`; rebuild with `--full` for a schema mismatch.
 Incompatible snapshot schemas also yield `GRAPH_OUTDATED`, naming the recorded
@@ -112,7 +113,8 @@ and repoints its citations. `lifecycle supersede` changes the predecessor alone,
 leaving its citations to `superseded_reference`, which a project that makes
 that rule an error enforces by refusing the write.
 
-Writes refuse introduced errors and lock drift on the documents they change. An
+Writes refuse introduced errors (`CONTENT_VIOLATIONS`) and lock drift (`LOCKED`) on
+the documents they change. An
 `append_only` record takes appended lines only, inside its `append_section`
 heading when the lock names one; a `frozen` body takes none, and a changed
 decision takes supersession. Discover lock and relation policy from `export rules`
@@ -188,7 +190,7 @@ nodex export diagnostics
 Stable across releases; matched via `error.code`, never by message string.
 
 <!-- published:error-codes -->
-`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `GRAPH_OUTDATED`, `WRITE_CONFLICT`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `SYMLINK_TARGET`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+`IO_ERROR`, `PARSE_ERROR`, `CONFIG_ERROR`, `INVALID_ARGUMENT`, `LOCKED`, `INTERNAL_ERROR`, `CYCLE_DETECTED`, `DUPLICATE_ID`, `INVALID_TRANSITION`, `NOT_FOUND`, `GRAPH_MISSING`, `GRAPH_OUTDATED`, `WRITE_CONFLICT`, `ALREADY_EXISTS`, `PATH_ESCAPES_ROOT`, `SYMLINK_TARGET`, `CONTENT_VIOLATIONS`, `VERSION_MISMATCH`, `GIT_ERROR`.
 <!-- /published:error-codes -->
 
 ## Warning codes

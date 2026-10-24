@@ -96,7 +96,7 @@ pub fn normalize_doc_path(root: &Path, input: &str) -> Result<String> {
         .collect();
     let normalized = forward_string(&collapsed);
     if let Some(spelling) = filesystem_spelling(root, &normalized)? {
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidArgument(format!(
             "path {normalized:?} is spelled differently from the filesystem's own \
              {spelling:?} — this filesystem folds letter case or unicode normalization, and \
              nodex addresses a document by the spelling the scan reads from disk; use \
@@ -179,7 +179,7 @@ fn filesystem_spelling(root: &Path, rel: &str) -> Result<Option<String>> {
             .into_iter()
             .find(|name| std::fs::canonicalize(at.join(name)).is_ok_and(|c| c == target))
             .ok_or_else(|| {
-                Error::Config(format!(
+                Error::InvalidArgument(format!(
                     "path {rel:?} resolves at {:?} to a location the directory does not list \
                      under that name; use the spelling the directory lists",
                     forward_string(&candidate)

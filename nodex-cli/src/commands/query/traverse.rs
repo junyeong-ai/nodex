@@ -57,7 +57,7 @@ pub(crate) fn run_node(
             });
             match parsed {
                 Some((start, end)) if start > 0 && end >= start => Ok((start, end)),
-                _ => Err(nodex_core::Error::Config(
+                _ => Err(nodex_core::Error::InvalidArgument(
                     "--body-lines must be START:END with 1 <= START <= END".into(),
                 )),
             }
@@ -96,7 +96,7 @@ pub(crate) fn run_node(
             Some((start, end)) => {
                 let lines: Vec<&str> = body.split_inclusive('\n').collect();
                 if lines.is_empty() {
-                    return Err(nodex_core::Error::Config(
+                    return Err(nodex_core::Error::InvalidArgument(
                         "--body-lines selects body lines, but the document has none".into(),
                     )
                     .into());
@@ -107,7 +107,7 @@ pub(crate) fn run_node(
                     .body_start_line;
                 let body_end = body_start + lines.len() - 1;
                 if start < body_start || end > body_end {
-                    return Err(nodex_core::Error::Config(format!(
+                    return Err(nodex_core::Error::InvalidArgument(format!(
                         "--body-lines {start}:{end} reaches outside the body, which spans \
                          lines {body_start}:{body_end}"
                     ))
@@ -167,7 +167,7 @@ pub(crate) fn run_dependents(
             .collect();
         if !unknown.is_empty() {
             let known_sorted: Vec<&str> = known.iter().map(String::as_str).collect();
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--relations contains unknown value(s) {unknown:?}; known: {known_sorted:?}"
             ))
             .into());

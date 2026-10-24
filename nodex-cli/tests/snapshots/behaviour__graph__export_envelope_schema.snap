@@ -2288,37 +2288,6 @@ exit: 0
       },
       "export.diagnostics": {
         "$defs": {
-          "CodeOrigin": {
-            "description": "Where an error `code` originates.",
-            "oneOf": [
-              {
-                "const": "core",
-                "description": "Produced by the core `Error` enum (`error::Error::code`).",
-                "type": "string"
-              },
-              {
-                "const": "cli",
-                "description": "Owned by the CLI envelope classifier, never the core enum:\n`INVALID_ARGUMENT` (clap parse failure) and `INTERNAL_ERROR`\n(the unclassified-cause fallback — a bug).",
-                "type": "string"
-              }
-            ]
-          },
-          "ErrorCodeEntry": {
-            "description": "One error `code` the JSON envelope can carry.",
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "origin": {
-                "$ref": "#/$defs/CodeOrigin"
-              }
-            },
-            "required": [
-              "code",
-              "origin"
-            ],
-            "type": "object"
-          },
           "ExitCodeEntry": {
             "description": "One process exit code and its meaning.",
             "properties": {
@@ -2343,9 +2312,9 @@ exit: 0
         "description": "The error/exit-code half of the JSON contract, config-independent (the\ncodes are the same in every project). Today only command *output*\nshapes are exported (`envelope-schema`) and the CLI grammar\n(`commands`); this completes the codegen contract so a consumer can\ngenerate an exhaustive error-code enum and branch on exit status\nwithout hard-coding either from prose.",
         "properties": {
           "error_codes": {
-            "description": "Every error `code` the envelope can carry, sorted, each tagged by\norigin — a closed vocabulary a consumer can codegen as an\nexhaustive match.",
+            "description": "Every error `code` the envelope can carry (`error.code`), sorted — a\nclosed vocabulary a consumer can codegen as an exhaustive match.",
             "items": {
-              "$ref": "#/$defs/ErrorCodeEntry"
+              "type": "string"
             },
             "type": "array"
           },

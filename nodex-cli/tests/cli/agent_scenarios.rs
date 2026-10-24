@@ -64,7 +64,7 @@ fn ai_markdown_reference_identity_survives_namesakes_and_moves() {
             "--body-lines",
             "3:4"
         ])),
-        "CONFIG_ERROR",
+        "INVALID_ARGUMENT",
         "a range reaching into the frontmatter is refused"
     );
 }

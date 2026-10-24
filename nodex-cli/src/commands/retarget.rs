@@ -48,7 +48,7 @@ pub fn run(
     today: NaiveDate,
 ) -> Result<std::process::ExitCode> {
     if args.old_id == args.new_id {
-        return Err(CoreError::Config(
+        return Err(CoreError::InvalidArgument(
             "old-id and new-id are the same; nothing to retarget".into(),
         )
         .into());
@@ -75,16 +75,13 @@ pub fn run(
     // carrying wikilink metacharacters) would be repointed into a form
     // the next build cannot resolve back to the node — refuse before any
     // rewrite and point at the actual fix (the target document's id).
-    nodex_core::model::validate_explicit_id(&args.new_id).map_err(|e| {
-        // Extend the message inside the same typed variant — re-wrapping
-        // the Display form would double the "config error:" prefix.
-        let base = match e {
-            nodex_core::error::Error::Config(m) => m,
-            other => other.to_string(),
-        };
-        nodex_core::error::Error::Config(format!(
-            "{base}; fix the target document's `id:` frontmatter before retargeting"
-        ))
+    nodex_core::model::validate_explicit_id(&args.new_id).map_err(|e| match e {
+        nodex_core::error::Error::InvalidArgument(base) => {
+            nodex_core::error::Error::InvalidArgument(format!(
+                "{base}; fix the target document's `id:` frontmatter before retargeting"
+            ))
+        }
+        other => other,
     })?;
 
     // Immutability lock probe: the baseline snapshot a `check` against
@@ -223,12 +220,13 @@ pub fn run(
             .as_ref()
             .is_some_and(|plan| plan.rel_path == held.rel_path)
         {
-            return Err(CoreError::Config(format!(
-                "retarget of {:?} to {:?} cannot complete: marking {shown} superseded by `{}` is \
-                 refused, and nothing was written: {}",
-                args.old_id, args.new_id, args.new_id, held.reason
-            ))
-            .into());
+            return Err(held
+                .refusal
+                .error(format!(
+                    "retarget of {:?} to {:?}",
+                    args.old_id, args.new_id
+                ))
+                .into());
         }
         skipped.push(match held.kept {
             nodex_core::Kept::Whole(lock) => format!(

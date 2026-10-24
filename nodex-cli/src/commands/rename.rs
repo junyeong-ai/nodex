@@ -78,7 +78,7 @@ pub fn run(
         source,
     })?;
     if old_meta.is_dir() {
-        return Err(CoreError::Config(format!(
+        return Err(CoreError::InvalidArgument(format!(
             "rename moves a single document; {old_path:?} is a directory — move its documents \
              individually so their references can be rewritten"
         ))
@@ -130,7 +130,7 @@ pub fn run(
         .iter()
         .find(|(unused, _)| unused == Path::new(old_path))
     {
-        return Err(CoreError::Config(format!(
+        return Err(CoreError::InvalidArgument(format!(
             "source {old_path:?} names the document the graph carries as {:?}; use that path so \
              its references can be rewritten",
             nodex_core::path_guard::forward_string(named)
@@ -171,7 +171,7 @@ pub fn run(
             // graph carries that ends the rename: the move would put it out of
             // the project's reach entirely.
             Proposed::Absent => {
-                return Err(CoreError::Config(format!(
+                return Err(CoreError::InvalidArgument(format!(
                     "rename destination {new_path:?} would not be graphed — it is a symlink, and \
                      moving the link leaves its target unreachable from there (a relative target \
                      resolves against the new parent) — move the document the link points at, or \
@@ -213,7 +213,7 @@ pub fn run(
             .context("destination scope probe failed")?;
 
     if moved.is_some() && !post_move_scan.paths.iter().any(|p| p == new_rel) {
-        return Err(CoreError::Config(format!(
+        return Err(CoreError::InvalidArgument(format!(
             "rename destination {new_path:?} would not be graphed — {}",
             unadmitted_cause(&post_move_scan, new_rel)
         ))
@@ -267,12 +267,15 @@ pub fn run(
         // record ceasing to exist, which no field change describes.
         if let Some((path, lock)) = refusals.destroyed() {
             let record = nodex_core::path_guard::forward_string(path);
-            return Err(CoreError::Config(format!(
-                "rename of {old_path:?} to {new_path:?} cannot complete: it would leave the \
-                 baseline record at {record:?} with nothing carrying its id, and it is frozen \
-                 ({lock}). A record travels under its id: give the document an explicit `id:` if \
-                 this one is derived from its path, or move it where it stays readable"
-            ))
+            return Err(CoreError::Locked {
+                subject: format!("rename of {old_path:?} to {new_path:?}"),
+                reason: format!(
+                    "it would leave the baseline record at {record:?} with nothing carrying its \
+                     id, and it is frozen ({lock}). A record travels under its id: give the \
+                     document an explicit `id:` if this one is derived from its path, or move it \
+                     where it stays readable"
+                ),
+            }
             .into());
         }
         // A frozen record the project no longer holds anywhere is invisible to
@@ -288,22 +291,22 @@ pub fn run(
         // back onto its own path loses nothing, which the project as it
         // stands cannot say because the record is missing from it either way.
         if let Some(lock) = probe.frozen_record_lost(new_rel, &proposed.graph, &config) {
-            return Err(CoreError::Config(format!(
-                "rename of {old_path:?} to {new_path:?} cannot complete: it would write over a \
-                 record the baseline froze there ({lock}); supersede the record instead of \
-                 replacing it"
-            ))
+            return Err(CoreError::Locked {
+                subject: format!("rename of {old_path:?} to {new_path:?}"),
+                reason: format!(
+                    "it would write over a record the baseline froze there ({lock}); supersede \
+                     the record instead of replacing it"
+                ),
+            }
             .into());
         }
         if let Some(refusal) = refusals
             .refusing(new_rel)
             .or_else(|| refusals.refusing(old_rel))
         {
-            return Err(CoreError::Config(format!(
-                "rename of {old_path:?} to {new_path:?} cannot complete: {}",
-                refusal.explain()
-            ))
-            .into());
+            return Err(refusal
+                .error(format!("rename of {old_path:?} to {new_path:?}"))
+                .into());
         }
     }
 
@@ -650,12 +653,11 @@ fn untracked_destination(
         // to judge — said out loud rather than passed over.
         Proposed::Absent => {
             if lands_in_scope(root, config, new_rel)? {
-                return Err(CoreError::Config(format!(
-                    "rename of {old_path:?} to {new_path:?} cannot complete: the destination is \
-                     inside the graph's scope, and the source holds no document the rules can \
-                     read (it is not text, or it is a symlink whose target the destination \
-                     cannot reach) — the move would land bytes the next build reports as a parse \
-                     failure"
+                return Err(CoreError::InvalidArgument(format!(
+                    "rename source {old_path:?} holds no document the rules can read (it is not \
+                     text, or it is a symlink whose target {new_path:?} cannot reach), and \
+                     {new_path:?} lies inside the graph's scope, where the next build would \
+                     report it as a parse failure"
                 ))
                 .into());
             }
@@ -1228,10 +1230,13 @@ fn plan_moved_document(
             // An `id:` field that isn't a scalar (e.g., a list) is a
             // pre-existing authoring error; surface it instead of
             // attempting to silently overwrite the structure.
-            return Err(CoreError::Config(format!(
-                "{} has an `id:` field that is not a scalar; cannot anchor it during rename",
-                old_abs.display()
-            ))
+            return Err(CoreError::Parse {
+                path: old_abs.to_path_buf(),
+                source: nodex_core::ParseError::InvalidField {
+                    field: "id".into(),
+                    expected: "a scalar".into(),
+                },
+            }
             .into());
         }
         Scalar::Value(_) | Scalar::Absent => {}
@@ -1253,12 +1258,13 @@ fn plan_moved_document(
             // document at all — there is no node, so there is no id to
             // anchor. Writing a path-inferred id into an unparseable
             // file would be phantom work; refuse loudly instead.
-            return Err(CoreError::Config(format!(
-                "{} has a `kind:` field that is not a scalar; the build cannot parse this \
-                 document, so rename refuses to anchor an id into it — fix the frontmatter \
-                 first",
-                old_abs.display()
-            ))
+            return Err(CoreError::Parse {
+                path: old_abs.to_path_buf(),
+                source: nodex_core::ParseError::InvalidField {
+                    field: "kind".into(),
+                    expected: "a scalar".into(),
+                },
+            }
             .into());
         }
         Scalar::Value(_) | Scalar::Absent => (
@@ -1283,7 +1289,7 @@ fn plan_moved_document(
     // the id cannot be pinned here, and moving the link would silently change
     // the document's id. Refuse, naming the document's real home.
     if via_link {
-        return Err(CoreError::Config(format!(
+        return Err(CoreError::InvalidArgument(format!(
             "rename cannot anchor an id into {}: it is a symlink, and the document lives at its \
              target. Moving the link would change the document's inferred id from \
              {inferred_old_id:?} to {inferred_new_id:?} with no way to pin it — rename the \

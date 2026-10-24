@@ -169,7 +169,7 @@ fn rename_refuses_a_destination_outside_the_project_scope() {
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
     assert_eq!(
         envelope.pointer("/error/code").and_then(Value::as_str),
-        Some("CONFIG_ERROR")
+        Some("INVALID_ARGUMENT")
     );
     assert!(root.join("docs/a.md").exists(), "source not moved");
     assert!(!root.join("attic").exists(), "no destination dirs created");

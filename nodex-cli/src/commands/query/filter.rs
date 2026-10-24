@@ -35,7 +35,7 @@ pub(crate) fn run_nodes(
     // and `attrs` keys) — so an agent pulls a document's own frontmatter
     // in one listing instead of reparsing files. The vocabulary is the
     // spine ∪ `Config::declared_fields_universe()`; anything else is a
-    // CONFIG_ERROR, never a silently dropped field.
+    // INVALID_ARGUMENT, never a silently dropped field.
     let mut field_vocab = config.declared_fields_universe();
     field_vocab.extend(
         nodex_core::query::NODE_REF_FIELDS
@@ -59,19 +59,19 @@ pub(crate) fn run_nodes(
     let mut field_equals: Vec<(String, String)> = Vec::new();
     for clause in &args.where_ {
         let (key, value) = clause.split_once('=').ok_or_else(|| {
-            nodex_core::error::Error::Config(format!(
+            nodex_core::error::Error::InvalidArgument(format!(
                 "--where {clause:?} is not FIELD=VALUE — exact equality only \
                  (e.g. --where owner=alice)"
             ))
         })?;
         if key.is_empty() {
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--where {clause:?} has an empty field name"
             ))
             .into());
         }
         if config.parser.is_collection_field(key) {
-            return Err(nodex_core::error::Error::Config(format!(
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
                 "--where {clause:?}: {key:?} is a collection-valued field; equality would \
                  compare against a comma-joined string and silently miss multi-value \
                  documents. Use --tag for tag membership"
@@ -88,7 +88,7 @@ pub(crate) fn run_nodes(
     // An empty TEXT is contained in every body, so it would narrow nothing
     // while reading as a search that matched the whole corpus.
     if args.body_contains.as_deref() == Some("") {
-        return Err(nodex_core::error::Error::Config(
+        return Err(nodex_core::error::Error::InvalidArgument(
             "--body-contains needs non-empty text; omit it to list without reading bodies".into(),
         )
         .into());
@@ -157,7 +157,7 @@ pub(crate) fn run_search(
     // intended. Refuse it up front (no config needed), symmetric with the
     // other degenerate-input guards (`--status`, `--limit`).
     if keyword.is_empty() {
-        return Err(nodex_core::error::Error::Config(
+        return Err(nodex_core::error::Error::InvalidArgument(
             "search keyword must not be empty — an empty keyword matches every document, \
              which is never a meaningful search"
                 .into(),
@@ -196,7 +196,7 @@ pub(crate) fn run_recent(
 ) -> Result<()> {
     let config = nodex_core::load_project(context.root)?;
     // Validate inputs BEFORE `load_graph` so an invalid flag surfaces
-    // as `CONFIG_ERROR` even when `graph.json` is missing — symmetric
+    // as `INVALID_ARGUMENT` even when `graph.json` is missing — symmetric
     // with `run_similar`. Reject zero on `--days` /
     // `--limit` (a zero-day window is degenerate; a zero limit
     // silently empties the listing).
