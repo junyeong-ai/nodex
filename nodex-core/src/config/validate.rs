@@ -237,7 +237,7 @@ impl<'a> PolicySelector<'a> {
     /// the targets, leave nothing for a third that names both, and asking
     /// pairwise would miss it. So each relation this row selects, under each
     /// protection state, asks whether the earlier rows claiming it select
-    /// every target its glob does ([`super::cover::covered_by`]).
+    /// every target its glob does ([`super::cover::Coverage::covered_by`]).
     ///
     /// `selects` is the relations this row admits, an omitted filter standing
     /// for every relation the cause can arise on — so a wildcard row is dead
@@ -245,9 +245,10 @@ impl<'a> PolicySelector<'a> {
     /// which is the same question asked of the same set.
     fn claimed_by(
         &self,
-        earlier: &'a [Self],
+        earlier: &[Self],
         vocabulary: &std::collections::BTreeSet<String>,
         parser: &ParserConfig,
+        coverage: &mut super::cover::Coverage<'a>,
     ) -> Option<Vec<&'a str>> {
         let selects: std::collections::BTreeSet<&str> = if self.relations.is_empty() {
             vocabulary
@@ -278,7 +279,7 @@ impl<'a> PolicySelector<'a> {
                     })
                     .map(|(index, row)| (index, row.glob))
                     .collect();
-                for index in super::cover::covered_by(&claiming, self.glob)? {
+                for index in coverage.covered_by(&claiming, self.glob)? {
                     if !claimants.contains(&earlier[index].name) {
                         claimants.push(earlier[index].name);
                     }
@@ -1162,6 +1163,7 @@ impl Config {
         let unresolved_relations = self.unresolved_edge_relations();
         let mut policy_names = std::collections::BTreeSet::new();
         let mut selectors: Vec<PolicySelector<'_>> = Vec::new();
+        let mut coverage = super::cover::Coverage::default();
         for (idx, row) in self.detection.unresolved_policy.iter().enumerate() {
             // The TOML vocabulary spelling (snake_case), for messages
             // that echo what the user wrote.
@@ -1290,9 +1292,12 @@ impl Config {
                     row.name
                 )));
             }
-            if let Some(claimants) =
-                selector.claimed_by(&selectors, &unresolved_relations, &self.parser)
-            {
+            if let Some(claimants) = selector.claimed_by(
+                &selectors,
+                &unresolved_relations,
+                &self.parser,
+                &mut coverage,
+            ) {
                 return Err(Error::Config(format!(
                     "detection.unresolved_policy[{idx}] ({name:?}) can never fire: the earlier \
                      row(s) {claimants:?} already claim every edge it selects (cause \
@@ -1469,6 +1474,7 @@ impl Config {
                 ))
             })?;
         }
+        let mut coverage = super::cover::Coverage::default();
         for (idx, kr) in self.identity.kind_rules.iter().enumerate() {
             globset::Glob::new(&kr.glob).map_err(|e| {
                 Error::Config(format!(
@@ -1487,7 +1493,7 @@ impl Config {
                 .enumerate()
                 .map(|(index, rule)| (index, Some(rule.glob.as_str())))
                 .collect();
-            if let Some(covering) = super::cover::covered_by(&earlier, Some(&kr.glob)) {
+            if let Some(covering) = coverage.covered_by(&earlier, Some(&kr.glob)) {
                 let named: Vec<String> = covering
                     .iter()
                     .map(|&index| {
@@ -1513,6 +1519,7 @@ impl Config {
                 )));
             }
         }
+        let mut coverage = super::cover::Coverage::default();
         for (idx, ir) in self.identity.id_rules.iter().enumerate() {
             if let Some(glob) = &ir.glob {
                 globset::Glob::new(glob).map_err(|e| {
@@ -1553,10 +1560,7 @@ impl Config {
                 kinds
                     .iter()
                     .try_fold(std::collections::BTreeSet::new(), |mut covering, kind| {
-                        covering.extend(super::cover::covered_by(
-                            &earlier(kind),
-                            ir.glob.as_deref(),
-                        )?);
+                        covering.extend(coverage.covered_by(&earlier(kind), ir.glob.as_deref())?);
                         Some(covering)
                     });
             if let Some(covering) = covering {

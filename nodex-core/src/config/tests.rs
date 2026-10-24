@@ -2893,6 +2893,39 @@ fn a_kind_rule_an_earlier_one_covers_is_refused() {
 }
 
 #[test]
+fn a_covered_kind_rule_is_refused_however_many_rules_precede_it() {
+    // Each `**/<dir>/*.md` remembers whether its directory has been passed,
+    // so an automaton of their union doubles with every glob it joins; a
+    // table of real length is still decided, not declined.
+    let rule = |glob: String| KindRule {
+        glob,
+        kind: "guide".into(),
+        may_be_empty: false,
+    };
+    let mut config = Config::default();
+    config.kinds.allowed = vec!["generic".into(), "guide".into()];
+    config.identity.kind_rules = (0..24)
+        .map(|area| rule(format!("**/area{area}/*.md")))
+        .collect();
+    config
+        .validate()
+        .expect("no rule of the table covers another");
+    config
+        .identity
+        .kind_rules
+        .push(rule("**/area7/index.md".into()));
+    let err = config.validate().expect_err("the last rule is covered");
+    assert!(
+        err.to_string()
+            .contains("identity.kind_rules[24] (glob \"**/area7/index.md\"")
+            && err
+                .to_string()
+                .contains("identity.kind_rules[7] (glob \"**/area7/*.md\""),
+        "{err}"
+    );
+}
+
+#[test]
 fn an_id_rule_is_refused_only_where_earlier_rules_cover_every_kind_it_selects() {
     let rules = |declared: &[(&str, Option<&str>)]| {
         let mut config = Config::default();
