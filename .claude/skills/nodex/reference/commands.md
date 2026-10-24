@@ -154,8 +154,8 @@ nodex check --content docs/a.md=- --content docs/b.md=b.md
 
 `CheckResult` contains `violations`, `skipped_rules`, `rule_coverage`, `total` and
 `has_errors`. Branch on violation `details.type` and structured fields.
-`--severity` filters the displayed list, never the verdict or exit code;
-`gate_suppression` discloses findings the envelope stops carrying.
+`--severity` filters the displayed list to that one severity, never the verdict
+or exit code; `gate_suppression` discloses findings the envelope stops carrying.
 
 `skipped_rules` and `rule_coverage` partition the registry. Coverage entries are
 `{rule_id, unit, subjects, unjudged}`, measured before report narrowing. Zero
@@ -193,7 +193,7 @@ nodex check --since <ref>
 ```
 Builds the graph at `<ref>`, diffs it against the working tree (the index under `--staged`) under that tree's config, and narrows the report to findings that change answers for. A configured `rules.immutable_baseline` remains the lock baseline; otherwise `<ref>` supplies it. Which findings those are is each rule's to say: by default a finding on a document the diff touched — its own record added, removed or changed, or an edge / annotation it authored moved — with no neighbour expansion; `orphan` also the documents a pointer at which moved — an added or removed edge, or a predecessor's `superseded_by` — so a document stranded by a neighbour's edit is reported, and a standing orphan only when the diff touched its own record; `superseded_reference` also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale; `git_drift`, whose reading is git's, keeps a finding when the commits `<ref>..HEAD` added one it counts — on a measured document or a covered code path outside the graph alike; a node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`) always; and every `status_transition` / `status_entry` finding, each about a step inside the range, a move the range went on to undo included. A move that keeps the id is a change to the record (`path_changes` on `diff`), so a `filename_pattern` finding a move creates is kept. `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. A `<ref>` git cannot resolve is refused (`GIT_ERROR`); one that does not carry the project — a subdirectory project added after it — widens back to the whole project and says so (`baseline_inert`, `gate_suppression`).
 
-A CI job needs the history the range names, and `actions/checkout` fetches one commit by default: a clone that lacks `<ref>` is refused with `GIT_ERROR`, and so is a range its shallow cut crosses where a status flow judges the range's steps. Check out with `fetch-depth: 0` ([baseline](config.md#diff-aware-rules), [status flow](config.md#status-flow)).
+A CI job needs the history the range names, and `actions/checkout` fetches one commit by default: a clone that lacks `<ref>` is refused with `GIT_ERROR`, and so is a range its shallow cut crosses wherever a rule judges the range's steps: a status flow, or a lock under the default `immutable_history = "steps"`. Check out with `fetch-depth: 0` ([baseline](config.md#diff-aware-rules), [status flow](config.md#status-flow)).
 
 ## check --staged
 
@@ -233,7 +233,9 @@ nodex scaffold --kind <k> --title "<t>" --path docs/foo.md \
 
 No prior `nodex build` is needed: the graph a scaffold is judged against is built from the working tree. `--body` reads the same `SOURCE` grammar as `check --content` (`-` = stdin, else a file path). `--field KEY=VALUE` (value is YAML, repeatable) renders after the identity lines and feeds the `cross_field` fixpoint. A key with a canonical source — a dedicated flag, a config derivation, or the structural `path` — is refused as a `--field` key and the error names the exact set.
 
-`--force` preserves the existing identity unless `--id` explicitly replaces it. It still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id. A target the scan would never admit is refused too: a written-then-ignored file is a document the graph can never see.
+`--force` preserves the existing identity unless `--id` explicitly replaces it. It still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id.
+
+Every scaffold refuses a target the scan would never admit: a written-then-ignored file is a document the graph can never see.
 
 `scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession. `written` says whether the file was written (`false` under `--dry-run`).
 
@@ -246,7 +248,7 @@ nodex rename <old-path> <new-path> [--dry-run]
 ```
 `--dry-run` runs every guard and gate the write would and reports the same result with `completion: planned`, writing nothing; `retarget --dry-run` does the same for a repoint.
 
-Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning. For a source the scan admits, a destination it would not admit is refused; any other source — outside scope, or conditionally excluded — gets a plain guarded move with no gate, id anchoring or reference rewrite.
+Move plus reference rewrite, one document only — a directory argument is refused; iterate over its files. References are rewritten for an in-scope source only; locked referencing docs are skipped with a warning. For a source the scan admits, a destination it would not admit is refused; any other source — outside scope, or conditionally excluded — gets a plain guarded move with no id anchoring or reference rewrite. That move is still gated when its destination is in scope: the file arrives there as a new document, and an error it introduces refuses the move (`CONTENT_VIOLATIONS`).
 
 A markdown link destination *spells* a path rather than being one, so `rename` repoints what the destination **names**: `[x](old&#x2e;md)` and `[x](a\(1\).md)` are edges like any other and move with the file. It writes back the spelling the parser reads as the new path — plain where that works (byte-for-byte the author's style), pointy `<…>` or backslash-escaped where the name needs it, so a move to `docs/new one.md` repoints rather than leaving the link behind. A reference no spelling survives (a wikilink whose new target carries `]`) is left untouched and visible, surfacing as an unresolved edge rather than being mangled.
 
