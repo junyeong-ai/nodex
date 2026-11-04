@@ -48,6 +48,8 @@ pub struct ScaffoldArgs {
     /// Overwrite existing file at the target path
     #[arg(long)]
     pub force: bool,
+    #[command(flatten)]
+    pub baseline: super::baseline::BaselineArg,
 }
 
 /// Split one `--field KEY=VALUE` pair at clap parse time, so a
@@ -64,7 +66,8 @@ fn parse_field(s: &str) -> Result<(String, String), String> {
 }
 
 pub fn run(root: &Path, args: ScaffoldArgs, pretty: bool, today: NaiveDate) -> Result<()> {
-    let config = nodex_core::load_project(root)?;
+    let mut config = nodex_core::load_project(root)?;
+    args.baseline.apply_to(&mut config);
     // The version pin gates *writing*, not previewing — a dry-run only
     // reads, so it carries the advisory like any read; a real write is
     // refused on an incompatible binary.

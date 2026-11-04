@@ -112,7 +112,7 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 ```
 `orphans` and `stale` also return `subjects` and `unjudged`. Missing review dates are unjudged; use `nodes --missing reviewed` to list them.
 
-`query issues` resolves `rules.immutable_baseline` exactly as a default `check` does.
+`query issues` resolves `rules.immutable_baseline` exactly as a default `check` does, [`--baseline`](config.md#naming-the-baseline-for-one-run) included.
 
 `query orphans` and `query stale` read the same predicates as the `orphan` and `stale_review` rules. In `query issues` a finding with a gate record is counted once, through the violation, so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`; unresolved warning and error findings count the same way, and info rows are reported under their own name outside `total`.
 
@@ -176,7 +176,9 @@ Excludes `--since` and `--staged`; no cache is written.
 
 Ordinary rules judge introduced errors; a lock covering a proposed document
 judges its absolute drift against the configured baseline, or the working tree
-without one. Step rules judge the move the proposal would commit. Unrelated
+without one. `--baseline <ref>` names that baseline for one run, and every
+writing command takes it too, so a proposal and its write judge against one
+commit ([per-run baseline](config.md#naming-the-baseline-for-one-run)). Step rules judge the move the proposal would commit. Unrelated
 standing errors do not block a proposal. `proposals` reports `{path, in_scope,
 has_path_errors}` and `standing` reports the proposed nodes' warning findings;
 top-level `has_errors` gates the whole batch. A warning retained in `standing`

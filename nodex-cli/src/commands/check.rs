@@ -66,6 +66,8 @@ pub struct CheckArgs {
     /// Mutually exclusive with `--content`.
     #[arg(long, conflicts_with = "content")]
     pub staged: bool,
+    #[command(flatten)]
+    pub baseline: super::baseline::BaselineArg,
 }
 
 pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Result<()> {
@@ -306,7 +308,8 @@ fn resolve_target(
     if args.staged {
         return resolve_staged_target(root, args);
     }
-    let config = nodex_core::load_project(root)?;
+    let mut config = nodex_core::load_project(root)?;
+    args.baseline.apply_to(&mut config);
     if !args.content.is_empty() {
         let target = resolve_content_target(root, &args.content, &config, today)?;
         return Ok((config, target));
@@ -368,7 +371,8 @@ fn resolve_staged_target(
     let checkout = Checkout::acquire(&repository)?;
     let tree = staged_tree(&repository, &checkout)?;
     let files = checkout.hold(&tree)?;
-    let config = nodex_core::Config::load(&files)?;
+    let mut config = nodex_core::Config::load(&files)?;
+    args.baseline.apply_to(&mut config);
     nodex_core::preflight(&config, root)?;
     let outcome = nodex_core::builder::build_of_ref(&files, checkout.dir(), &config)
         .context("graph build failed")?;

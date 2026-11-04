@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod build;
 pub mod check;
 pub mod content_source;

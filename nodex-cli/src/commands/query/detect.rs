@@ -64,10 +64,12 @@ pub(crate) fn run_stale(
 
 pub(crate) fn run_issues(
     context: &super::QueryContext<'_>,
+    baseline: &crate::commands::baseline::BaselineArg,
     pretty: bool,
     today: NaiveDate,
 ) -> Result<()> {
-    let config = nodex_core::load_project(context.root)?;
+    let mut config = nodex_core::load_project(context.root)?;
+    baseline.apply_to(&mut config);
     let snapshot = context.load_graph(&config)?;
     let (graph, mut warnings) = (snapshot.graph(), snapshot.warnings());
 

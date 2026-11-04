@@ -472,7 +472,7 @@ Error code는 typed `nodex_core::error::Error`의 `downcast_ref`로 도출하며
 | `IO_ERROR` | filesystem read/write 실패 |
 | `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 아래의 쓰기 명령 |
 | `GIT_ERROR` | `git` 호출 실패 또는 거부 (work tree 없음, ref 부재, 충돌이 남은 index 등) — 주로 `diff` / `impact` / `check --since` / `check --staged`에서 발생 |
-| `INVALID_ARGUMENT` | 명령이 인자를 처리할 수 없음: clap 파싱 실패, config에 선언되지 않은 값(`--fields`, `--where`, `--name`, `--kind`, `--relations`, kind가 허용하지 않는 `lifecycle set --status`), 형식이 틀리거나 0인 값(`=` 없는 `--content`, `--depth 0`, `--limit 0`, SemVer가 아닌 `--check-version`), scope가 그래프에 넣지 않을 경로나 파일시스템과 표기가 다른 경로, 디렉터리 `rename`, `retarget X X`. 메시지가 허용되는 값을 나열하므로 `nodex.toml`이 아니라 인자를 고침 |
+| `INVALID_ARGUMENT` | 명령이 인자를 처리할 수 없음: clap 파싱 실패, config에 선언되지 않은 값(`--fields`, `--where`, `--name`, `--kind`, `--relations`, kind가 허용하지 않는 `lifecycle set --status`), 형식이 틀리거나 0인 값(`=` 없는 `--content`, `--depth 0`, `--limit 0`, SemVer가 아닌 `--check-version`), scope가 그래프에 넣지 않을 경로나 파일시스템과 표기가 다른 경로, 잠금이 읽는데 git이 해석하지 못하거나 `HEAD`와 merge base가 하나로 정해지지 않는 `--baseline`, 디렉터리 `rename`, `retarget X X`. 메시지가 허용되는 값을 나열하므로 `nodex.toml`이 아니라 인자를 고침 |
 | `INTERNAL_ERROR` | nodex의 결함: 분류되지 않은 원인, 또는 nodex 자체 출력의 불변식 위반 |
 
 <!-- /published:error-codes -->
@@ -602,6 +602,8 @@ trigger = "creation"
 kinds = ["adr"]
 ```
 
+CI 작업은 이벤트가 기준으로 삼는 커밋(머지 그룹의 `base_sha`, push가 대체한 커밋)을 `--baseline <ref>`로 지정합니다. 그 실행은 `rules.immutable_baseline`이 그 ref를 가리킨 것과 똑같이 판정되므로, 작업이 가져온 브랜치가 그때 어디에 있었는지에 따라 판정이 달라지지 않습니다.
+
 **Status flow**는 생명주기가 있는 kind에 그 생명주기를 선언합니다.
 
 ```toml
@@ -615,7 +617,7 @@ flow를 선언하면 `status_transition`과 `status_entry`가 등록되고, `lif
 
 `check --since <ref>`는 보고를 diff가 영향을 준 finding으로 좁히지만, `rule_coverage`는 각 룰의 모집단 전체를 그대로 보고합니다. 기준선도, `--since`도, 비교할 제안 내용도 없으면 잠금은 통과로 처리되지 않고 `skipped_rules`에 나타납니다.
 
-더 보기(영문): [잠금과 trigger](.claude/skills/nodex/reference/config.md#diff-aware-rules) · [status flow](.claude/skills/nodex/reference/config.md#status-flow) · [구간 검사](.claude/skills/nodex/reference/commands.md#check---since) · [nodex가 git을 읽는 방식](.claude/skills/nodex/reference/config.md#git-measurement)
+더 보기(영문): [잠금과 trigger](.claude/skills/nodex/reference/config.md#diff-aware-rules) · [실행별 기준선](.claude/skills/nodex/reference/config.md#naming-the-baseline-for-one-run) · [status flow](.claude/skills/nodex/reference/config.md#status-flow) · [구간 검사](.claude/skills/nodex/reference/commands.md#check---since) · [nodex가 git을 읽는 방식](.claude/skills/nodex/reference/config.md#git-measurement)
 
 ### 생명주기
 

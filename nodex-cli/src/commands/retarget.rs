@@ -21,6 +21,8 @@ pub struct RetargetArgs {
     /// Print the plan as JSON without rewriting any file
     #[arg(long)]
     pub dry_run: bool,
+    #[command(flatten)]
+    pub baseline: super::baseline::BaselineArg,
 }
 
 /// The successor's own references to the predecessor, named as the sites
@@ -54,7 +56,8 @@ pub fn run(
         .into());
     }
 
-    let config = nodex_core::load_project(root)?;
+    let mut config = nodex_core::load_project(root)?;
+    args.baseline.apply_to(&mut config);
     // The version pin gates writing, not previewing: a dry run carries the
     // advisory like any read.
     let mut warnings = Vec::new();

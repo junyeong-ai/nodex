@@ -54,8 +54,16 @@ pub struct ProjectLock {
 }
 
 impl ProjectLock {
-    pub fn acquire(root: &Path) -> Result<Self> {
-        let config = crate::load_project(root)?;
+    /// Take the project's write lock once the write could proceed: the
+    /// config loads, the binary may write, and the baseline the write will
+    /// lock against resolves — the one `baseline` names for this invocation
+    /// ([`Config::set_invocation_baseline`]) where it names one, so the
+    /// lock refuses exactly what the command would.
+    pub fn acquire(root: &Path, baseline: Option<&str>) -> Result<Self> {
+        let mut config = crate::load_project(root)?;
+        if let Some(reference) = baseline {
+            config.set_invocation_baseline(reference.to_string());
+        }
         crate::ensure_binary_compatible(&config)?;
         BaselineBinding::resolve(root, &config)?;
         let path = root.join(&config.output.dir).join("write.lock");
@@ -113,8 +121,13 @@ enum Binding {
     /// is no snapshot to compare against — the project is not in a git
     /// work tree, or the ref does not carry the project. Nothing *can* be
     /// locked, and `reason` is why, so the advisory names the condition
-    /// the operator can act on rather than the likeliest one.
-    Inert { baseline: String, reason: String },
+    /// the operator can act on rather than the likeliest one. `key` is what
+    /// named the baseline ([`crate::config::BaselineNamedBy::key`]).
+    Inert {
+        key: &'static str,
+        baseline: String,
+        reason: String,
+    },
     /// The ref is a commit that carries the project, so a document the
     /// baseline graph has no node for is genuinely new.
     Bound {
@@ -164,29 +177,39 @@ impl BaselineBinding {
             });
         };
         let baseline = baseline.to_string();
+        let named_by = config.baseline_named_by();
+        let key = named_by.key();
         let requires_history = config.rules.immutable_baseline_mode
             == crate::config::ImmutableBaselineMode::MergeBase
             || config.rules.immutable_history == crate::config::ImmutableHistory::Snapshot;
+        // What the configured policy needs of the repository, whoever named
+        // the ref: the remedy lies in the environment, never in the ref.
+        let unmet = |reason: String| {
+            crate::error::Error::Config(format!(
+                "{key} {baseline:?} cannot be read ({reason}), so the immutability rules can \
+                 neither fire nor be enforced"
+            ))
+        };
         let repository = match crate::git::Repository::discover(root) {
             Ok(Some(repository)) => repository,
             Ok(None) => {
                 if requires_history {
-                    return Err(crate::error::Error::Config(format!(
-                        "rules.immutable_baseline {baseline:?} requires a Git work tree"
-                    )));
+                    return Err(unmet("the lock policy requires a Git work tree".into()));
                 }
                 return Ok(Self::inert(
+                    key,
                     baseline,
                     format!("no git work tree was found for {}", root.display()),
                 ));
             }
             Err(e) => {
                 if requires_history {
-                    return Err(crate::error::Error::Config(format!(
-                        "rules.immutable_baseline {baseline:?} could not resolve its Git repository: {e}"
+                    return Err(unmet(format!(
+                        "its Git repository could not be resolved: {e}"
                     )));
                 }
                 return Ok(Self::inert(
+                    key,
                     baseline,
                     format!(
                         "the repository holding {} could not be resolved ({e})",
@@ -195,31 +218,34 @@ impl BaselineBinding {
                 ));
             }
         };
-        let unreadable = |reason: String| {
-            crate::error::Error::Config(format!(
-                "rules.immutable_baseline {baseline:?} cannot be read ({reason}), so the \
-                 immutability rules can neither fire nor be enforced; fix the ref or remove the \
-                 baseline"
-            ))
-        };
         let (source, source_carries) = match repository
             .ref_state(&baseline)
-            .map_err(|e| unreadable(e.to_string()))?
+            .map_err(|e| unmet(e.to_string()))?
         {
             RefState::Unborn => {
                 if requires_history {
-                    return Err(unreadable(
-                        "the selected lock policy requires recorded commits".into(),
-                    ));
+                    return Err(unmet("the lock policy requires recorded commits".into()));
                 }
                 return Ok(Self::inert(
+                    key,
                     baseline,
                     "no ref in the repository names a commit, so there is nothing to compare \
                      against"
                         .into(),
                 ));
             }
-            RefState::Unresolvable => return Err(unreadable("git resolves no such ref".into())),
+            RefState::Unresolvable => {
+                let remedy = match named_by {
+                    crate::config::BaselineNamedBy::Config => "fix the ref or remove the baseline",
+                    crate::config::BaselineNamedBy::Invocation => {
+                        "fetch the commit or pass one this clone holds"
+                    }
+                };
+                return Err(named_by.refusal(format!(
+                    "{key} {baseline:?} cannot be read (git resolves no such ref), so the \
+                     immutability rules can neither fire nor be enforced; {remedy}"
+                )));
+            }
             RefState::WithoutProject(commit) => (commit, false),
             RefState::CarriesProject(commit) => (commit, true),
         };
@@ -228,14 +254,15 @@ impl BaselineBinding {
             crate::config::ImmutableBaselineMode::MergeBase => {
                 let head = repository
                     .head()
-                    .map_err(|e| unreadable(e.to_string()))?
-                    .ok_or_else(|| unreadable("HEAD names no commit".into()))?;
-                let base = repository
+                    .map_err(|e| unmet(e.to_string()))?
+                    .ok_or_else(|| unmet("HEAD names no commit".into()))?;
+                let merge_base = repository
                     .unique_merge_base(&[head, source])
-                    .map_err(|e| unreadable(e.to_string()))?;
+                    .map_err(|e| unmet(e.to_string()))?;
+                let base = selected_merge_base(named_by, &baseline, merge_base)?;
                 let carries = repository
                     .carries_project(&base)
-                    .map_err(|e| unreadable(e.to_string()))?;
+                    .map_err(|e| unmet(e.to_string()))?;
                 (base, carries)
             }
         };
@@ -244,7 +271,7 @@ impl BaselineBinding {
                 "selected commit {selected} does not carry {:?}",
                 crate::path_guard::forward_string(repository.prefix())
             );
-            return Ok(Self::inert(baseline, reason));
+            return Ok(Self::inert(key, baseline, reason));
         }
         Ok(Self {
             binding: Binding::Bound {
@@ -254,9 +281,13 @@ impl BaselineBinding {
         })
     }
 
-    fn inert(baseline: String, reason: String) -> Self {
+    fn inert(key: &'static str, baseline: String, reason: String) -> Self {
         Self {
-            binding: Binding::Inert { baseline, reason },
+            binding: Binding::Inert {
+                key,
+                baseline,
+                reason,
+            },
         }
     }
 
@@ -315,16 +346,86 @@ impl BaselineBinding {
     /// engage — the wording is constructed here and nowhere else, so a
     /// `check` and a mutation describe an unenforced lock identically.
     pub fn advisory(&self) -> Option<Warning> {
-        let Binding::Inert { baseline, reason } = &self.binding else {
+        let Binding::Inert {
+            key,
+            baseline,
+            reason,
+        } = &self.binding
+        else {
             return None;
         };
         Some(Warning::new(
             WarningCode::BaselineInert,
             format!(
-                "rules.immutable_baseline {baseline:?} is set but {reason}; immutability rules \
-                 are inert this run"
+                "{key} {baseline:?} is set but {reason}; immutability rules are inert this run"
             ),
         ))
+    }
+}
+
+/// The commit `immutable_baseline_mode = "merge_base"` selects, or a refusal
+/// naming why `HEAD` and `baseline` have no one merge base and the remedy
+/// that cause takes. Several best bases are refused rather than chosen
+/// among: the records they hold may differ, and whichever one were taken
+/// would decide by the order git listed them which record the locks protect.
+///
+/// A ref sharing no single base with `HEAD` is the ref's fault, coded by who
+/// named it; a shallow cut is the clone's, which a deeper fetch repairs.
+fn selected_merge_base(
+    named_by: crate::config::BaselineNamedBy,
+    baseline: &str,
+    merge_base: crate::git::MergeBase,
+) -> Result<String> {
+    use crate::config::BaselineNamedBy;
+    use crate::git::MergeBase;
+    let key = named_by.key();
+    let refused = |reason: String, remedy: String| {
+        format!(
+            "{key} {baseline:?} selects no baseline under immutable_baseline_mode = \
+             \"merge_base\" ({reason}), so the immutability rules can neither fire nor be \
+             enforced; {remedy}"
+        )
+    };
+    match merge_base {
+        MergeBase::Unique(base) => Ok(base),
+        MergeBase::Several(bases) => {
+            let bases: Vec<&str> = bases
+                .iter()
+                .map(|base| base.get(..12).unwrap_or(base))
+                .collect();
+            let reason = format!(
+                "HEAD and {baseline} have {} merge bases ({}), none of which stands above the \
+                 others",
+                bases.len(),
+                bases.join(", ")
+            );
+            let remedy = match named_by {
+                BaselineNamedBy::Config => format!(
+                    "merge {baseline} into HEAD so it becomes their one merge base; a CI run names \
+                     the commit its event is measured from with `--baseline`"
+                ),
+                BaselineNamedBy::Invocation => {
+                    "pass a commit HEAD descends from, such as the commit the event is measured \
+                     from"
+                        .to_string()
+                }
+            };
+            Err(named_by.refusal(refused(reason, remedy)))
+        }
+        MergeBase::Unrelated => {
+            let remedy = match named_by {
+                BaselineNamedBy::Config => "fix the ref or remove the baseline",
+                BaselineNamedBy::Invocation => "pass a commit HEAD shares history with",
+            };
+            Err(named_by.refusal(refused(
+                format!("HEAD and {baseline} share no commit"),
+                remedy.to_string(),
+            )))
+        }
+        MergeBase::Cut => Err(crate::error::Error::Config(refused(
+            format!("this shallow clone holds no commit HEAD and {baseline} share"),
+            format!("fetch the history back to where HEAD and {baseline} meet"),
+        ))),
     }
 }
 
@@ -1673,7 +1774,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("nodex.toml"), "").unwrap();
         let config = crate::load_project(tmp.path()).unwrap();
-        let lock = ProjectLock::acquire(tmp.path()).unwrap();
+        let lock = ProjectLock::acquire(tmp.path(), None).unwrap();
         let other = std::fs::File::options()
             .read(true)
             .write(true)

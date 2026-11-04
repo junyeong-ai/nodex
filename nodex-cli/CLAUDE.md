@@ -30,6 +30,10 @@ rolled back.
   explicit check where dry runs stay readable). Validate prerequisites and locate
   the write lock before acquiring it; `writes_documents` covers the first read
   through final write of mutating invocations.
+- Every command that resolves a baseline flattens `commands::baseline::BaselineArg`
+  and applies it wherever it loads the config it judges with, the staged index's
+  included; a writing command's arm of `writes_documents` hands it to
+  `ProjectLock`, which resolves the baseline before the handler does.
 - `init` and export envelope-schema/commands/diagnostics load no project. Staged
   check uses the index config, and diff/impact the after ref's (Git checkouts
   below). These load `Config` from checkouts, not `load_project`: preflight is

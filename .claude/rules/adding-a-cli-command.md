@@ -21,7 +21,10 @@ paths:
 4. Emit through the seam `.claude/rules/json-output.md` (Adding Output)
    names for the command's plane; a writing command passes the
    `BaselineProbe` its writes locked against (from
-   `git_checkout::write_baseline`).
+   `git_checkout::write_baseline`). A command that resolves a baseline takes
+   `--baseline` by flattening `commands::baseline::BaselineArg`, applied to
+   the config it judges with; a writing one hands it to `ProjectLock` from its
+   `writes_documents` arm.
 5. Register the command's data-payload schema in
    `nodex_core::export::per_command_schemas` under its dotted
    invocation path (e.g. `query.dependents`) — the

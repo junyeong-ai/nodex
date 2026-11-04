@@ -18,6 +18,8 @@ pub struct MigrateArgs {
     /// Actually write files (default: dry-run).
     #[arg(long)]
     pub apply: bool,
+    #[command(flatten)]
+    pub baseline: super::baseline::BaselineArg,
 }
 
 /// `FileSkipped` note for a bare markdown file that is (or resolves
@@ -99,7 +101,8 @@ pub fn run(
     today: NaiveDate,
 ) -> Result<std::process::ExitCode> {
     let apply = args.apply;
-    let config = nodex_core::load_project(root)?;
+    let mut config = nodex_core::load_project(root)?;
+    args.baseline.apply_to(&mut config);
     // The version pin gates the actual write. A dry-run (the default)
     // only plans, so it carries the advisory like any read; `--apply`
     // is refused on an incompatible binary.
