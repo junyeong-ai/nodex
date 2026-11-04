@@ -230,11 +230,12 @@ pub(crate) fn lock_holds(
 pub(crate) fn lock_skip_reason(config: &Config) -> String {
     match &config.rules.immutable_baseline {
         Some(baseline) => format!(
-            "rules.immutable_baseline {baseline:?} supplied no baseline this run — the \
-             `baseline_inert` warning says why"
+            "{} {baseline:?} supplied no baseline this run — the `baseline_inert` warning \
+             says why",
+            config.baseline_named_by().key()
         ),
         None => "no baseline to compare against — set `rules.immutable_baseline`, or pass \
-                 `--since <ref>`"
+                 `--baseline <ref>` or `--since <ref>`"
             .to_string(),
     }
 }

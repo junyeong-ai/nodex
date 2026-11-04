@@ -77,7 +77,10 @@ pub enum QueryCommand {
     /// Reverse lookup: docs claiming authority over a source-code path
     CoveredBy { path: String },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
-    Issues,
+    Issues {
+        #[command(flatten)]
+        baseline: crate::commands::baseline::BaselineArg,
+    },
     /// Find documents similar to an existing node or a prospective one
     Similar(SimilarityArgs),
     /// List documents whose configured date field falls inside a recent window
@@ -342,7 +345,7 @@ pub fn run(
             pretty,
         ),
         QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
-        QueryCommand::Issues => detect::run_issues(root, pretty, today),
+        QueryCommand::Issues { baseline } => detect::run_issues(root, &baseline, pretty, today),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
         QueryCommand::Recent(args) => filter::run_recent(root, args, pretty, today),
         QueryCommand::Components { max_size, limit } => {

@@ -24,6 +24,8 @@ pub struct RenameArgs {
     /// Print the plan as JSON without moving or rewriting any file
     #[arg(long)]
     pub dry_run: bool,
+    #[command(flatten)]
+    pub baseline: super::baseline::BaselineArg,
 }
 
 pub fn run(
@@ -32,7 +34,8 @@ pub fn run(
     pretty: bool,
     today: NaiveDate,
 ) -> Result<std::process::ExitCode> {
-    let config = nodex_core::load_project(root)?;
+    let mut config = nodex_core::load_project(root)?;
+    args.baseline.apply_to(&mut config);
     // The version pin gates writing, not previewing: a dry run carries the
     // advisory like any read.
     let mut warnings = Vec::new();

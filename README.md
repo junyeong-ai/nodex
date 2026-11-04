@@ -480,7 +480,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed or refused (e.g., not a work tree, missing ref, an index with unmerged entries) — most often from `diff`, `impact`, `check --since` and `check --staged` |
-| `INVALID_ARGUMENT` | The command cannot act on its arguments: a clap parse failure, a value the config does not declare (`--fields`, `--where`, `--name`, `--kind`, `--relations`, a `lifecycle set --status` the kind does not allow), a malformed or zero value (`--content` without `=`, `--depth 0`, `--limit 0`, a `--check-version` that is not SemVer), a path the scope would not graph or the filesystem spells differently, `rename` of a directory, `retarget X X`. The message lists what is accepted; correct the argument, not `nodex.toml` |
+| `INVALID_ARGUMENT` | The command cannot act on its arguments: a clap parse failure, a value the config does not declare (`--fields`, `--where`, `--name`, `--kind`, `--relations`, a `lifecycle set --status` the kind does not allow), a malformed or zero value (`--content` without `=`, `--depth 0`, `--limit 0`, a `--check-version` that is not SemVer), a path the scope would not graph or the filesystem spells differently, a `--baseline` git cannot resolve or that shares no single merge base with `HEAD`, while a lock reads it, `rename` of a directory, `retarget X X`. The message lists what is accepted; correct the argument, not `nodex.toml` |
 | `INTERNAL_ERROR` | A defect in nodex: an unclassified cause, or an invariant of its own output that failed |
 
 <!-- /published:error-codes -->
@@ -610,6 +610,8 @@ trigger = "creation"
 kinds = ["adr"]
 ```
 
+A CI job names the commit its event is measured from — a merge group's `base_sha`, the commit a push replaced — with `--baseline <ref>`, which judges that run exactly as if `rules.immutable_baseline` named it, so the verdict does not move with where a fetched branch stood.
+
 **Status flows** declare a lifecycle over the kinds that have one:
 
 ```toml
@@ -623,7 +625,7 @@ A flow registers `status_transition` and `status_entry`, and `lifecycle`, `retar
 
 `check --since <ref>` narrows the report to the findings the diff answers for; `rule_coverage` still reports each rule's whole population. With no baseline, no `--since` and no proposed content to compare, the locks are listed in `skipped_rules` instead of passing.
 
-More: [locks and triggers](.claude/skills/nodex/reference/config.md#diff-aware-rules) · [status flows](.claude/skills/nodex/reference/config.md#status-flow) · [range checks](.claude/skills/nodex/reference/commands.md#check---since) · [how nodex reads git](.claude/skills/nodex/reference/config.md#git-measurement)
+More: [locks and triggers](.claude/skills/nodex/reference/config.md#diff-aware-rules) · [the baseline for one run](.claude/skills/nodex/reference/config.md#naming-the-baseline-for-one-run) · [status flows](.claude/skills/nodex/reference/config.md#status-flow) · [range checks](.claude/skills/nodex/reference/commands.md#check---since) · [how nodex reads git](.claude/skills/nodex/reference/config.md#git-measurement)
 
 ### Lifecycle
 

@@ -2618,15 +2618,282 @@ fn merge_base_locks_refuse_missing_and_ambiguous_ancestry_on_both_planes() {
                     .as_str()
                     .unwrap()
                     .contains(if ambiguous {
-                        "multiple merge bases"
+                        "2 merge bases"
                     } else {
-                        "no common ancestor"
+                        "share no commit"
                     }),
                 "{envelope}"
             );
         }
         assert!(root.join("docs/a.md").exists());
     }
+}
+
+/// A merge queue built group `b` on group `a`: `a` settles record `r`, and
+/// `b`, branched from `main` before either, edits `r`'s body. The three
+/// states `main` passes through while `b`'s run is under way, with the
+/// commits each needs.
+struct Queue {
+    /// Group `a`: `main` with `a` merged, the commit group `b` is built on.
+    group_a: String,
+    /// `main` before either group.
+    before: String,
+    /// `b` merged on `main` alone, after `a` left the queue and `b` was
+    /// rebuilt and landed — what `main` holds while `b`'s first run goes on.
+    rebuilt: String,
+}
+
+fn queued_groups(root: &std::path::Path) -> Queue {
+    snapshot_lock_project(root, "merge_base");
+    let git = git_runner(root);
+    let run = |args: &[&str]| {
+        let output = git(args);
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let draft = "---\nid: r\ntitle: R\nstatus: open\n---\nOne.\n\nTwo.\n\nThree.\n";
+    run(&["checkout", "-q", "main"]);
+    write_doc(root, "docs/r.md", draft);
+    write_doc(
+        root,
+        "docs/x.md",
+        "---\nid: x\ntitle: X\nstatus: open\n---\nX.\n",
+    );
+    run(&["add", "."]);
+    run(&["commit", "-qm", "records"]);
+    run(&["checkout", "-qb", "b"]);
+    write_doc(root, "docs/r.md", &draft.replace("Two.", "Two, edited."));
+    run(&["commit", "-qam", "b edits r"]);
+    run(&["checkout", "-q", "main"]);
+    fs::write(root.join("note.txt"), "main moved\n").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-qm", "main moves"]);
+    let before = run(&["rev-parse", "HEAD"]);
+    run(&["checkout", "-qb", "a"]);
+    write_doc(
+        root,
+        "docs/r.md",
+        &draft.replace("status: open", "status: accepted"),
+    );
+    run(&["commit", "-qam", "a settles r"]);
+    run(&["checkout", "-q", "--detach", &before]);
+    run(&["merge", "-q", "--no-ff", "-m", "group b alone", "b"]);
+    let rebuilt = run(&["rev-parse", "HEAD"]);
+    run(&["checkout", "-q", "--detach", &before]);
+    run(&["merge", "-q", "--no-ff", "-m", "group a", "a"]);
+    let group_a = run(&["rev-parse", "HEAD"]);
+    run(&["merge", "-q", "--no-ff", "-m", "group b", "b"]);
+    Queue {
+        group_a,
+        before,
+        rebuilt,
+    }
+}
+
+fn violated_rules(output: &std::process::Output) -> Vec<String> {
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    envelope["data"]["violations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no violations in {envelope}"))
+        .iter()
+        .filter(|v| v["severity"] == "error")
+        .map(|v| v["rule_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn an_invocation_baseline_judges_a_merge_group_by_its_commits_alone() {
+    // Under `merge_base` against `main`, group `b`'s verdict follows where
+    // `main` stood when the run read it: clean before `a` lands, refused
+    // after, and no verdict at all once `b` landed rebuilt beside it, where
+    // the run's commit and `main` share two merge bases. Named the commit the
+    // queue built `b` on, every state judges `b` alike.
+    let tmp = scratch();
+    let root = tmp.path();
+    let queue = queued_groups(root);
+    let git = git_runner(root);
+    let main_at = |commit: &str| {
+        assert!(
+            git(&["update-ref", "refs/heads/main", commit])
+                .status
+                .success()
+        );
+    };
+    let check = |extra: &[&str]| nodex(root).arg("check").args(extra).output().unwrap();
+    let sealed = vec!["body_immutable/sealed".to_string()];
+    let flag = ["--baseline", queue.group_a.as_str()];
+
+    for (main, configured) in [
+        (&queue.before, Some(0)),
+        (&queue.group_a, Some(1)),
+        (&queue.rebuilt, Some(2)),
+    ] {
+        main_at(main);
+        assert_eq!(check(&[]).status.code(), configured, "main at {main}");
+        let named = check(&flag);
+        assert_eq!(named.status.code(), Some(1), "main at {main}");
+        assert_eq!(violated_rules(&named), sealed, "main at {main}");
+    }
+
+    // `main` is now where the configured ref is refused.
+    let output = check(&[]);
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR", "{envelope}");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    for named in [
+        "rules.immutable_baseline \"main\"",
+        "2 merge bases",
+        &queue.before[..12],
+        "merge main into HEAD",
+        "--baseline",
+    ] {
+        assert!(message.contains(named), "{named:?} in {message}");
+    }
+    let write = nodex(root)
+        .args(["lifecycle", "review", "x"])
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&write.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR", "{envelope}");
+    // The mode selects from a named ref as from a configured one: the
+    // rebuilt group shares the same two merge bases with `b`.
+    let named = check(&["--baseline", queue.rebuilt.as_str()]);
+    let envelope: Value = serde_json::from_slice(&named.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "INVALID_ARGUMENT", "{envelope}");
+    let message = envelope["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("2 merge bases") && message.contains("HEAD descends from"),
+        "{message}"
+    );
+
+    // The pre-write gate, `query issues` and the write lock against the
+    // named commit too: the record that drifted from it is refused, an
+    // untouched one is written.
+    let proposal = nodex(root)
+        .args(["check", "--content", "docs/r.md=-"])
+        .args(flag)
+        .write_stdin(fs::read_to_string(root.join("docs/r.md")).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(proposal.status.code(), Some(1));
+    assert_eq!(violated_rules(&proposal), sealed);
+    nodex(root).arg("build").assert().success();
+    let issues = nodex(root)
+        .args(["query", "issues"])
+        .args(flag)
+        .output()
+        .unwrap();
+    assert!(violated_rules(&issues).contains(&sealed[0]));
+    let locked = nodex(root)
+        .args(["lifecycle", "review", "r"])
+        .args(flag)
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&locked.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "LOCKED", "{envelope}");
+    for write in [
+        vec!["lifecycle", "review", "x"],
+        vec![
+            "scaffold",
+            "--kind",
+            "generic",
+            "--title",
+            "New",
+            "--id",
+            "new",
+            "--path",
+            "docs/new.md",
+        ],
+        vec!["migrate", "--apply"],
+        vec!["retarget", "new", "x"],
+        vec!["rename", "docs/new.md", "docs/moved.md"],
+    ] {
+        nodex(root).args(&write).args(flag).assert().success();
+    }
+
+    // Exactly as if `nodex.toml` named it.
+    main_at(&queue.before);
+    let config_path = root.join("nodex.toml");
+    let policy = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        policy.replace(
+            "immutable_baseline = \"main\"",
+            &format!("immutable_baseline = \"{}\"", queue.group_a),
+        ),
+    )
+    .unwrap();
+    let configured = check(&[]);
+    fs::write(&config_path, policy).unwrap();
+    let named = check(&flag);
+    assert_eq!(violated_rules(&configured), sealed);
+    let configured: Value = serde_json::from_slice(&configured.stdout).unwrap();
+    let named: Value = serde_json::from_slice(&named.stdout).unwrap();
+    assert_eq!(configured["data"], named["data"]);
+}
+
+#[test]
+fn an_invocation_baseline_git_cannot_resolve_is_refused_as_the_invocation() {
+    // The remedy is the flag's, not `nodex.toml`'s, so the code is too —
+    // on the read plane, the pre-write gate and the write alike.
+    let tmp = scratch();
+    let root = tmp.path();
+    snapshot_lock_project(root, "merge_base");
+    let original = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: b\ntitle: B\nstatus: open\n---\nB.\n",
+    );
+    nodex(root).arg("build").assert().success();
+    for args in [
+        vec!["check"],
+        vec!["check", "--staged"],
+        vec!["check", "--content", "docs/a.md=-"],
+        vec!["query", "issues"],
+        vec!["rename", "docs/a.md", "docs/moved.md"],
+        vec!["rename", "docs/a.md", "docs/moved.md", "--dry-run"],
+        vec!["retarget", "a", "b", "--dry-run"],
+        vec!["scaffold", "--kind", "generic", "--title", "T", "--dry-run"],
+        vec!["migrate"],
+    ] {
+        let mut command = nodex(root);
+        command.args(&args).args(["--baseline", "no-such-ref"]);
+        if args.contains(&"--content") {
+            command.write_stdin(original.clone());
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            envelope["error"]["code"], "INVALID_ARGUMENT",
+            "{args:?}: {envelope}"
+        );
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("--baseline \"no-such-ref\"") && !message.contains("rules."),
+            "{args:?}: {message}"
+        );
+    }
+    assert!(root.join("docs/a.md").exists());
+    // The configured ref alone still resolves.
+    nodex(root).arg("check").assert().success();
+
+    // What the lock policy needs of the repository stays the
+    // configuration's to answer, whoever named the ref.
+    let bare = scratch();
+    fs::copy(root.join("nodex.toml"), bare.path().join("nodex.toml")).unwrap();
+    let output = nodex(bare.path())
+        .args(["check", "--baseline", "main"])
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "CONFIG_ERROR", "{envelope}");
 }
 
 #[test]
@@ -2835,11 +3102,65 @@ fn merge_base_locks_do_not_trust_an_older_base_exposed_by_shallow_history() {
         repository
             .unique_merge_base(&[topic, newer.clone()])
             .unwrap(),
-        newer
+        nodex_core::MergeBase::Unique(newer)
     );
     nodex(clone.path()).arg("check").assert().code(1);
     write_doc(clone.path(), "docs/a.md", &original);
     nodex(clone.path()).arg("check").assert().success();
+}
+
+#[test]
+fn merge_base_locks_trust_a_named_ancestor_without_the_history_behind_the_branch() {
+    // A pull request's merge checked out two commits deep: its first parent
+    // is in the clone, the branch's history is not. The first parent is an
+    // ancestor the clone itself shows, so it is the one merge base however
+    // much history the cut hides.
+    let source = scratch();
+    let root = source.path();
+    snapshot_lock_project(root, "merge_base");
+    let git = git_runner(root);
+    let original = fs::read_to_string(root.join("docs/a.md")).unwrap();
+    write_doc(
+        root,
+        "docs/t.md",
+        "---\nid: t\ntitle: T\nstatus: open\n---\nT.\n",
+    );
+    assert!(git(&["add", "."]).status.success());
+    assert!(git(&["commit", "-qm", "topic one"]).status.success());
+    write_doc(
+        root,
+        "docs/a.md",
+        &original.replace("Original.", "Changed."),
+    );
+    assert!(git(&["commit", "-qam", "topic two"]).status.success());
+    assert!(git(&["checkout", "-qb", "merged", "main"]).status.success());
+    assert!(
+        git(&["merge", "-q", "--no-ff", "-m", "merge topic", "topic"])
+            .status
+            .success()
+    );
+    let clone = scratch();
+    assert!(
+        git(&[
+            "clone",
+            "-q",
+            "--no-local",
+            "--depth",
+            "2",
+            "--branch",
+            "merged",
+            root.to_str().unwrap(),
+            clone.path().to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    let output = nodex(clone.path())
+        .args(["check", "--baseline", "HEAD^1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(violated_rules(&output), vec!["body_immutable/sealed"]);
 }
 
 #[test]

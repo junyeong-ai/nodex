@@ -174,16 +174,19 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
 
+    // A document-writing invocation holds the project lock from its first
+    // read through its final write, taken once the baseline it will lock
+    // against resolves.
     let writes_documents = match &cli.command {
-        Command::Lifecycle { .. } => true,
-        Command::Rename(args) => !args.dry_run,
-        Command::Retarget(args) => !args.dry_run,
-        Command::Migrate(args) => args.apply,
-        Command::Scaffold(args) => !args.dry_run,
-        _ => false,
+        Command::Lifecycle { sub } => Some(sub.baseline()),
+        Command::Rename(args) => (!args.dry_run).then_some(&args.baseline),
+        Command::Retarget(args) => (!args.dry_run).then_some(&args.baseline),
+        Command::Migrate(args) => args.apply.then_some(&args.baseline),
+        Command::Scaffold(args) => (!args.dry_run).then_some(&args.baseline),
+        _ => None,
     };
     let lock = writes_documents
-        .then(|| nodex_core::mutate::ProjectLock::acquire(&root))
+        .map(|named| nodex_core::mutate::ProjectLock::acquire(&root, named.baseline.as_deref()))
         .transpose();
     let result = lock.map_err(anyhow::Error::from).and_then(|_lock| {
         match cli.command {

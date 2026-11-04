@@ -6,6 +6,7 @@ use std::path::Path;
 use nodex_core::command_result::LifecycleResult;
 use nodex_core::lifecycle::{self, Action};
 
+use super::baseline::BaselineArg;
 use crate::format::emit_write;
 
 /// Detect the `Action::Supersede` payload so the CLI runs
@@ -34,6 +35,8 @@ pub enum LifecycleCommand {
         /// Successor node ID
         #[arg(long)]
         to: String,
+        #[command(flatten)]
+        baseline: BaselineArg,
     },
     /// Set a node's status to any value the project allows
     Set {
@@ -41,15 +44,30 @@ pub enum LifecycleCommand {
         /// Target status — must be in `statuses.allowed` for the node's kind
         #[arg(long)]
         status: String,
+        #[command(flatten)]
+        baseline: BaselineArg,
     },
     /// Refresh the reviewed date on a node
-    Review { id: String },
+    Review {
+        id: String,
+        #[command(flatten)]
+        baseline: BaselineArg,
+    },
 }
 
 impl LifecycleCommand {
     fn node_id(&self) -> &str {
         match self {
-            Self::Supersede { id, .. } | Self::Set { id, .. } | Self::Review { id } => id,
+            Self::Supersede { id, .. } | Self::Set { id, .. } | Self::Review { id, .. } => id,
+        }
+    }
+
+    /// The `--baseline` this action's locks are judged against.
+    pub fn baseline(&self) -> &BaselineArg {
+        match self {
+            Self::Supersede { baseline, .. }
+            | Self::Set { baseline, .. }
+            | Self::Review { baseline, .. } => baseline,
         }
     }
 
@@ -71,7 +89,8 @@ pub fn run(root: &Path, cmd: LifecycleCommand, pretty: bool, today: NaiveDate) -
     let action = cmd.action();
     let action_name = action.name();
 
-    let config = nodex_core::load_project_for_mutation(root)?;
+    let mut config = nodex_core::load_project_for_mutation(root)?;
+    cmd.baseline().apply_to(&mut config);
     let result = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
 
     let rel_path = result.graph.require_node(&node_id)?.path.clone();

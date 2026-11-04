@@ -104,6 +104,27 @@ impl Config {
         }
     }
 
+    /// Judge this run's locks against `reference` in place of
+    /// `rules.immutable_baseline`, exactly as if `nodex.toml` named it there:
+    /// `immutable_baseline_mode` still selects the commit from it, and
+    /// `immutable_history` still says what is judged. A project that names no
+    /// baseline takes the defaults, as it would by naming one.
+    ///
+    /// Run context rather than project behaviour: which commit an event is
+    /// measured from is a fact about the run — a merge group's base, the
+    /// commit a push replaced — that a ref in shared config cannot state for
+    /// every place the config is read. What the project decides, the locks
+    /// and how a ref selects their snapshot, stays in `nodex.toml`.
+    pub fn set_invocation_baseline(&mut self, reference: String) {
+        self.rules.immutable_baseline = Some(reference);
+        self.rules.immutable_baseline_named_by = BaselineNamedBy::Invocation;
+    }
+
+    /// Who named `rules.immutable_baseline` for this run.
+    pub fn baseline_named_by(&self) -> BaselineNamedBy {
+        self.rules.immutable_baseline_named_by
+    }
+
     /// Every declared lifecycle, with disjoint kind populations.
     pub fn status_flows(&self) -> &[StatusFlowConfig] {
         &self.statuses.flow

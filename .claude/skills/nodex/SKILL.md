@@ -141,8 +141,11 @@ nodex impact origin/main HEAD
 
 `--staged` judges the index git commits. `--since` narrows findings and selects
 history; a configured `rules.immutable_baseline` still supplies the lock baseline.
+CI names the commit its event is measured from with `--baseline <ref>`
+([per-run baseline](reference/config.md#naming-the-baseline-for-one-run)); never
+use it to clear a `LOCKED` refusal.
 Read the [history-check semantics](reference/commands.md#check---since) before
-using them as a gate. `--content` excludes both flags.
+using them as a gate. `--content` excludes `--staged` and `--since`.
 
 `[meta].nodex_version` warns on incompatible reads and refuses document writes;
 dry runs stay reads. `--check-version <requirement>` refuses any command outside it.

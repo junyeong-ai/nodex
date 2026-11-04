@@ -735,9 +735,14 @@ pub struct RulesConfig {
     /// Source ref for the baseline shared by checks, proposals and writes.
     /// An explicit `--since` scopes the report without replacing this source.
     /// Without a configured source, `--since` supplies the lock baseline and
-    /// authored proposals compare against the working tree.
+    /// authored proposals compare against the working tree. An invocation
+    /// may name it for one run instead ([`Config::set_invocation_baseline`]).
     #[serde(default)]
     pub immutable_baseline: Option<String>,
+    /// Who named [`Self::immutable_baseline`] for this run. Never read from
+    /// `nodex.toml` nor written back to it.
+    #[serde(skip)]
+    pub(crate) immutable_baseline_named_by: BaselineNamedBy,
     /// How the configured source selects the lock baseline.
     #[serde(default)]
     pub immutable_baseline_mode: ImmutableBaselineMode,
@@ -767,6 +772,7 @@ impl Default for RulesConfig {
             body_immutable: Vec::new(),
             body_line: Vec::new(),
             immutable_baseline: None,
+            immutable_baseline_named_by: BaselineNamedBy::default(),
             immutable_baseline_mode: ImmutableBaselineMode::default(),
             immutable_history: ImmutableHistory::default(),
             acyclic_relations: default_acyclic_relations(),
@@ -776,6 +782,41 @@ impl Default for RulesConfig {
 
 pub(crate) fn default_acyclic_relations() -> Vec<String> {
     vec!["implements".to_string()]
+}
+
+/// Who named the ref the locks are judged against: the project, in
+/// `nodex.toml`, or one invocation, with `--baseline`. Each names what an
+/// operator changes to change it, so a refusal of the ref is worded and
+/// coded by it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BaselineNamedBy {
+    /// `rules.immutable_baseline` in `nodex.toml`.
+    #[default]
+    Config,
+    /// `--baseline <REF>` on this invocation.
+    Invocation,
+}
+
+impl BaselineNamedBy {
+    /// What the operator writes to name the baseline.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Config => "rules.immutable_baseline",
+            Self::Invocation => "--baseline",
+        }
+    }
+
+    /// A refusal of the ref it names — one git cannot resolve, or one that
+    /// shares no single merge base with `HEAD`: `CONFIG_ERROR` for
+    /// `nodex.toml`, `INVALID_ARGUMENT` for the invocation, since each sends
+    /// the operator to a different fix. What the lock policy needs of the
+    /// repository is `CONFIG_ERROR` whoever named the ref.
+    pub fn refusal(self, message: String) -> crate::error::Error {
+        match self {
+            Self::Config => crate::error::Error::Config(message),
+            Self::Invocation => crate::error::Error::InvalidArgument(message),
+        }
+    }
 }
 
 /// How a configured ref selects the snapshot protected by locks.

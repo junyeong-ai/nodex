@@ -752,26 +752,27 @@ impl Repository {
         ))
     }
 
-    /// Select one best base only when the available ancestry establishes it.
-    pub fn unique_merge_base(&self, commits: &[String]) -> io::Result<String> {
+    /// The one best common ancestor of `commits`, where the history the clone
+    /// holds establishes one, or which of the other [`MergeBase`] answers it
+    /// gives instead.
+    ///
+    /// In a shallow clone a single base git names is trusted only once the
+    /// commits from it to `commits` are all held: a cut can hide the newer
+    /// base and leave an older one standing alone ([`Self::range`] refuses
+    /// a range that runs into the cut). A base that is one of `commits`
+    /// needs no such proof: a cut removes parents and never adds one, so
+    /// the ancestry the clone shows holds in the full history too.
+    pub fn unique_merge_base(&self, commits: &[String]) -> io::Result<MergeBase> {
         let base = match self.merge_base(commits)? {
             Before::Commits(mut bases) if bases.len() == 1 => bases.remove(0),
-            Before::Commits(bases) if bases.is_empty() => {
-                return Err(io::Error::other("the commits have no common ancestor"));
-            }
-            Before::Commits(_) => {
-                return Err(io::Error::other("the commits have multiple merge bases"));
-            }
-            Before::Cut => {
-                return Err(io::Error::other(
-                    "shallow history cannot establish a merge base; fetch the required ancestry",
-                ));
-            }
+            Before::Commits(bases) if bases.is_empty() => return Ok(MergeBase::Unrelated),
+            Before::Commits(bases) => return Ok(MergeBase::Several(bases)),
+            Before::Cut => return Ok(MergeBase::Cut),
         };
-        if self.is_shallow()? {
+        if !commits.contains(&base) && self.is_shallow()? {
             self.range(&base, commits)?;
         }
-        Ok(base)
+        Ok(MergeBase::Unique(base))
     }
 
     /// Every path under the project that git ignores and does not track, as
@@ -1025,6 +1026,23 @@ pub enum Before {
     /// The clone is shallow and what is being asked about lies at its graft
     /// boundary, so the answer may be beyond the cut and is unknown rather
     /// than nothing.
+    Cut,
+}
+
+/// What [`Repository::unique_merge_base`] finds behind a set of commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeBase {
+    /// Their one best common ancestor.
+    Unique(String),
+    /// Several best common ancestors, none of which stands above the rest:
+    /// lines that each took commits of the other along different paths (a
+    /// criss-cross merge). The snapshots they hold may disagree about the
+    /// same record.
+    Several(Vec<String>),
+    /// No common ancestor: lines that never met.
+    Unrelated,
+    /// The clone is shallow and the common ancestor lies beyond its cut, so
+    /// whether one exists is unknown rather than no.
     Cut,
 }
 

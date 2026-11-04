@@ -60,7 +60,9 @@ safety: `src/git.rs` rustdoc.
 ## Mutation verdicts and baselines
 
 - `mutate::BaselineBinding::resolve` binds `rules.immutable_baseline` once per
-  command; `snapshot` pairs it with the baseline graph and is the only way to
+  command, as `--baseline` named it for the run where it did
+  (`Config::set_invocation_baseline`; `BaselineNamedBy` words and codes the
+  refusal); `snapshot` pairs it with the baseline graph and is the only way to
   obtain `BaselineProbe`. The CLI's `baseline_graph` builds that graph under the
   judged project's config; both read-plane diffs and write-plane locks use it.
   An unreadable baseline is an error, not an inert lock. No work tree or no

@@ -8,7 +8,7 @@ Read this when authoring or debugging a config. `nodex init` writes an annotated
 - [Identity](#identity) and [scope](#scope)
 - [Frontmatter relations](#frontmatter-relations) and [body links](#body-links)
 - [Schema rules](#schema-rules), [built-in rules](#built-in-rule-ids) and [vocabulary](#vocabulary-rules)
-- [Diff-aware rules and locks](#diff-aware-rules)
+- [Diff-aware rules and locks](#diff-aware-rules), and [naming the baseline for one run](#naming-the-baseline-for-one-run)
 - [Status flow](#status-flow)
 - [Rule severity](#rule-severity) and [unresolved references](#unresolved-reference-policy)
 - [Detection thresholds](#detection-thresholds) and [git measurement](#git-measurement)
@@ -157,7 +157,7 @@ The content-scoped per-block families — `body_immutable`, `frontmatter_immutab
 
 ## Diff-aware rules
 
-`frontmatter_immutable` and `body_immutable` need a before-state. `rules.immutable_baseline` selects it for checks, proposals, issues, and writes. Without a configured baseline, `--since <ref>` supplies it and authored proposals compare against the working tree. Without either, locks report `skipped_rules`. The `nodex init` template sets `immutable_baseline = "HEAD"`.
+`frontmatter_immutable` and `body_immutable` need a before-state. `rules.immutable_baseline` selects it for checks, proposals, issues, and writes; [`--baseline`](#naming-the-baseline-for-one-run) names it for one run instead. Without a configured baseline, `--since <ref>` supplies it and authored proposals compare against the working tree. Without either, locks report `skipped_rules`. The `nodex init` template sets `immutable_baseline = "HEAD"`.
 
 ```toml
 [rules]
@@ -166,7 +166,7 @@ immutable_baseline = "origin/main"
 
 The configured baseline supplies lock comparisons without narrowing the report. An explicit `--since` scopes the report and step-history range without replacing that baseline.
 
-`immutable_baseline_mode = "ref"` (default) selects the source commit itself. `"merge_base"` selects its unique best common ancestor with `HEAD`. Both resolve to a commit ID once per command. Merge-base selection refuses missing ancestry, insufficient shallow history, Git failures, and multiple best bases with `CONFIG_ERROR`; it never chooses a base arbitrarily or fetches implicitly.
+`immutable_baseline_mode = "ref"` (default) selects the source commit itself. `"merge_base"` selects its unique best common ancestor with `HEAD`. Both resolve to a commit ID once per command. Merge-base selection refuses missing ancestry, insufficient shallow history, Git failures, and multiple best bases with `CONFIG_ERROR`, except that a ref `--baseline` named sharing no common ancestor or several best bases with `HEAD` is `INVALID_ARGUMENT`, since the argument is what changes; it never chooses a base arbitrarily or fetches implicitly. Several best bases arise when `HEAD` and the source took each other's commits along different paths: a branch holding commits of another branch that landed since, or a merge-queue run whose group was rebuilt after the source moved. The refusal names them; merging the source into `HEAD` leaves one.
 
 `immutable_history = "steps"` (default) checks the baseline and each selected commit step. `"snapshot"` checks only the baseline against the evaluated working tree, index, or proposed overlay. Both nondefault settings require `immutable_baseline`. Snapshot evaluation and merge-base selection require a readable Git history.
 
@@ -177,9 +177,9 @@ immutable_baseline_mode = "merge_base"
 immutable_history = "snapshot"
 ```
 
-Snapshot locks arm from the baseline kind and status. A record absent or unarmed there remains editable, even if branch commits accepted it. Append-only preserves the baseline prefix; additions made only on the branch can still be revised. Merging the source advances the protected snapshot. When the source includes the evaluated commit, a clean check compares that commit with itself: post-integration auditing needs an earlier explicit source SHA. Status-flow rules retain their step semantics under both lock policies.
+Snapshot locks arm from the baseline kind and status. A record absent or unarmed there remains editable, even if branch commits accepted it. Append-only preserves the baseline prefix; additions made only on the branch can still be revised. Merging the source advances the protected snapshot. When the source includes the evaluated commit, a clean check compares that commit with itself: a post-integration audit names the commit the push replaced with `--baseline`. Status-flow rules retain their step semantics under both lock policies.
 
-Under the default ref/steps policy, no Git work tree or an unborn repository is inert; nondefault snapshot or merge-base policies refuse those states. A selected commit that carries no project is inert under either policy. When inert, the run proceeds with a `baseline_inert` warning and the rules land in `skipped_rules`. The same advisory rides every writing command, so a write whose locks were never enforced never reads as clean. A ref git cannot resolve at all is refused outright with `CONFIG_ERROR` by reads and writes alike, `check --content` included, so an unreadable baseline cannot let the pre-write gate clear an edit the write would refuse. The default policy permits scaffolding before the first commit.
+Under the default ref/steps policy, no Git work tree or an unborn repository is inert; nondefault snapshot or merge-base policies refuse those states. A selected commit that carries no project is inert under either policy. When inert, the run proceeds with a `baseline_inert` warning and the rules land in `skipped_rules`. The same advisory rides every writing command, so a write whose locks were never enforced never reads as clean. A ref git cannot resolve at all is refused outright with `CONFIG_ERROR` (`INVALID_ARGUMENT` when `--baseline` named it) by reads and writes alike, `check --content` included, so an unreadable baseline cannot let the pre-write gate clear an edit the write would refuse. The default policy permits scaffolding before the first commit.
 
 A CI checkout that lacks the ref — a shallow clone without `origin/main` — fails every baseline-resolving command this way; fetch the ref first.
 
@@ -242,6 +242,20 @@ kinds = ["adr"]
 Reach for it rather than moving a status into `statuses.terminal`: that word is also read by `statuses.flow` validation, `conditional_exclude`, the `terminal` trigger, `lifecycle`, `git_drift`, orphan and stale detection, `superseded_reference`, and the `GRAPH.md` report, so arming a lock through it declares the record finished to every one of them. The first is not a behaviour change but a refusal — a flow declaring a move out of that status stops loading.
 
 Declare `[[statuses.flow]]` over the same kinds and load proves two things about the arming, both `CONFIG_ERROR`s naming the pair. No declared transition may leave the arming, or a status edit would disarm the lock. And where the block locks `status` itself, no declared transition may move a document while it is armed, or the lock would refuse a move the flow calls legal and no document could satisfy both — which is why locking `status` fits `terminal`, where a terminal status declares no move, and not `creation`, which arms everywhere. For a kind no flow governs there is nothing to prove against: a status edit can disarm the lock, and the project has declared no lifecycle that would say otherwise.
+
+### Naming the baseline for one run
+
+`check`, `query issues` and every writing command take `--baseline <ref>`, which judges that run exactly as if `rules.immutable_baseline` named `<ref>`; `immutable_baseline_mode` and `immutable_history` still apply. CI passes the commit its event is measured from, so the verdict depends on the commits judged rather than on where a fetched branch stood: against `origin/main`, a merge group queued behind another reads a different baseline depending on whether the group ahead has landed yet.
+
+| GitHub Actions event | `--baseline` |
+|---|---|
+| `pull_request` (merge-ref checkout) | `HEAD^1` |
+| `merge_group` | `${{ github.event.merge_group.base_sha }}` |
+| `push` | `${{ github.event.before }}` |
+
+The clone must hold the named commit, which `actions/checkout`'s default `fetch-depth: 1` does not. A push that creates a branch or tag has no previous commit (`before` is all zeros): run it without `--baseline`. A force push's `before` is on no branch, so fetch it by id (`git fetch origin <sha>`) before naming it.
+
+Local runs keep the configured ref. `--baseline` states what an event is measured from: never use it to clear a `LOCKED` refusal, since a later commit only hides the drift from that run, and a gate measuring from the event's base still refuses it.
 
 ## Status flow
 
