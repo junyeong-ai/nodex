@@ -11,7 +11,7 @@ use commands::export::ExportCommand;
 use commands::impact::ImpactArgs;
 use commands::lifecycle::LifecycleCommand;
 use commands::migrate::MigrateArgs;
-use commands::query::QueryCommand;
+use commands::query::QueryArgs;
 use commands::rename::RenameArgs;
 use commands::retarget::RetargetArgs;
 use commands::scaffold::ScaffoldArgs;
@@ -69,13 +69,7 @@ enum Command {
     /// What depends on what a diff changed: removed, moved and modified nodes paired with their dependents
     Impact(ImpactArgs),
     /// Search and explore the graph
-    Query {
-        /// Read the indexed snapshot without verifying document content.
-        #[arg(long, global = true)]
-        allow_stale: bool,
-        #[command(subcommand)]
-        sub: QueryCommand,
-    },
+    Query(QueryArgs),
     /// Run validation rules
     Check(CheckArgs),
     /// Manage document lifecycle
@@ -195,9 +189,7 @@ fn main() -> std::process::ExitCode {
             Command::Status => commands::status::run(&root, pretty),
             Command::Diff(args) => commands::diff::run(&root, args, pretty),
             Command::Impact(args) => commands::impact::run(&root, args, pretty),
-            Command::Query { sub, allow_stale } => {
-                commands::query::run(&root, sub, !allow_stale, pretty, today)
-            }
+            Command::Query(args) => commands::query::run(&root, args, pretty, today),
             Command::Check(args) => commands::check::run(&root, args, pretty, today),
             Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
             Command::Report => commands::report::run(&root, pretty, today),

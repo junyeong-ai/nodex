@@ -11,6 +11,16 @@ use std::path::{Path, PathBuf};
 
 use nodex_core::query::recent::{DEFAULT_LIMIT, DEFAULT_SINCE_DAYS, RecentField};
 
+/// `nodex query`: one leaf, and the flag every leaf takes.
+#[derive(Args)]
+pub struct QueryArgs {
+    /// Read the indexed snapshot without verifying document content.
+    #[arg(long, global = true)]
+    pub allow_stale: bool,
+    #[command(subcommand)]
+    pub sub: QueryCommand,
+}
+
 /// Query subcommands. Each variant carries exactly the arguments its
 /// query needs; the top-level dispatcher just passes this value to
 /// [`run`].
@@ -311,20 +321,14 @@ impl QueryContext<'_> {
     }
 }
 
-pub fn run(
-    root: &Path,
-    cmd: QueryCommand,
-    require_current: bool,
-    pretty: bool,
-    today: NaiveDate,
-) -> Result<()> {
+pub fn run(root: &Path, args: QueryArgs, pretty: bool, today: NaiveDate) -> Result<()> {
     let context = QueryContext {
         root,
-        require_current,
+        require_current: !args.allow_stale,
         snapshot: std::cell::RefCell::new(None),
     };
     let root = &context;
-    match cmd {
+    match args.sub {
         QueryCommand::Search(args) => filter::run_search(root, args, pretty),
         QueryCommand::Backlinks { id, limit } => traverse::run_backlinks(root, &id, limit, pretty),
         QueryCommand::Chain { id } => traverse::run_chain(root, &id, pretty),
