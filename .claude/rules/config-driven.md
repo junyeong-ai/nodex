@@ -4,7 +4,7 @@ All project-specific behavior must come from `nodex.toml` — never hardcode dom
 
 ## Semantic config items
 
-Every semantic behavior is declared once in `nodex.toml` and read many times. What each key means, its default and what load refuses is the user-facing reference `.claude/skills/nodex/reference/config.md`; `Config::validate` is the code. A key added, changed or newly refused at load changes that reference in the same change.
+Every semantic behavior is declared once in `nodex.toml` and read many times. What each key means, its default and what load refuses is the user-facing reference `.claude/skills/nodex/reference/config.md` — `[similarity]`, `[search]` and `[report]` are documented key by key in the `nodex init` template (`nodex-cli/src/commands/init.rs`) instead; `Config::validate` is the code. A key added, changed or newly refused at load changes its reference in the same change.
 
 A declaration read in more than one place is read through one seam:
 

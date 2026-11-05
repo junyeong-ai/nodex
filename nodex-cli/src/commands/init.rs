@@ -300,7 +300,7 @@ orphan_grace_days = 14
 # citations out of the question. The block must be declared.
 # superseded_reference_ok_annotation = "superseded-ok"
 
-# Git-aware drift signal (opt-in). When set, `check`
+# Git-aware drift signal (opt-in). When set, `check` and `query issues`
 # look at how many commits touched a node's referenced files since its
 # `reviewed` date and surface high counts as maintenance signals / warnings.
 # Requires `git` on PATH and a git work tree holding the project;

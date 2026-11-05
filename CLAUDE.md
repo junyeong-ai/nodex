@@ -37,8 +37,9 @@ per-process isolation catches shared-state test bugs `cargo test` hides.
 
 ## Project-wide rules
 
-The `.claude/rules/` directory holds the authoritative rules; each file's `paths:`
-frontmatter says when it loads:
+The `.claude/rules/` directory holds the authoritative rules. A file's `paths:`
+frontmatter says when it loads; `principles.md` and `config-driven.md` have none
+and load in every session:
 
 - `principles.md` — evidence-based, root-cause-first, triage-before-fixing, config-over-code
 - `config-driven.md` — self-consistency invariants between config validation, runtime, and tool-written documents

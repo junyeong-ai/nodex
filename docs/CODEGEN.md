@@ -91,7 +91,7 @@ from _generated.query_annotations import QueryAnnotationsData
 
 proc = subprocess.run(
     ["nodex", "query", "annotations", "--with-frontmatter", "created,tags"],
-    capture_output=True, text=True, check=True,
+    capture_output=True, text=True,
 )
 envelope = json.loads(proc.stdout)
 if not envelope["ok"]:
@@ -166,10 +166,11 @@ Check the envelope's `ok` discriminant, then validate the `data`
 payload with the generated schema:
 
 ```ts
+import { spawnSync } from "node:child_process";
 import { QueryIssuesDataSchema } from "./_generated/query-issues";
 
-const raw = execSync("nodex query issues", { encoding: "utf8" });
-const envelope = JSON.parse(raw);
+const run = spawnSync("nodex", ["query", "issues"], { encoding: "utf8" });
+const envelope = JSON.parse(run.stdout);
 if (!envelope.ok) {
     throw new Error(envelope.error.code);
 }

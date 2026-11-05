@@ -29,7 +29,7 @@ pub enum ExportCommand {
     Config,
     /// Emit the authoritative CLI invocation grammar (leaf paths, positionals, flags, payload-schema keys)
     Commands,
-    /// Emit the error-code and exit-code vocabularies (closed sets, for codegen)
+    /// Emit the error-code, warning-code and exit-code vocabularies (closed sets, for codegen)
     Diagnostics,
 }
 

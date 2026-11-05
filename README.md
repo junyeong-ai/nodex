@@ -480,7 +480,7 @@ Error codes are derived from the typed `nodex_core::error::Error` enum via `down
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed or refused (e.g., not a work tree, missing ref, an index with unmerged entries) — most often from `diff`, `impact`, `check --since` and `check --staged` |
-| `INVALID_ARGUMENT` | The command cannot act on its arguments: a clap parse failure, a value the config does not declare (`--fields`, `--where`, `--name`, `--kind`, `--relations`, a `lifecycle set --status` the kind does not allow), a malformed or zero value (`--content` without `=`, `--depth 0`, `--limit 0`, a `--check-version` that is not SemVer), a path the scope would not graph or the filesystem spells differently, a `--baseline` git cannot resolve or that shares no single merge base with `HEAD`, while a lock reads it, `rename` of a directory, `retarget X X`. The message lists what is accepted; correct the argument, not `nodex.toml` |
+| `INVALID_ARGUMENT` | The command cannot act on its arguments: a clap parse failure, a value the config does not declare (`--fields`, `--where`, `--name`, `--kind`, `--relations`, a `lifecycle set --status` the kind does not allow), a malformed or zero value (`--content` without `=`, `--depth 0`, `--limit 0`, a `--check-version` that is not SemVer), a path the scope would not graph or the filesystem spells differently, a `--baseline` a lock reads that git cannot resolve or that has no single merge base with `HEAD`, `rename` of a directory, `retarget X X`. The message names what is accepted; correct the argument or the declaration it points to |
 | `INTERNAL_ERROR` | A defect in nodex: an unclassified cause, or an invariant of its own output that failed |
 
 <!-- /published:error-codes -->
@@ -493,7 +493,7 @@ A `warnings[]` entry describes the result's scope, retention or other conditions
 
 | Code | Meaning |
 |---|---|
-| `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing (a `scope.include` or `identity` glob matching no file, a `scope.exclude` that kept nothing out), a document no `identity` rule names, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
+| `scope_coverage` | What was read and what the project governs did not line up — a declaration that selected nothing (a `scope.include` or `identity` glob matching no file, a `scope.exclude` that kept nothing out), a document no `identity.kind_rules` glob classifies, a part of the tree the walk never read, or a `check --content` path the scope does not admit |
 | `snapshot_divergence` | Snapshot drift or a failed freshness probe — rebuild for drift; resolve the probe error named in the message |
 | `violations_introduced` | A write landed with Error-severity findings it introduced instead of refusing them: a `scaffold` from config defaults alone, whose findings on its new document are the placeholders to fill in (one warning per finding) |
 | `id_changed` | A write left a document under a different id: `rename` of a document with no frontmatter to anchor its path-derived id in. References naming the old id no longer resolve to it, and the baseline holds nothing under the new one |
@@ -641,7 +641,7 @@ More: [locks and triggers](.claude/skills/nodex/reference/config.md#diff-aware-r
 
 ### Binary-Version Pin
 
-`[meta] nodex_version = ">=0.63, <0.64"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH`; their `--dry-run` forms write nothing and run as reads with the advisory — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
+`[meta] nodex_version = ">=0.63, <0.64"` in `nodex.toml` pins the binary that may **write** the project's documents. On a binary outside the requirement, read commands still run and attach a non-fatal advisory to the envelope `warnings`, while writing commands (`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`) refuse with `VERSION_MISMATCH`; their dry runs (`--dry-run` on `scaffold`, `rename` and `retarget`, `migrate` without `--apply`) write nothing and run as reads with the advisory — reading a graph can't corrupt it, so only mutations are gated. The project pins its tooling instead of every CI / contributor re-implementing the check. The global `--check-version` CLI flag is a separate hard gate that refuses *any* command on a mismatch.
 
 ---
 
