@@ -7,9 +7,7 @@ paths:
 
 1. Implement `Rule` (`id`, `severity`, `check`, `description`,
    `subject_unit`). `check` returns a `RuleRun` — the violations *and*
-   `subjects`, the population this rule guards. A rule that guards nothing
-   passes for the same reason a rule that guards everything passes, and the
-   reach is the only place that difference shows. `subject_unit` names what
+   `subjects`, the population this rule guards. `subject_unit` names what
    is counted (`Nodes` / `Edges` / `Files`) so `subjects: 0` reads without
    the manifest.
 

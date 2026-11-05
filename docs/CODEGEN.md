@@ -48,10 +48,7 @@ degenerates to an untyped catch-all.
 
 ## Python (Pydantic via `datamodel-code-generator`)
 
-`datamodel-code-generator` is the de-facto Python codegen for JSON
-Schema. Pydantic models give parse-time validation; the resulting
-file is fully typed, IDE/AI-friendly, and contains no hand-written
-field translations.
+Pydantic models give parse-time validation of each payload.
 
 ### Install (project-local)
 

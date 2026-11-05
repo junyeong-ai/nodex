@@ -132,12 +132,9 @@ safety: `src/git.rs` rustdoc.
   before any `--since` report narrowing. Counting conventions and new-rule
   procedure: `.claude/rules/adding-a-validation-rule.md`.
 - `rules::Since::Baseline` arms locks without narrowing. `Since::Narrowed` asks
-  each rule's `touched_by` per finding. The default is `GraphDiff::touched_ids`
-  (record, authored edge or annotation); node-less findings remain. Orphan widens
-  through `Touched::relinked`; superseded-reference includes the target's
-  successor lineage. Git drift asks whether `since..HEAD` added a measured
-  commit (`DriftHistory::commits_added`), including covered code outside the
-  graph, rather than pretending an uncommitted graph edit changed history.
+  each rule's `touched_by` per finding, by default `GraphDiff::touched_ids`;
+  which rules widen it and why: `.claude/rules/adding-a-validation-rule.md`
+  step 4.
 - Step rules (`Rule::judges_steps`) read `ancestry::Step`, never endpoint diffs.
   Every plain check, issues query and write gate judges the uncommitted change
   against HEAD and all MERGE_HEADs; staged check substitutes the committed index.

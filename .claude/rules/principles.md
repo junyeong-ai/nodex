@@ -27,4 +27,4 @@ A change that warrants an independent review gets one round, with the reviewer w
 
 ## Config Over Code
 
-If a behavior could vary between projects, it belongs in `nodex.toml`, not in source code. No hardcoded domain logic.
+A behavior that could vary between projects belongs in `nodex.toml`; how config is declared, validated and read: `config-driven.md`.
