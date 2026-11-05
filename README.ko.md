@@ -472,7 +472,7 @@ Error code는 typed `nodex_core::error::Error`의 `downcast_ref`로 도출하며
 | `IO_ERROR` | filesystem read/write 실패 |
 | `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 아래의 쓰기 명령 |
 | `GIT_ERROR` | `git` 호출 실패 또는 거부 (work tree 없음, ref 부재, 충돌이 남은 index 등) — 주로 `diff` / `impact` / `check --since` / `check --staged`에서 발생 |
-| `INVALID_ARGUMENT` | 명령이 인자를 처리할 수 없음: clap 파싱 실패, config에 선언되지 않은 값(`--fields`, `--where`, `--name`, `--kind`, `--relations`, kind가 허용하지 않는 `lifecycle set --status`), 형식이 틀리거나 0인 값(`=` 없는 `--content`, `--depth 0`, `--limit 0`, SemVer가 아닌 `--check-version`), scope가 그래프에 넣지 않을 경로나 파일시스템과 표기가 다른 경로, 잠금이 읽는데 git이 해석하지 못하거나 `HEAD`와 merge base가 하나로 정해지지 않는 `--baseline`, 디렉터리 `rename`, `retarget X X`. 메시지가 허용되는 값을 나열하므로 `nodex.toml`이 아니라 인자를 고침 |
+| `INVALID_ARGUMENT` | 명령이 인자를 처리할 수 없음: clap 파싱 실패, config에 선언되지 않은 값(`--fields`, `--where`, `--name`, `--kind`, `--relations`, kind가 허용하지 않는 `lifecycle set --status`), 형식이 틀리거나 0인 값(`=` 없는 `--content`, `--depth 0`, `--limit 0`, SemVer가 아닌 `--check-version`), scope가 그래프에 넣지 않을 경로나 파일시스템과 표기가 다른 경로, 잠금이 읽는 `--baseline` 중 git이 해석하지 못하거나 `HEAD`와 merge base가 하나로 정해지지 않는 ref, 디렉터리 `rename`, `retarget X X`. 메시지가 무엇을 받는지 알려 주므로 인자나 메시지가 가리키는 선언을 고침 |
 | `INTERNAL_ERROR` | nodex의 결함: 분류되지 않은 원인, 또는 nodex 자체 출력의 불변식 위반 |
 
 <!-- /published:error-codes -->
@@ -485,7 +485,7 @@ Error code는 typed `nodex_core::error::Error`의 `downcast_ref`로 도출하며
 
 | 코드 | 의미 |
 |---|---|
-| `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언(어떤 파일과도 일치하지 않는 `scope.include`·`identity` glob, 아무것도 막지 않은 `scope.exclude`), 어느 `identity` 룰에도 걸리지 않는 문서, walk가 읽지 못한 트리 부분, scope가 받지 않는 `check --content` 경로 |
+| `scope_coverage` | 읽은 것과 프로젝트가 관할하는 것이 어긋남 — 아무것도 고르지 않은 선언(어떤 파일과도 일치하지 않는 `scope.include`·`identity` glob, 아무것도 막지 않은 `scope.exclude`), 어느 `identity.kind_rules` glob에도 분류되지 않는 문서, walk가 읽지 못한 트리 부분, scope가 받지 않는 `check --content` 경로 |
 | `snapshot_divergence` | 스냅샷 변경 또는 최신성 검사 실패 — 변경 시 재빌드, 검사 실패 시 메시지에 표시된 원인 해결 |
 | `violations_introduced` | 쓰기가 새로 만든 Error-severity 위반을 거부하지 않고 쓴 채로 알림: 설정 기본값만으로 만든 `scaffold`에서 새 문서의 위반은 채워야 할 자리표시임 (위반마다 경고 하나) |
 | `id_changed` | 쓰기 뒤 문서의 id가 바뀜: 경로에서 도출한 id를 고정할 frontmatter가 없는 문서를 `rename`함. 옛 id를 가리키는 참조는 더 이상 이 문서로 해석되지 않고, baseline에는 새 id의 기록이 없음 |
@@ -633,7 +633,7 @@ flow를 선언하면 `status_transition`과 `status_entry`가 등록되고, `lif
 
 ### 바이너리 버전 핀
 
-`nodex.toml`의 `[meta] nodex_version = ">=0.63, <0.64"`은 프로젝트 문서를 **쓸** 수 있는 바이너리를 고정합니다. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings`에 치명적이지 않은 경고를 붙이고, 쓰기 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH`로 거부합니다. 이 명령들의 `--dry-run`은 아무것도 쓰지 않으므로 경고만 붙이고 읽기처럼 실행됩니다. 그래프를 읽는 일은 그래프를 손상시킬 수 없으므로 변경만 막습니다. 그래서 CI나 컨트리뷰터마다 검사를 다시 짜지 않고도 프로젝트가 도구 버전을 고정합니다. 전역 `--check-version` CLI 플래그는 불일치하면 *모든* 명령을 거부하는 별도의 하드 게이트입니다.
+`nodex.toml`의 `[meta] nodex_version = ">=0.63, <0.64"`은 프로젝트 문서를 **쓸** 수 있는 바이너리를 고정합니다. 요구를 벗어난 바이너리에서도 읽기 명령은 실행되며 envelope `warnings`에 치명적이지 않은 경고를 붙이고, 쓰기 명령(`scaffold`, `migrate --apply`, `rename`, `retarget`, `lifecycle`)만 `VERSION_MISMATCH`로 거부합니다. 이 명령들의 dry run(`scaffold`·`rename`·`retarget`의 `--dry-run`, `--apply` 없는 `migrate`)은 아무것도 쓰지 않으므로 경고만 붙이고 읽기처럼 실행됩니다. 그래프를 읽는 일은 그래프를 손상시킬 수 없으므로 변경만 막습니다. 그래서 CI나 컨트리뷰터마다 검사를 다시 짜지 않고도 프로젝트가 도구 버전을 고정합니다. 전역 `--check-version` CLI 플래그는 불일치하면 *모든* 명령을 거부하는 별도의 하드 게이트입니다.
 
 ---
 

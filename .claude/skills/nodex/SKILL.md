@@ -47,8 +47,8 @@ A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 `GRAPH_MISSING` / `GRAPH_OUTDATED`; fix unreadable paths for `IO_ERROR`.
 `INVALID_ARGUMENT` refuses an argument the command cannot act on (an undeclared
 kind, status, field, relation or annotation name, a `--body-lines` range outside
-the body, a zero cap, a scaffold with no path); the refusal message lists the
-accepted values, so correct the argument rather than `nodex.toml`. `CONFIG_ERROR`
+the body, a zero cap, a scaffold with no path); the refusal message names what is
+accepted, so correct the argument or the declaration it points to. `CONFIG_ERROR`
 is `nodex.toml` itself.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
 and `current`; rebuild with `--full` for a schema mismatch
@@ -113,9 +113,10 @@ and repoints its citations. `lifecycle supersede` changes the predecessor alone,
 leaving its citations to `superseded_reference`, which a project that makes
 that rule an error enforces by refusing the write.
 
-On the documents they change, writes refuse an introduced error
-(`CONTENT_VIOLATIONS`) and any change to what an armed lock holds, or a part that
-already drifted from its baseline (`LOCKED`). An `append_only` record takes
+Writes refuse an error they introduce anywhere in the graph
+(`CONTENT_VIOLATIONS`); on the documents they change, they also refuse any change
+to what an armed lock holds, or a part that already drifted from its baseline
+(`LOCKED`). An `append_only` record takes
 appended lines only, inside its `append_section` heading when the lock names one;
 a `frozen` body takes none, and a changed decision takes supersession
 ([locks](reference/config.md#diff-aware-rules)). Discover lock and relation policy
@@ -205,7 +206,7 @@ Envelope-level, same discipline. The full published set:
 
 <!-- published:warning-codes -->
 `scope_coverage` (an include or identity glob that matched no file, an exclude that
-kept nothing out, a document no identity rule names, a part of the tree the walk
+kept nothing out, a document no `identity.kind_rules` glob classifies, a part of the tree the walk
 never read, or a `check --content` path the scope does not admit) ·
 `cache` (cache IO failed; the next run repeats work) ·
 `snapshot_divergence` (snapshot drift, or a failed probe: rebuild for drift, fix the
