@@ -323,7 +323,7 @@ history = "recorded"
 severity = "error"
 ```
 
-A `history` row needs the whole history (`fetch-depth: 0`); a shallow clone is refused with `CONFIG_ERROR`. [Policy rows](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
+A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `check`, `query issues` and writes are refused with `CONFIG_ERROR`, and other commands still run. [Policy rows](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
 
 ### Answer without a graph
 

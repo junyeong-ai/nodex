@@ -257,10 +257,11 @@ impl ProjectHistory {
             DriftHistory::of(config, root)
         };
         let (recorded, warnings) = match config.history_policy_row() {
-            Some(_) => {
+            Some(row) => {
+                let repository = row_repository(root, row)?;
                 let kept = KeptFile::new(root, config, RECORDED_FILE, refresh);
                 (
-                    Some(recorded_bindings(root, config, &kept)?),
+                    Some(recorded_bindings(&repository, config, &kept)?),
                     kept.warnings(),
                 )
             }
@@ -346,14 +347,11 @@ impl KeptRecord {
 /// A kept reading the current `HEAD` reaches is completed by the commits
 /// since; `HEAD`'s documents are listed again, and only a revision the kept
 /// reading did not hold is parsed.
-fn recorded_bindings(root: &Path, config: &Config, kept: &KeptFile) -> Result<Bindings> {
-    let repository = Repository::discover(root)
-        .map_err(|e| git_error("resolving the repository", e))?
-        .ok_or_else(|| Error::Git {
-            context: "an unresolved_policy row's history reads git".to_string(),
-            stderr: format!("no git work tree was found for {}", root.display()),
-        })?;
-    require_whole_history(&repository, "an unresolved_policy row's history")?;
+fn recorded_bindings(
+    repository: &Repository,
+    config: &Config,
+    kept: &KeptFile,
+) -> Result<Bindings> {
     let Some(head) = repository
         .head()
         .map_err(|e| git_error("resolving HEAD", e))?
@@ -460,6 +458,34 @@ fn recorded_bindings(root: &Path, config: &Config, kept: &KeptFile) -> Result<Bi
             .ok_or("the project's path inside the repository is not UTF-8")
     });
     Ok(record.bindings())
+}
+
+/// The repository `row`'s history is read from: a work tree holding the
+/// whole history. Anything else is the environment the row requires and does
+/// not have, refused as configuration is, naming the row and the remedy; a
+/// clone git reshapes cannot tell a document it does not hold from one that
+/// was never there.
+fn row_repository(
+    root: &Path,
+    row: &crate::config::UnresolvedPolicyRuleConfig,
+) -> Result<Repository> {
+    let reason = match Repository::discover(root) {
+        Ok(Some(repository)) => match repository.reshapes_history() {
+            Ok(false) => return Ok(repository),
+            Ok(true) => "this clone's history is shallow, grafted or replaced".to_string(),
+            Err(e) => {
+                format!("whether this clone holds its whole history could not be read ({e})")
+            }
+        },
+        Ok(None) => format!("no git work tree was found for {}", root.display()),
+        Err(e) => format!("its repository could not be resolved ({e})"),
+    };
+    Err(Error::Config(format!(
+        "detection.unresolved_policy row {name:?} reads history but {reason}; run inside a git \
+         work tree holding the whole history (`git fetch --unshallow`), or remove the row's \
+         history",
+        name = row.name,
+    )))
 }
 
 /// A revision as a build would parse it now; `None` where it does not parse.

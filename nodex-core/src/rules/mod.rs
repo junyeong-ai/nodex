@@ -86,53 +86,34 @@ pub enum RuleSource {
     Config,
 }
 
-/// Verify the runtime prerequisites of every opt-in rule: a git work tree
-/// containing `root` for `git_drift_threshold`, and one holding its whole
-/// history for an `unresolved_policy` row that reads it. Call once after
-/// [`Config::load`] and before any command that could exercise the rules —
-/// failures surface as [`Error::Config`] so the operator sees `CONFIG_ERROR`
-/// and exit 2, not a buried check violation.
+/// Verify the runtime prerequisites of every opt-in rule. Today only
+/// `git_drift_threshold` has any (git on PATH + a git work tree
+/// containing `root`). Call once after [`Config::load`] and before any
+/// command that could exercise the rules — failures surface as
+/// [`Error::Config`] so the operator sees `CONFIG_ERROR` and exit 2,
+/// not a buried check violation.
 ///
 /// Resolving the binding *is* the probe: [`crate::git::Repository`] has
 /// no representation for an unusable environment, so the two states this
 /// reports — no git, or no work tree — are exactly the two states in
-/// which a rule cannot read git. A history row asks one thing more: a
-/// clone whose history git reshapes cannot tell a document it does not
-/// hold from one that was never there.
+/// which the rule cannot measure.
+///
+/// An `unresolved_policy` row's `history` is not checked here: only the
+/// commands that classify unresolved references read it, and they refuse
+/// where they read it ([`crate::history::ProjectHistory`]), so a command
+/// that never asks — a search, a classification — still answers in a
+/// clone that cannot.
 pub fn preflight(config: &Config, root: &Path) -> Result<()> {
-    let history_row = config.history_policy_row();
-    if config.detection.git_drift_threshold.is_none() && history_row.is_none() {
-        return Ok(());
-    }
-    let repository = match crate::git::Repository::discover(root) {
-        Ok(Some(repository)) => Ok(repository),
-        Ok(None) => Err(format!("no git work tree was found for {}", root.display())),
-        Err(e) => Err(format!("its repository could not be resolved ({e})")),
-    };
-    if config.detection.git_drift_threshold.is_some()
-        && let Err(reason) = &repository
-    {
+    if config.detection.git_drift_threshold.is_some() {
+        let reason = match crate::git::Repository::discover(root) {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => format!("no git work tree was found for {}", root.display()),
+            Err(e) => format!("its repository could not be resolved ({e})"),
+        };
         return Err(Error::Config(format!(
             "detection.git_drift_threshold is set but {reason}; \
              install git and run inside a git work tree, or remove the threshold"
         )));
-    }
-    if let Some(row) = history_row {
-        let reason = repository.and_then(|repository| match repository.reshapes_history() {
-            Ok(false) => Ok(()),
-            Ok(true) => Err("this clone's history is shallow, grafted or replaced".to_string()),
-            Err(e) => Err(format!(
-                "whether this clone holds its whole history could not be read ({e})"
-            )),
-        });
-        if let Err(reason) = reason {
-            return Err(Error::Config(format!(
-                "detection.unresolved_policy row {name:?} reads history but {reason}; \
-                 run inside a git work tree holding the whole history (`git fetch --unshallow`), \
-                 or remove the row's history",
-                name = row.name,
-            )));
-        }
     }
     Ok(())
 }
