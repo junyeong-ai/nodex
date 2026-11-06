@@ -67,7 +67,7 @@ pub use model::{
     FieldParseIssue, Graph, GraphMeta, Kind, Node, ParseFailure, RawAnnotation, RawBodyLineMatch,
     RawEdge, Reference, ReferenceDefinition, ReferenceLocation, ReferenceProtection,
     ReferenceSource, ReferenceSyntax, ResolvedTarget, SectionHeading, Status, TargetHistory,
-    UnresolvedCause,
+    TargetRecord, UnresolvedCause,
 };
 pub use mutate::{
     BaselineBinding, BaselineProbe, GraphedBaseline, HeldBack, Introduced, Kept, Narrowing,

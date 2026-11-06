@@ -1,6 +1,5 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 289
 expression: observed
 ---
 exit: 0
@@ -623,6 +622,41 @@ exit: 0
               "files"
             ],
             "type": "string"
+          },
+          "TargetRecord": {
+            "description": "What the project's history holds of a reference nothing binds now, with the\ndocument it would have bound.",
+            "oneOf": [
+              {
+                "description": "A recorded revision would have bound it to the document `id`, the\nsubject `nodex history` takes.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "recorded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "No recorded revision would have.",
+                "properties": {
+                  "type": {
+                    "const": "unrecorded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
           },
           "UnresolvedCause": {
             "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
@@ -1394,6 +1428,17 @@ exit: 0
                 "properties": {
                   "cause": {
                     "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "history": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/TargetRecord"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What history holds of the target, where a policy row reads it.\nEvidence: it describes the target, not the reference."
                   },
                   "location": {
                     "description": "Evidence: `L<n>` in the body, or the frontmatter field it was\nread from — a line number moves when text above it does.",
@@ -4221,6 +4266,41 @@ exit: 0
             ],
             "type": "string"
           },
+          "TargetRecord": {
+            "description": "What the project's history holds of a reference nothing binds now, with the\ndocument it would have bound.",
+            "oneOf": [
+              {
+                "description": "A recorded revision would have bound it to the document `id`, the\nsubject `nodex history` takes.",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "recorded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "No recorded revision would have.",
+                "properties": {
+                  "type": {
+                    "const": "unrecorded",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "UnresolvedCause": {
             "description": "Why a reference target could not be resolved. Stable JSON surface so\nexternal tooling can branch on the cause without string-matching\n`reason` strings — and the typed vocabulary\n`[[detection.unresolved_policy]]` rows declare their `cause` in.\n\nThe resolver records a cause on every [`ResolvedTarget::Unresolved`]\nat the refusal site; the unresolved-edge classifier\n(`query::issues`) refines the path-shaped [`Self::Missing`] into\n[`Self::TargetUnparsed`] / [`Self::ExcludedFromScope`] through its\n`Graph::parse_failures` and disk probes. [`Display`] renders each\ncause's one human prose line — the single source every `reason`\nstring derives from.\n\n[`Display`]: std::fmt::Display",
             "oneOf": [
@@ -4262,6 +4342,17 @@ exit: 0
               "cause": {
                 "$ref": "#/$defs/UnresolvedCause",
                 "description": "Typed classification of *why* the target failed to resolve.\nLets consumers dispatch on cause without parsing\n[`UnresolvedEdge::reason`] strings — `Missing` vs.\n`ExcludedFromScope` drive different remediation (create vs.\nre-include / delete link), and frontmatter-id relations carry\n`IdNotFound` since they never had a path to stat. Named `cause`\n(not `kind`) to avoid colliding with a document's `kind`."
+              },
+              "history": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TargetRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What the project's history holds of the target: present where a policy\nrow reads history and the project holds the target nowhere."
               },
               "location": {
                 "type": "string"
@@ -5083,6 +5174,17 @@ exit: 0
                 "properties": {
                   "cause": {
                     "$ref": "#/$defs/UnresolvedCause"
+                  },
+                  "history": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/TargetRecord"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What history holds of the target, where a policy row reads it.\nEvidence: it describes the target, not the reference."
                   },
                   "location": {
                     "description": "Evidence: `L<n>` in the body, or the frontmatter field it was\nread from — a line number moves when text above it does.",

@@ -14,7 +14,7 @@ use std::path::Path;
 
 use crate::config::{Config, UnresolvedPolicyRuleConfig, UnresolvedSeverity};
 use crate::model::{
-    Edge, Graph, Node, ParseFailure, ResolvedTarget, TargetHistory, UnresolvedCause,
+    Edge, Graph, Node, ParseFailure, ResolvedTarget, TargetHistory, TargetRecord, UnresolvedCause,
 };
 use crate::rules::{RuleCoverage, SkippedRule, Violation, check_with_unresolved};
 
@@ -50,6 +50,10 @@ pub struct UnresolvedEdge {
     pub cause: UnresolvedCause,
     pub source_protection: crate::model::ReferenceProtection,
     pub sources: Vec<crate::model::ReferenceSource>,
+    /// What the project's history holds of the target: present where a policy
+    /// row reads history and the project holds the target nowhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<TargetRecord>,
     /// Effective severity assigned by the matching policy row or the
     /// unmatched `unresolved_reference` rule, including configured promotion.
     pub severity: UnresolvedSeverity,
@@ -283,8 +287,8 @@ fn unresolved_from(
             recorded,
             &config.parser.extensions,
         ) {
-            ResolvedTarget::Resolved { .. } => TargetHistory::Recorded,
-            ResolvedTarget::Unresolved { .. } => TargetHistory::Unrecorded,
+            ResolvedTarget::Resolved { id } => TargetRecord::Recorded { id },
+            ResolvedTarget::Unresolved { .. } => TargetRecord::Unrecorded,
         }
     });
     let sources = locks.sources(edge);
@@ -295,7 +299,7 @@ fn unresolved_from(
         sought.names(),
         source_protection,
         source_node,
-        history,
+        history.as_ref().map(TargetRecord::history),
         policy,
     );
     if policy_name.is_none()
@@ -318,6 +322,7 @@ fn unresolved_from(
         cause,
         source_protection,
         sources,
+        history,
         severity,
         policy_name,
     })

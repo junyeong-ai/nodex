@@ -283,6 +283,28 @@ pub enum TargetHistory {
     Unrecorded,
 }
 
+/// What the project's history holds of a reference nothing binds now, with the
+/// document it would have bound.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TargetRecord {
+    /// A recorded revision would have bound it to the document `id`, the
+    /// subject `nodex history` takes.
+    Recorded { id: String },
+    /// No recorded revision would have.
+    Unrecorded,
+}
+
+impl TargetRecord {
+    /// The answer a policy row's `history` selects on.
+    pub fn history(&self) -> TargetHistory {
+        match self {
+            Self::Recorded { .. } => TargetHistory::Recorded,
+            Self::Unrecorded => TargetHistory::Unrecorded,
+        }
+    }
+}
+
 /// An authored reference and the rules constraining its source.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct ReferenceSource {

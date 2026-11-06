@@ -156,6 +156,7 @@ and the blob `git cat-file -p` prints ([history](reference/commands.md#history))
 To have `check` tell a citation of a removed document from a name no document
 carried, give an `unresolved_policy` row `history = "recorded"` or `"unrecorded"`,
 optionally with `source_kinds` or `source_statuses` ([policy rows](reference/config.md#unresolved-reference-policy)).
+Each such finding's `details.history.id` is then the id to pass to `nodex history`.
 
 `[meta].nodex_version` warns on incompatible reads and refuses document writes;
 dry runs stay reads. `--check-version <requirement>` refuses any command outside it.
