@@ -278,5 +278,5 @@ before any envelope hits the consumer, so the codegen-generated
 client never sees output it wasn't generated for.
 
 ```bash
-nodex --check-version ">=0.64, <0.65" query annotations ...
+nodex --check-version ">=0.65, <0.66" query annotations ...
 ```
