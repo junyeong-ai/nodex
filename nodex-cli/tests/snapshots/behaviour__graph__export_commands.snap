@@ -1,6 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 280
+assertion_line: 289
 expression: observed
 ---
 exit: 0
@@ -90,6 +90,26 @@ exit: 0
           }
         ],
         "schema": "impact"
+      },
+      {
+        "flags": [
+          {
+            "long": "path",
+            "repeatable": false,
+            "required": false,
+            "takes_value": true
+          }
+        ],
+        "path": [
+          "history"
+        ],
+        "positionals": [
+          {
+            "name": "id",
+            "required": false
+          }
+        ],
+        "schema": "history"
       },
       {
         "flags": [

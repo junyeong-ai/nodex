@@ -1,6 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 280
+assertion_line: 289
 expression: observed
 ---
 exit: 0
@@ -2627,6 +2627,109 @@ exit: 0
           "title"
         ],
         "title": "SchemaManifest",
+        "type": "object"
+      },
+      "history": {
+        "$defs": {
+          "CommitStamp": {
+            "description": "A commit, as history names it to a reader.",
+            "properties": {
+              "committed": {
+                "description": "Commit time, as git records it.",
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "subject": {
+                "description": "The first line of its message.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "committed",
+              "subject"
+            ],
+            "type": "object"
+          },
+          "RemovedDocument": {
+            "description": "A document as its last revision reads under the current configuration,\nwith the commits that added and removed its path.",
+            "properties": {
+              "blob": {
+                "description": "The last revision's blob; `git cat-file -p <blob>` prints it.",
+                "type": "string"
+              },
+              "first_added": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CommitStamp"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The earliest commit adding the path; absent where only a merge's\nresolution added it."
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "last_removed": {
+                "$ref": "#/$defs/CommitStamp",
+                "description": "The latest commit removing the path."
+              },
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "status",
+              "path",
+              "blob",
+              "last_removed"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "present": {
+            "description": "Whether the working tree holds a document under the id, or at the\npath.",
+            "type": "boolean"
+          },
+          "removed": {
+            "description": "Each document a commit `HEAD` reaches held under the id, or at the\npath, whose path `HEAD` no longer holds, latest removal first.",
+            "items": {
+              "$ref": "#/$defs/RemovedDocument"
+            },
+            "type": "array"
+          },
+          "unparsed": {
+            "description": "Removed paths whose last revision does not parse, so the id each held\nis unknown; for a path lookup, that path.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "present",
+          "removed"
+        ],
+        "title": "HistoryReport",
         "type": "object"
       },
       "impact": {

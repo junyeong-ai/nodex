@@ -389,6 +389,7 @@ flowchart LR
 | `nodex report` | 그래프를 읽기 좋게 요약한 `GRAPH.md` 생성 |
 | `nodex diff <a> <b>` | 두 git ref 사이에서 바뀐 노드·edge·status·필드·경로·annotation |
 | `nodex impact <a> <b>` | diff에 더해, 바뀐 문서마다 그 문서에 의존하는 문서와 이제 끊어지는 참조 |
+| `nodex history <id>` | 그 id로, 또는 `--path`의 경로에 있었으나 `HEAD`에는 없는 문서: 마지막 판과, 그 경로를 추가하고 삭제한 커밋 |
 | `nodex query search <kw>` | id·title·tag 일치 결과와 필드별 점수 기여 |
 | `nodex query nodes` | kind·status·tag·필드 값·필드 누락·본문 텍스트 필터에 맞는 문서를 요청한 필드로 projection |
 | `nodex query node <id>` | 문서 하나와 그 edge, 요청하면 본문까지. `--path`는 파일 경로로 조회 |

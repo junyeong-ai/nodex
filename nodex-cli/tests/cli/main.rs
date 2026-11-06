@@ -26,6 +26,7 @@ mod diff;
 mod docs;
 mod envelope;
 mod export;
+mod history;
 mod init;
 mod lifecycle;
 mod locks;

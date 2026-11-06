@@ -435,6 +435,74 @@ pub fn scan_scope_with_overlay(
     scan(root, config, overlay, Confinement::Follow)
 }
 
+/// The scope's compiled patterns: what a path's spelling alone decides —
+/// `include`, `exclude`, `prune_dirs` and the hidden-segment opt-in. The walk
+/// asks them of every entry it reaches; a path a commit recorded, where no
+/// tree is walked, is judged by them alone.
+pub struct ScopeSpelling {
+    include: GlobSet,
+    exclude: GlobSet,
+    excluded_subtrees: SubtreeExcludes,
+    leads: Vec<IncludeLead>,
+    prune_dirs: Vec<String>,
+}
+
+impl ScopeSpelling {
+    pub fn new(config: &Config) -> Result<Self> {
+        let scan = ScanConfig::new(config);
+        let exclude_patterns = scan.effective_exclude_patterns();
+        Ok(Self {
+            include: build_globset(&scan.scope.include, "scope.include")?,
+            exclude: build_globset(&exclude_patterns, "scope.exclude")?,
+            excluded_subtrees: build_subtree_excludes(&exclude_patterns)?,
+            // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are
+            // skipped by default — the ripgrep / fd / git convention, since
+            // dot-prefixed entries are overwhelmingly editor state or tooling
+            // config. An include pattern overrides that default for exactly
+            // the segments it names literally: `.claude/routines/*.md` opts
+            // `.claude` in, while a greedy `**/*.md` does not. The include
+            // pattern is the opt-in; there is no separate flag to keep in sync.
+            leads: include_leads(&scan.scope.include),
+            prune_dirs: scan.scope.prune_dirs.to_vec(),
+        })
+    }
+
+    /// Whether the spelling admits `rel_path`, a project path, as a document.
+    /// The links a walk would descend and the parents a `conditional_exclude`
+    /// reads are the filesystem's to answer, and are not asked.
+    pub fn admits(&self, rel_path: &Path) -> bool {
+        self.policy(false, None, None).admits(rel_path)
+    }
+
+    /// The literal directory or file each include pattern opens with, one per
+    /// pattern; an empty one opens with a wildcard and reaches the whole
+    /// project. Every admitted path lies under one of them.
+    pub fn include_roots(&self) -> Vec<String> {
+        self.leads
+            .iter()
+            .map(|lead| lead.literal.join("/"))
+            .collect()
+    }
+
+    fn policy<'a>(
+        &'a self,
+        follow_symlinks: bool,
+        confine: Option<&'a Path>,
+        output: Option<&'a Path>,
+    ) -> WalkPolicy<'a> {
+        WalkPolicy {
+            include: &self.include,
+            exclude: &self.exclude,
+            excluded_subtrees: &self.excluded_subtrees,
+            leads: &self.leads,
+            prune_dirs: &self.prune_dirs,
+            follow_symlinks,
+            confine,
+            output,
+        }
+    }
+}
+
 /// Whether a scan may leave the root it was asked about.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Confinement<'a> {
@@ -455,19 +523,7 @@ fn scan(
     confinement: Confinement<'_>,
 ) -> Result<ScopeScan> {
     let scan = ScanConfig::new(config);
-    let include = build_globset(&scan.scope.include, "scope.include")?;
-    let exclude_patterns = scan.effective_exclude_patterns();
-    let exclude = build_globset(&exclude_patterns, "scope.exclude")?;
-    let excluded_subtrees = build_subtree_excludes(&exclude_patterns)?;
-
-    // Hidden paths (`.draft.md`, `.archive/`, `.claude/`, …) are skipped
-    // by default — the ripgrep / fd / git convention, since dot-prefixed
-    // entries are overwhelmingly editor state or tooling config. An
-    // include pattern overrides that default for exactly the segments it
-    // names literally: `.claude/routines/*.md` opts `.claude` in, while a
-    // greedy `**/*.md` does not. The include pattern is the opt-in; there
-    // is no separate flag to keep in sync.
-    let leads = include_leads(&scan.scope.include);
+    let spelling = ScopeSpelling::new(config)?;
 
     // A confined scan compares against the checkout's *real* location, so a
     // checkout reached through a symlink does not read as an escape from
@@ -490,16 +546,11 @@ fn scan(
         .zip(std::fs::canonicalize(root.join(scan.output_dir.trim_end_matches('/'))).ok())
         .filter(|(real_root, output)| output != real_root && output.starts_with(real_root))
         .map(|(_, output)| output);
-    let policy = WalkPolicy {
-        include: &include,
-        exclude: &exclude,
-        excluded_subtrees: &excluded_subtrees,
-        leads: &leads,
-        prune_dirs: scan.scope.prune_dirs,
-        follow_symlinks: scan.scope.follow_symlinks,
-        confine: confine.as_deref(),
-        output: output.as_deref(),
-    };
+    let policy = spelling.policy(
+        scan.scope.follow_symlinks,
+        confine.as_deref(),
+        output.as_deref(),
+    );
     let mut found = WalkFindings::default();
     walk_dir(root, root, &policy, &mut found)?;
     let WalkFindings {

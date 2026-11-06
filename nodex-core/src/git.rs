@@ -1003,6 +1003,270 @@ impl Repository {
             .output()?;
         Ok(output.status.success() && !output.stdout.is_empty())
     }
+
+    /// Every file under `roots` that a commit `revision` reaches added and
+    /// `revision`'s tree no longer holds, newest removal first. `roots` are
+    /// project paths; an empty one is the whole project.
+    ///
+    /// Side branches are read too (`--full-history`): a document added and
+    /// removed on a branch its merge brought in was in the project for as
+    /// long as that branch was. Merge commits' own diffs are not read, so a
+    /// path a conflict resolution alone added or dropped is not reported.
+    /// Symlinks and submodules are not documents and are passed over.
+    pub fn removals(&self, revision: &str, roots: &[String]) -> io::Result<Vec<Removal>> {
+        let pathspecs: Vec<OsString> = if roots.is_empty() || roots.iter().any(String::is_empty) {
+            (!self.prefix.as_os_str().is_empty())
+                .then(|| self.prefix.clone().into_os_string())
+                .into_iter()
+                .collect()
+        } else {
+            roots
+                .iter()
+                .map(|root| self.tracked_path(Path::new(root)))
+                .collect()
+        };
+        let mut log = self.command();
+        log.args([
+            "log",
+            "--full-history",
+            "--no-renames",
+            "--no-abbrev",
+            "--raw",
+            "-z",
+            "--diff-filter=AD",
+            "--format=%x00%x00%H%x00%ct%x00%s",
+            revision,
+            "--",
+        ])
+        .args(&pathspecs);
+        let walked = log.output()?;
+        if !walked.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not walk {revision}: {}",
+                String::from_utf8_lossy(&walked.stderr).trim()
+            )));
+        }
+        let mut listing = self.command();
+        listing
+            .args(["ls-tree", "-r", "-z", "--name-only", revision, "--"])
+            .args(&pathspecs);
+        let listed = listing.output()?;
+        if !listed.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not list {revision}: {}",
+                String::from_utf8_lossy(&listed.stderr).trim()
+            )));
+        }
+        let held: std::collections::BTreeSet<&[u8]> = listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .collect();
+        let mut removals: std::collections::BTreeMap<Vec<u8>, Removal> =
+            std::collections::BTreeMap::new();
+        let mut added: std::collections::BTreeMap<Vec<u8>, CommitStamp> =
+            std::collections::BTreeMap::new();
+        for (stamp, change) in path_changes(&walked.stdout)? {
+            if held.contains(change.path.as_slice()) {
+                continue;
+            }
+            match change.status {
+                b'D' => {
+                    if !removals.contains_key(&change.path) {
+                        let Some(path) =
+                            project_relative(&os_path(change.path.clone())?, &self.prefix)
+                        else {
+                            continue;
+                        };
+                        removals.insert(
+                            change.path.clone(),
+                            Removal {
+                                path: PathBuf::from(path),
+                                blob: change.blob,
+                                first_added: None,
+                                last_removed: stamp,
+                            },
+                        );
+                    }
+                }
+                _ => {
+                    added.insert(change.path, stamp);
+                }
+            }
+        }
+        let mut removals: Vec<Removal> = removals
+            .into_iter()
+            .map(|(path, mut removal)| {
+                removal.first_added = added.remove(&path);
+                removal
+            })
+            .collect();
+        removals.sort_by(|a, b| {
+            b.last_removed
+                .committed
+                .cmp(&a.last_removed.committed)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        Ok(removals)
+    }
+
+    /// The content of each blob `ids` names, in order.
+    pub fn blobs(&self, ids: &[String]) -> io::Result<Vec<Vec<u8>>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut batch = self
+            .command()
+            .args(["cat-file", "--batch"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let mut stdin = batch.stdin.take().expect("stdin is piped");
+        let requests: Vec<u8> = ids
+            .iter()
+            .flat_map(|id| format!("{id}\n").into_bytes())
+            .collect();
+        let (fed, output) = std::thread::scope(|scope| {
+            let feeding = scope.spawn(move || io::Write::write_all(&mut stdin, &requests));
+            let output = batch.wait_with_output();
+            (feeding.join(), output)
+        });
+        let output = output?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not read blobs: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        fed.map_err(|_| io::Error::other("writing the blob ids to git panicked"))??;
+        // `<id> blob <size>\n<content>\n` per request; `<id> missing\n` for none.
+        let mut contents = Vec::with_capacity(ids.len());
+        let mut rest = output.stdout.as_slice();
+        for id in ids {
+            let line_end = rest
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .ok_or_else(|| io::Error::other(format!("git answered nothing for blob {id}")))?;
+            let header = String::from_utf8_lossy(&rest[..line_end]).into_owned();
+            let size: usize = match header.split(' ').collect::<Vec<_>>().as_slice() {
+                [_, "blob", size] => size
+                    .parse()
+                    .map_err(|_| io::Error::other(format!("git reported {header:?}")))?,
+                _ => {
+                    return Err(io::Error::other(format!(
+                        "git reported {header:?} for {id}"
+                    )));
+                }
+            };
+            let body = rest
+                .get(line_end + 1..line_end + 1 + size)
+                .ok_or_else(|| io::Error::other(format!("git cut blob {id} short")))?;
+            contents.push(body.to_vec());
+            rest = rest.get(line_end + 2 + size..).unwrap_or_default();
+        }
+        Ok(contents)
+    }
+}
+
+/// A commit, as history names it to a reader.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CommitStamp {
+    pub id: String,
+    /// Commit time, as git records it.
+    pub committed: chrono::DateTime<chrono::Utc>,
+    /// The first line of its message.
+    pub subject: String,
+}
+
+/// A file [`Repository::removals`] found history held and a commit no longer
+/// does.
+#[derive(Debug, Clone)]
+pub struct Removal {
+    /// Project path.
+    pub path: PathBuf,
+    /// The blob the path held when it was last removed.
+    pub blob: String,
+    /// The earliest commit the walk read adding the path; `None` where only
+    /// a merge's resolution added it.
+    pub first_added: Option<CommitStamp>,
+    /// The latest commit that removed it.
+    pub last_removed: CommitStamp,
+}
+
+/// One added or removed path in a commit's raw diff.
+struct PathChange {
+    /// Repository path, as git spells it.
+    path: Vec<u8>,
+    /// `A` or `D`.
+    status: u8,
+    /// The blob on the side that holds the file: the new one for an
+    /// addition, the old one for a removal.
+    blob: String,
+}
+
+/// The added and removed regular files in the stream of a
+/// `log --raw -z --format=%x00%x00%H%x00%ct%x00%s` walk, each beside the
+/// commit that made the change.
+fn path_changes(stream: &[u8]) -> io::Result<Vec<(CommitStamp, PathChange)>> {
+    let malformed = |detail: &str| io::Error::other(format!("git reported {detail}"));
+    let fields: Vec<&[u8]> = stream.split(|byte| *byte == 0).collect();
+    let mut changes = Vec::new();
+    let mut at = 0usize;
+    while at < fields.len() {
+        let opening = fields[at..].iter().take_while(|f| f.is_empty()).count();
+        at += opening;
+        if at == fields.len() {
+            break;
+        }
+        if opening < 2 || at + 2 >= fields.len() {
+            return Err(malformed("a commit record that does not open as asked"));
+        }
+        let id = String::from_utf8_lossy(fields[at]).into_owned();
+        let committed = std::str::from_utf8(fields[at + 1])
+            .ok()
+            .and_then(|seconds| seconds.parse().ok())
+            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
+            .ok_or_else(|| malformed("an unreadable commit time"))?;
+        let stamp = CommitStamp {
+            id,
+            committed,
+            subject: String::from_utf8_lossy(fields[at + 2]).into_owned(),
+        };
+        at += 3;
+        // `:<old mode> <new mode> <old blob> <new blob> <status>`, then the
+        // path; the newline separating the diff from the subject opens the
+        // first entry.
+        while let Some(entry) = fields
+            .get(at)
+            .map(|field| field.strip_prefix(b"\n").unwrap_or(field))
+            .and_then(|field| field.strip_prefix(b":"))
+        {
+            let path = fields
+                .get(at + 1)
+                .ok_or_else(|| malformed("a diff entry with no path"))?;
+            let parts: Vec<&[u8]> = entry.split(|byte| *byte == b' ').collect();
+            let [old_mode, new_mode, old_blob, new_blob, status] = parts.as_slice() else {
+                return Err(malformed("a diff entry of an unexpected shape"));
+            };
+            let (mode, blob) = match status.first() {
+                Some(b'D') => (old_mode, old_blob),
+                _ => (new_mode, new_blob),
+            };
+            if mode.starts_with(b"100") {
+                changes.push((
+                    stamp.clone(),
+                    PathChange {
+                        path: path.to_vec(),
+                        status: status.first().copied().unwrap_or_default(),
+                        blob: String::from_utf8_lossy(blob).into_owned(),
+                    },
+                ));
+            }
+            at += 2;
+        }
+    }
+    Ok(changes)
 }
 
 /// A commit as a walk over history reads it.

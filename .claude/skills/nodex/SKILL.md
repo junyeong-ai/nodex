@@ -140,6 +140,7 @@ nodex check --since origin/main  # CI: check out full history (fetch-depth: 0)
 nodex diff origin/main HEAD
 nodex query dependents <id> --depth 3 --relations implements,supersedes
 nodex impact origin/main HEAD
+nodex history <id>               # a cited id resolving to nothing: removed, or never a document
 ```
 
 `--staged` judges the index git commits. `--since` narrows findings and selects
@@ -148,7 +149,9 @@ CI names the commit its event is measured from with `--baseline <ref>`
 ([per-run baseline](reference/config.md#naming-the-baseline-for-one-run)); never
 use it to clear a `LOCKED` refusal.
 Read the [history-check semantics](reference/commands.md#check---since) before
-using them as a gate. `--content` excludes `--staged` and `--since`.
+using them as a gate. A document removed from the tree stays in git: `nodex history
+<id>` (or `--path`) names its last revision, the commits that added and removed it,
+and the blob `git cat-file -p` prints ([history](reference/commands.md#history)). `--content` excludes `--staged` and `--since`.
 
 `[meta].nodex_version` warns on incompatible reads and refuses document writes;
 dry runs stay reads. `--check-version <requirement>` refuses any command outside it.
@@ -181,6 +184,7 @@ describes verification separately from parsing coverage.
 nodex init                      nodex build                     nodex status
 nodex check                     nodex report                    nodex migrate
 nodex diff <before> <after>     nodex impact <before> <after>   nodex classify <path>...
+nodex history <id>
 nodex scaffold                  nodex rename <old> <new>        nodex retarget <old_id> <new_id>
 nodex lifecycle review <id>     nodex lifecycle set <id>        nodex lifecycle supersede <id>
 nodex query search <keyword>    nodex query nodes               nodex query node <id>

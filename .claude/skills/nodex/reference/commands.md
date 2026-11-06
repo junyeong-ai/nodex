@@ -8,7 +8,7 @@ Per-leaf flags and payload semantics. The authoritative list of leaves, their po
 - [Queries](#query): search, node detail, relations, similarity and annotations
 - [Check and proposed content](#check)
 - [Range checks](#check---since) and [staged checks](#check---staged)
-- [Diff and impact](#diff--impact)
+- [Diff and impact](#diff--impact) and [removed documents](#history)
 - [Scaffold](#scaffold)
 - [Rename and retarget](#rename--retarget)
 - [Lifecycle](#lifecycle)
@@ -249,6 +249,18 @@ nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
 `{diff, impacted, likely_breaking}`. `diff` is the full `nodex diff` envelope. `impacted: [{id, change: removed|moved|modified, dependents: [...]}]` pairs each changed node with its dependents — a **modified** node's dependents in the after graph up to `--depth` hops (default 1, the documents that reference it directly; a hub's transitive closure over citations can reach most of a corpus), a **removed** node's *direct* referrers that still point at it and now dangle (references the same change repointed elsewhere are correctly absent), and a **moved** node's both: its dependents where it now is, then the direct referrers still pointing at where it was; a document that does both is listed once, under the edge that still binds it, and the stranded references themselves are in `diff.added_edges` as unresolved targets. Each dependent carries inline metadata plus the `via` witness chain, the same shape as `query dependents`.
 
 `likely_breaking` lists the removed nodes whose referrers now dangle and the moved nodes still referenced at their old path — the sharpest "this will break" signal; a move whose references followed it (an id relation, a link `rename` rewrote) is reported and not breaking. Added nodes and changes that affect nobody are omitted from `impacted`; the full delta stays in `diff`.
+
+## history
+
+```bash
+nodex history <id>
+nodex history --path <file>
+```
+`{present, removed: [{id, title, kind, status, path, blob, first_added?, last_removed}], unparsed?}`. `removed` holds each document a commit `HEAD` reaches held under the id, or at the path, whose path `HEAD` no longer holds, latest removal first. `present` says whether the working tree holds one now; a document that moved keeps its id and is both. A cited id that resolves to nothing is a removed document when `removed` names it, and never was one when `removed` is empty.
+
+Each document is its last revision read under the current configuration, as `diff` reads a ref: a removed path counts where the scope's patterns admit it, and the identity rules complete what its frontmatter leaves out. `first_added` and `last_removed` are `{id, committed, subject}`, and `git cat-file -p <blob>` prints the last revision. `unparsed` lists removed paths whose last revision does not parse, so the id each held is unknown.
+
+Side branches are read, so a document added and removed before its branch merged is found; a path a merge's conflict resolution alone added or dropped is not. A document that changed its id in place, keeping its path, is no removal. An empty answer is a claim about the whole history, so a clone whose history git reshapes (shallow, grafted or replaced) is refused with `GIT_ERROR`.
 
 ## scaffold
 

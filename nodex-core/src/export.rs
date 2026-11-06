@@ -1744,6 +1744,10 @@ fn per_command_schemas() -> Map<String, Value> {
     // Introspection
     out.insert("status".into(), schema_of::<crate::status::StatusReport>());
     out.insert("classify".into(), items_envelope::<ClassifyEntry>());
+    out.insert(
+        "history".into(),
+        schema_of::<crate::history::HistoryReport>(),
+    );
 
     out
 }
