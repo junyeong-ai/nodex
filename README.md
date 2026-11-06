@@ -391,7 +391,7 @@ Global flags: `-C <dir>`, `--pretty`, `--jobs <n>`, `--check-version <semver-req
 ```
 
 - `warnings` is omitted when empty; snapshot queries add `snapshot`, what the read verified.
-- Listings return `{items, total}`; a `--limit` cap adds `returned`, so a capped answer never reads as complete.
+- Listings return `{items, total}`; a `--limit` cap on a plain listing adds `returned`, so a capped answer never reads as complete. `query similar` and `query recent` select instead: their `total` counts what they selected.
 - Exit `0` success · `1` `check` found error-severity violations · `2` an error envelope, a batch write that failed, or output stdout would not take.
 - Branch on `code` and `details`, never on message text. Every release publishes `nodex-envelope-schema-v<ver>.json` and `nodex-commands-v<ver>.json`, and release CI refuses a contract change without the version bump it needs.
 

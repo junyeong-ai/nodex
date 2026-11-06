@@ -323,7 +323,7 @@ history = "recorded"
 severity = "error"
 ```
 
-`history` 행은 전체 이력이 필요합니다(`fetch-depth: 0`). shallow clone에서는 `check`, `query issues`, `migrate`를 뺀 쓰기 명령이 `CONFIG_ERROR`로 거부되고, 나머지 명령은 그대로 실행됩니다. [정책 행](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
+`history` 행은 전체 이력이 필요합니다(`fetch-depth: 0`). shallow clone에서는 `check`, `query issues`, 그리고 쓰기 명령(`migrate` 제외)이 `CONFIG_ERROR`로 거부되고, 나머지 명령은 그대로 실행됩니다. [정책 행](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
 
 ### 그래프 없이 답하기
 
@@ -391,7 +391,7 @@ nodex export diagnostics       # 오류, 경고, 종료 코드
 ```
 
 - `warnings`는 비어 있으면 생략합니다. 스냅샷 조회는 읽기가 무엇을 검증했는지 담은 `snapshot`을 더합니다.
-- 목록은 `{items, total}`을 돌려줍니다. `--limit`으로 잘리면 `returned`가 붙으므로, 잘린 답이 완전한 답으로 보이지 않습니다.
+- 목록은 `{items, total}`을 돌려줍니다. 일반 목록이 `--limit`으로 잘리면 `returned`가 붙으므로, 잘린 답이 완전한 답으로 보이지 않습니다. `query similar`와 `query recent`는 고르는 명령이어서 `total`이 고른 수를 셉니다.
 - 종료 코드는 `0` 성공, `1` `check`가 error 위반을 찾음, `2` 오류 envelope 또는 실패한 배치 쓰기 또는 stdout이 받지 못한 출력입니다.
 - 메시지가 아니라 `code`와 `details`로 분기합니다. 릴리즈마다 `nodex-envelope-schema-v<ver>.json`과 `nodex-commands-v<ver>.json`을 발행하고, 릴리즈 CI는 필요한 버전 올림 없는 계약 변경을 거부합니다.
 

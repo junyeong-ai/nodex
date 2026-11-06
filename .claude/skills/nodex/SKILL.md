@@ -95,6 +95,7 @@ Read the [write gate](reference/commands.md#check) and the relevant command befo
 mutating. `check --content` validates proposed bytes in one combined graph;
 `SOURCE` is stdin (`-`) or a file relative to the invoking directory. A clean
 verdict does not certify explicit metadata unless the schema requires it.
+`--content` excludes `--staged` and `--since`.
 
 For reference findings, inspect `details.sources` (`sources` on unresolved listings)
 before proposing an edit; protection constrains modification and does not prove
@@ -153,11 +154,11 @@ use it to clear a `LOCKED` refusal.
 Read the [history-check semantics](reference/commands.md#check---since) before
 using them as a gate. A document removed from the tree stays in git: `nodex history
 <id>` (or `--path`) names its last revision, the commits that added and removed it,
-and the blob `git cat-file -p` prints ([history](reference/commands.md#history)). `--content` excludes `--staged` and `--since`.
+and the blob `git cat-file -p` prints ([history](reference/commands.md#history)).
 To have `check` tell a citation of a removed document from a name no document
 carried, give an `unresolved_policy` row `history = "recorded"` or `"unrecorded"`,
 optionally with `source_kinds` or `source_statuses` ([policy rows](reference/config.md#unresolved-reference-policy)).
-Each such finding's `details.history.id` is then the id to pass to `nodex history`.
+A `recorded` finding's `details.history.id` is then the id to pass to `nodex history`.
 
 `[meta].nodex_version` warns on incompatible reads and refuses document writes;
 dry runs stay reads. `--check-version <requirement>` refuses any command outside it.
