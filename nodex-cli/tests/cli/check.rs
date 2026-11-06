@@ -403,6 +403,83 @@ severity = "error"
     );
 }
 
+/// A dangling citation of a document history recorded, its removal committed
+/// or only staged, is told from a name no document carried; a clone holding
+/// part of its history cannot tell them apart and is refused.
+#[test]
+fn unresolved_policy_tells_a_removed_document_from_a_name_never_recorded() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    fs::write(
+        root.join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[detection]
+orphan_ok_kinds = ["generic"]
+[[detection.unresolved_policy]]
+name = "removed-document"
+cause = "missing"
+history = "recorded"
+severity = "info"
+[[detection.unresolved_policy]]
+name = "unknown-name"
+cause = "missing"
+severity = "error"
+"#,
+    )
+    .unwrap();
+    for id in ["gone", "staged"] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!("---\nid: {id}\ntitle: T\n---\n# T\n"),
+        );
+    }
+    write_doc(
+        root,
+        "docs/guide.md",
+        "---\nid: guide\ntitle: Guide\n---\n# Guide\n\n[gone](gone.md), [staged](staged.md) and [never](never.md).\n",
+    );
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "add"]);
+    git(&["rm", "-q", "docs/gone.md"]);
+    git(&["commit", "-q", "-m", "remove gone"]);
+    git(&["rm", "-q", "docs/staged.md"]);
+
+    let check = envelope_of(nodex(root).arg("check"));
+    let failing: Vec<(&str, &str)> = check["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter_map(|v| Some((v["rule_id"].as_str()?, v["details"]["raw_target"].as_str()?)))
+        .collect();
+    assert_eq!(
+        failing,
+        [("unresolved_reference/unknown-name", "never.md")],
+        "{check}"
+    );
+
+    let clone = scratch();
+    assert!(
+        git(&[
+            "clone",
+            "-q",
+            "--no-local",
+            "--depth",
+            "1",
+            root.to_str().unwrap(),
+            clone.path().to_str().unwrap(),
+        ])
+        .status
+        .success()
+    );
+    let refused = envelope_of(nodex(clone.path()).arg("check"));
+    assert_eq!(refused["error"]["code"], "CONFIG_ERROR", "{refused}");
+}
+
 #[test]
 fn query_issues_applies_unresolved_policy_info_downgrade() {
     // Two dangling links; the declared policy routes the specs/** one

@@ -1364,6 +1364,12 @@ pub struct UnresolvedPolicyRuleConfig {
     /// document citing what no longer stands.
     #[serde(default)]
     pub source_kinds: Vec<String>,
+    /// What the project's history holds of the target; omitted matches
+    /// either. Tells a citation of a document since removed from a name no
+    /// document carried. Only legal on causes whose target is absent
+    /// ([`crate::model::UnresolvedCause::target_absent`]).
+    #[serde(default)]
+    pub history: Option<crate::model::TargetHistory>,
     /// Which reporting plane matching edges land on.
     pub severity: UnresolvedSeverity,
 }
@@ -1382,6 +1388,14 @@ impl UnresolvedPolicyRuleConfig {
     pub(crate) fn admits_source(&self, kind: Option<&str>) -> bool {
         self.source_kinds.is_empty()
             || kind.is_some_and(|kind| self.source_kinds.iter().any(|k| k == kind))
+    }
+
+    /// Whether this row's history filter admits a reference whose target
+    /// history holds as `history`. `None` is a reference whose cause history
+    /// does not judge, which only a row without the filter admits.
+    pub(crate) fn admits_history(&self, history: Option<crate::model::TargetHistory>) -> bool {
+        self.history
+            .is_none_or(|selected| Some(selected) == history)
     }
 }
 
@@ -1409,6 +1423,7 @@ pub(crate) fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
         glob: None,
         source_protection: None,
         source_kinds: Vec::new(),
+        history: None,
         severity: UnresolvedSeverity::Info,
     }]
 }

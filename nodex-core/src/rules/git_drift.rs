@@ -15,14 +15,15 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::git::{History, HistoryRecord, Repository};
+use crate::history::KeptFile;
 use crate::model::ResolvedTarget;
-use crate::warning::{Warning, WarningCode};
+use crate::warning::Warning;
 
 use super::{
     Rule, RuleContext, RuleRun, Severity, SubjectUnit, Violation, ViolationDetails,
@@ -69,7 +70,7 @@ impl Rule for GitDriftRule {
     /// declines *visibly*, in `skipped_rules`, rather than reporting a
     /// corpus with no drift.
     fn is_applicable(&self, ctx: &RuleContext<'_>) -> bool {
-        ctx.history.measures()
+        ctx.history.drift().measures()
     }
 
     fn skip_reason(&self, _ctx: &RuleContext<'_>) -> String {
@@ -107,6 +108,7 @@ impl Rule for GitDriftRule {
                     .filter_map(DriftTarget::path)
                     .any(|path| {
                         ctx.history
+                            .drift()
                             .commits_added(since.since(), &path, reviewed)
                             .is_some_and(|added| added > 0)
                     })
@@ -154,7 +156,7 @@ impl Rule for GitDriftRule {
                 // The environment is already verified, so a residual
                 // `None` is git having gone unread — skip the edge rather
                 // than count it as zero drift.
-                let Some(commits) = ctx.history.commits_since(&path, reviewed) else {
+                let Some(commits) = ctx.history.drift().commits_since(&path, reviewed) else {
                     unmeasured.push(label);
                     continue;
                 };
@@ -283,26 +285,19 @@ pub(crate) fn drift_targets(
         .collect()
 }
 
-/// What git says about the project, read on demand and remembered.
+/// What git says about the drift of the project's paths, read on demand and
+/// remembered.
 ///
 /// The measurement is per `(path, review date)` pair, but one revision
 /// walk holds every pair's answer for a range, and putting the question
 /// to git per pair spends a process on each: the cost of a pass would
 /// then track the size of the corpus rather than of the repository it
-/// reads. A command running more than one pass over one project — a
-/// `--content` gate judges the working tree and the proposal it would
-/// become — holds one of these across them, because a repository's
-/// history is one reading for every pass of one command.
+/// reads. A command holds one for every pass it runs, inside its
+/// [`crate::history::ProjectHistory`].
 ///
 /// Across commands the reading at `HEAD` is kept in the output directory
-/// (`history.json`), keyed by the commit it was taken at. A walk of a
-/// commit is a function of that commit, so a kept reading whose commit
-/// the current `HEAD` reaches is completed by walking only the range
-/// between them, and the whole history is walked only when there is no
-/// such reading — a command's cost is then the commits since the last one
-/// rather than every commit the repository holds. Only a working-tree
-/// `check` stores it ([`Self::refreshing`]); every other reader consults it
-/// and writes nothing, so `check --content` stays the read-only gate it is.
+/// (`history.json`), so a command's cost is the commits
+/// since the last one rather than every commit the repository holds.
 ///
 /// Nothing is read until something asks. A project without
 /// `detection.git_drift_threshold` measures no drift and never reaches
@@ -310,24 +305,14 @@ pub(crate) fn drift_targets(
 pub struct DriftHistory {
     /// The project root, when the project measures drift at all.
     measured: Option<PathBuf>,
-    /// Where the reading at `HEAD` is kept, and whether this command
-    /// stores it.
-    kept: Option<Kept>,
+    /// Where the reading at `HEAD` is kept.
+    kept: Option<KeptFile>,
     repository: OnceLock<Option<Repository>>,
     /// The reading at `HEAD`, taken once however many passes ask for it.
     head: OnceLock<Option<Arc<History>>>,
     /// One reading per revision range, kept because a pass asks the same
     /// range once per document and a command asks it once per pass.
     readings: RwLock<BTreeMap<String, Option<Arc<History>>>>,
-    /// What keeping the reading ran into, for the command that stores it.
-    warnings: Mutex<Vec<Warning>>,
-}
-
-/// The file a project's reading at `HEAD` is kept in, and whether this
-/// command refreshes it.
-struct Kept {
-    path: PathBuf,
-    refresh: bool,
 }
 
 /// `history.json` as it is written. The key is everything a walk of `head`
@@ -343,10 +328,7 @@ struct KeptReading {
 }
 
 /// On-disk shape version of `history.json`. Bump on any change to
-/// [`KeptReading`] or [`HistoryRecord`]. A mismatch discards the file
-/// without a word, as a foreign `cache.json` is discarded: it is the
-/// expected invalidation after an upgrade, and the walk it forces answers
-/// the same.
+/// [`KeptReading`] or [`HistoryRecord`].
 const KEPT_SCHEMA_VERSION: u32 = 1;
 
 impl DriftHistory {
@@ -359,7 +341,6 @@ impl DriftHistory {
             repository: OnceLock::new(),
             head: OnceLock::new(),
             readings: RwLock::new(BTreeMap::new()),
-            warnings: Mutex::new(Vec::new()),
         }
     }
 
@@ -382,10 +363,9 @@ impl DriftHistory {
             .detection
             .git_drift_threshold
             .map(|_| root.to_path_buf());
-        let kept = measured.as_ref().map(|root| Kept {
-            path: root.join(&config.output.dir).join("history.json"),
-            refresh,
-        });
+        let kept = measured
+            .as_ref()
+            .map(|root| KeptFile::new(root, config, "history.json", refresh));
         Self {
             measured,
             kept,
@@ -411,13 +391,9 @@ impl DriftHistory {
 
     /// What a refreshing reading could not do with the kept file: read one
     /// that was there, or store the one it took. Always empty for a reading
-    /// that only consults the file — it neither owns nor repairs it, and
-    /// whatever it met is met again by the next refresh, which says so.
+    /// that only consults the file.
     pub fn warnings(&self) -> Vec<Warning> {
-        self.warnings
-            .lock()
-            .expect("no reader panics while holding this")
-            .clone()
+        self.kept.as_ref().map_or_else(Vec::new, KeptFile::warnings)
     }
 
     /// Commits touching the project's `path` strictly *after* the
@@ -469,7 +445,7 @@ impl DriftHistory {
             return History::read(repository, &head).ok();
         };
         let prefix = repository.prefix().to_str();
-        let reading = match prefix.and_then(|prefix| self.load(kept, prefix)) {
+        let reading = match prefix.and_then(|prefix| Self::load(kept, prefix)) {
             Some((at, history)) if at == head => return Some(history),
             Some((at, history)) if matches!(repository.is_ancestor(&at, &head), Ok(true)) => {
                 let since = History::read(repository, &format!("{at}..{head}")).ok()?;
@@ -477,107 +453,33 @@ impl DriftHistory {
             }
             _ => History::read(repository, &head).ok()?,
         };
-        if kept.refresh {
-            self.store(kept, prefix, &head, &reading);
-        }
+        kept.store(|| {
+            Ok(KeptReading {
+                schema_version: KEPT_SCHEMA_VERSION,
+                nodex: env!("CARGO_PKG_VERSION").to_owned(),
+                prefix: prefix
+                    .ok_or("the project's path inside the repository is not UTF-8")?
+                    .to_owned(),
+                head: head.clone(),
+                history: reading
+                    .record()
+                    .ok_or("a path in the history is not UTF-8")?,
+            })
+        });
         Some(reading)
     }
 
     /// The reading kept for this project, with the commit it was taken at —
     /// `None` when there is none, or it was taken by another binary or of
     /// another prefix, or it cannot be read as one.
-    fn load(&self, kept: &Kept, prefix: &str) -> Option<(String, History)> {
-        let raw = match std::fs::read_to_string(&kept.path) {
-            Ok(raw) => raw,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(e) => return self.unreadable(kept, e),
-        };
-        let value: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(value) => value,
-            Err(e) => return self.unreadable(kept, e),
-        };
-        // Every shape this file has had is an object, so anything else is
-        // damage rather than a version to read past.
-        if !value.is_object() {
-            return self.unreadable(kept, "not a JSON object");
-        }
-        if value
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-            != Some(u64::from(KEPT_SCHEMA_VERSION))
-        {
-            return None;
-        }
-        let reading: KeptReading = match serde_json::from_value(value) {
-            Ok(reading) => reading,
-            Err(e) => return self.unreadable(kept, e),
-        };
+    fn load(kept: &KeptFile, prefix: &str) -> Option<(String, History)> {
+        let reading: KeptReading = kept.load(KEPT_SCHEMA_VERSION)?;
         if reading.nodex != env!("CARGO_PKG_VERSION") || reading.prefix != prefix {
             return None;
         }
         match History::from_record(reading.history) {
             Some(history) => Some((reading.head, history)),
-            None => self.unreadable(kept, "a record no walk could have produced"),
-        }
-    }
-
-    fn unreadable<T>(&self, kept: &Kept, reason: impl std::fmt::Display) -> Option<T> {
-        self.report(
-            kept,
-            format!(
-                "kept history unreadable at {}: {reason}; walking the whole history",
-                kept.path.display()
-            ),
-        );
-        None
-    }
-
-    /// Keep `reading` as the reading at `head`. The write goes through the
-    /// guarded primitive, so a crash leaves the previous file whole and a
-    /// path escaping the project is refused rather than followed.
-    fn store(&self, kept: &Kept, prefix: Option<&str>, head: &str, reading: &History) {
-        let root = self
-            .measured
-            .as_ref()
-            .expect("a kept reading belongs to a measured project");
-        let stored = prefix
-            .ok_or("the project's path inside the repository is not UTF-8")
-            .and_then(|prefix| {
-                let history = reading
-                    .record()
-                    .ok_or("a path in the history is not UTF-8")?;
-                Ok(KeptReading {
-                    schema_version: KEPT_SCHEMA_VERSION,
-                    nodex: env!("CARGO_PKG_VERSION").to_owned(),
-                    prefix: prefix.to_owned(),
-                    head: head.to_owned(),
-                    history,
-                })
-            })
-            .map_err(str::to_owned)
-            .and_then(|reading| {
-                let json =
-                    serde_json::to_string(&reading).expect("a kept reading is JSON-serialisable");
-                crate::path_guard::write_atomic_in_root(root, &kept.path, &json)
-                    .map_err(|e| e.to_string())
-            });
-        if let Err(reason) = stored {
-            self.report(
-                kept,
-                format!(
-                    "history not kept at {}: {reason}; the next command walks the whole history again",
-                    kept.path.display()
-                ),
-            );
-        }
-    }
-
-    fn report(&self, kept: &Kept, message: String) {
-        if kept.refresh {
-            self.warnings
-                .lock()
-                .expect("no reader panics while holding this")
-                .push(Warning::new(WarningCode::Cache, message));
+            None => kept.unreadable("a record no walk could have produced"),
         }
     }
 
@@ -700,7 +602,7 @@ mod tests {
                 graph: &graph,
                 config: &config,
                 files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-                history: &DriftHistory::of(&config, dir.path()),
+                history: &crate::history::ProjectHistory::of(&config, dir.path()).unwrap(),
                 since: None,
                 steps: None,
             })
@@ -822,7 +724,7 @@ mod tests {
                 hottest: None,
             },
         );
-        let history = DriftHistory::of(&config, dir.path());
+        let history = crate::history::ProjectHistory::of(&config, dir.path()).unwrap();
         let answers = |since: &str| {
             let touched = crate::diff::compute_diff(&graph, &graph).touched(since);
             GitDriftRule::new(1).touched_by(
@@ -947,7 +849,7 @@ mod tests {
                 graph: &graph,
                 config: &config,
                 files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-                history: &DriftHistory::of(&config, dir.path()),
+                history: &crate::history::ProjectHistory::of(&config, dir.path()).unwrap(),
                 since: None,
                 steps: None,
             })
@@ -1054,7 +956,7 @@ mod tests {
             graph: &graph,
             config: &config,
             files: crate::builder::scanner::ProjectFiles::working_tree(dir.path()),
-            history: &DriftHistory::of(&config, dir.path()),
+            history: &crate::history::ProjectHistory::of(&config, dir.path()).unwrap(),
             since: None,
             steps: None,
         });

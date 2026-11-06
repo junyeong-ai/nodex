@@ -684,7 +684,7 @@ impl BaselineProbe {
             .map(|rule| rule.id().to_string())
             .collect();
 
-        let history = crate::rules::git_drift::DriftHistory::of(config, root);
+        let history = crate::history::ProjectHistory::of(config, root)?;
         let judge = |graph: &crate::model::Graph, files: ProjectFiles<'_>| {
             let diff = self.diff(graph);
             let steps = self.steps(graph);
@@ -1620,7 +1620,7 @@ pub fn introduced(
     let before_steps = probe.steps(before);
     // One reading of git for both passes: the proposal is unwritten
     // bytes, and no unwritten byte is a commit.
-    let history = crate::rules::git_drift::DriftHistory::of(config, root);
+    let history = crate::history::ProjectHistory::of(config, root)?;
     Ok(Introduced {
         locks: gate_rules(config)
             .iter()

@@ -86,28 +86,53 @@ pub enum RuleSource {
     Config,
 }
 
-/// Verify the runtime prerequisites of every opt-in rule. Today only
-/// `git_drift_threshold` has any (git on PATH + a git work tree
-/// containing `root`). Call once after [`Config::load`] and before any
-/// command that could exercise the rules — failures surface as
-/// [`Error::Config`] so the operator sees `CONFIG_ERROR` and exit 2,
-/// not a buried check violation.
+/// Verify the runtime prerequisites of every opt-in rule: a git work tree
+/// containing `root` for `git_drift_threshold`, and one holding its whole
+/// history for an `unresolved_policy` row that reads it. Call once after
+/// [`Config::load`] and before any command that could exercise the rules —
+/// failures surface as [`Error::Config`] so the operator sees `CONFIG_ERROR`
+/// and exit 2, not a buried check violation.
 ///
 /// Resolving the binding *is* the probe: [`crate::git::Repository`] has
 /// no representation for an unusable environment, so the two states this
 /// reports — no git, or no work tree — are exactly the two states in
-/// which the rule cannot measure.
+/// which a rule cannot read git. A history row asks one thing more: a
+/// clone whose history git reshapes cannot tell a document it does not
+/// hold from one that was never there.
 pub fn preflight(config: &Config, root: &Path) -> Result<()> {
-    if config.detection.git_drift_threshold.is_some() {
-        let reason = match crate::git::Repository::discover(root) {
-            Ok(Some(_)) => return Ok(()),
-            Ok(None) => format!("no git work tree was found for {}", root.display()),
-            Err(e) => format!("its repository could not be resolved ({e})"),
-        };
+    let history_row = config.history_policy_row();
+    if config.detection.git_drift_threshold.is_none() && history_row.is_none() {
+        return Ok(());
+    }
+    let repository = match crate::git::Repository::discover(root) {
+        Ok(Some(repository)) => Ok(repository),
+        Ok(None) => Err(format!("no git work tree was found for {}", root.display())),
+        Err(e) => Err(format!("its repository could not be resolved ({e})")),
+    };
+    if config.detection.git_drift_threshold.is_some()
+        && let Err(reason) = &repository
+    {
         return Err(Error::Config(format!(
             "detection.git_drift_threshold is set but {reason}; \
              install git and run inside a git work tree, or remove the threshold"
         )));
+    }
+    if let Some(row) = history_row {
+        let reason = repository.and_then(|repository| match repository.reshapes_history() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err("this clone's history is shallow, grafted or replaced".to_string()),
+            Err(e) => Err(format!(
+                "whether this clone holds its whole history could not be read ({e})"
+            )),
+        });
+        if let Err(reason) = reason {
+            return Err(Error::Config(format!(
+                "detection.unresolved_policy row {name:?} reads history but {reason}; \
+                 run inside a git work tree holding the whole history (`git fetch --unshallow`), \
+                 or remove the row's history",
+                name = row.name,
+            )));
+        }
     }
     Ok(())
 }
@@ -179,13 +204,9 @@ pub struct RuleContext<'a> {
     /// describes instead of the tree on disk. `files.root()` is the root for
     /// everything else.
     pub files: ProjectFiles<'a>,
-    /// What git says about the project. Supplied by the caller rather
-    /// than resolved per pass: a command that runs more than one pass
-    /// over one project — a `--content` gate judges the working tree and
-    /// the proposal it would become — holds one reading across them,
-    /// because a repository's history does not move while a command
-    /// reads it. Nothing in it is read until a rule asks.
-    pub history: &'a git_drift::DriftHistory,
+    /// What git says about the project, supplied by the caller rather than
+    /// resolved per pass ([`crate::history::ProjectHistory`]).
+    pub history: &'a crate::history::ProjectHistory,
     /// Structural delta from a past ref to the current graph. `None`
     /// when no diff context is available; `Some(_)` when `check` has one
     /// from `--since <ref>` or a configured `rules.immutable_baseline`.
@@ -825,10 +846,11 @@ fn rules_with_classification(
     rules
 }
 
-/// The reading a pass that measures no git runs against — every rule's
-/// unit tests, and any project without `detection.git_drift_threshold`.
+/// The reading a pass that reads no git runs against — every rule's unit
+/// tests that measure neither drift nor recorded names.
 #[cfg(test)]
-pub(crate) static UNMEASURED: git_drift::DriftHistory = git_drift::DriftHistory::unmeasured();
+pub(crate) static UNMEASURED: crate::history::ProjectHistory =
+    crate::history::ProjectHistory::unread();
 
 /// Test-only helper: build a [`RuleContext`] with a placeholder root.
 /// Lives here so each rule's unit tests can construct a context
@@ -873,7 +895,7 @@ pub fn check(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
-    history: &git_drift::DriftHistory,
+    history: &crate::history::ProjectHistory,
     since: Since<'_>,
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
@@ -896,14 +918,14 @@ pub fn check(
 /// re-running the same stat probes, so the probes run once per report
 /// and the violations derive from exactly the edges the report lists.
 /// The seeded vector must be the same-context classification
-/// (`find_unresolved_edges(graph, config, files, diff, steps)`) the rules would
+/// (`find_unresolved_edges(graph, config, files, history, diff, steps)`) the rules would
 /// compute themselves.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check_with_unresolved(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
-    history: &git_drift::DriftHistory,
+    history: &crate::history::ProjectHistory,
     since: Since<'_>,
     steps: Option<&[crate::ancestry::Step]>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
@@ -935,7 +957,7 @@ pub(crate) fn run_rules(
     graph: &Graph,
     config: &Config,
     files: ProjectFiles<'_>,
-    history: &git_drift::DriftHistory,
+    history: &crate::history::ProjectHistory,
     since: Since<'_>,
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,

@@ -12,7 +12,7 @@ pub use body_line_match::{BodyLineMatch, RawBodyLineMatch};
 pub use body_structure::{BodySection, BodyStructure, ReferenceDefinition, SectionHeading};
 pub use edge::{
     BUILTIN_EDGE_RELATIONS, Edge, RawEdge, Reference, ReferenceLocation, ReferenceProtection,
-    ReferenceSource, ReferenceSyntax, ResolvedTarget, UnresolvedCause,
+    ReferenceSource, ReferenceSyntax, ResolvedTarget, TargetHistory, UnresolvedCause,
 };
 pub use graph::{Graph, GraphMeta, ParseFailure};
 pub use kind::Kind;
