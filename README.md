@@ -306,7 +306,7 @@ A violating write is refused with `LOCKED`, naming the lock and the remedy. CI p
 
 ### Remove documents without losing them
 
-A project can delete retired documents and keep them only in git history. `nodex history <id>` (or `--path <file>`) returns each removed document as its last revision reads, with the commits that added and removed it; with neither, every document whose id the working tree no longer holds. An unresolved-reference policy can then tell a citation of a removed document from a typo:
+A project can delete retired documents and keep them only in git history. `nodex history <id>` (or `--path <file>`) returns each removed document as its last revision reads, with the commits that added and removed it; with neither, every document a commit or the working tree removed whose id the working tree no longer holds. An unresolved-reference policy can then tell a citation of a removed document from a typo:
 
 ```toml
 [[detection.unresolved_policy]]   # a decision record may cite what stood on its day

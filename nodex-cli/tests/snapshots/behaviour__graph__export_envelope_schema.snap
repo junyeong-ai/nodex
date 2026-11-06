@@ -2720,7 +2720,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "`HEAD` holds it, and the work tree has removed it, staged or not, or\ngiven the path another id.",
+                "description": "`HEAD` holds it, and the work tree has removed it, staged or not.",
                 "properties": {
                   "type": {
                     "const": "uncommitted",
@@ -2733,7 +2733,7 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "No commit the walk reads removed it: the id was changed in place, or\nonly a merge's resolution dropped the path.",
+                "description": "Nothing removed it: the id was changed in place, committed or not, or\nonly a merge's resolution, which the walk does not read, dropped the\npath.",
                 "properties": {
                   "type": {
                     "const": "unattributed",
@@ -2751,7 +2751,7 @@ exit: 0
             "description": "A document as a revision that held it reads under the current\nconfiguration, with how it left the project.",
             "properties": {
               "blob": {
-                "description": "The revision read; `git cat-file -p <blob>` prints it. The one its\nremoval took away, `HEAD`'s for an uncommitted removal, and the one\nthat first added it where no commit removed it.",
+                "description": "The revision read; `git cat-file -p <blob>` prints it: the one its\nremoval took away, else `HEAD`'s where `HEAD` holds it, else the one\nthat first added it.",
                 "type": "string"
               },
               "first_added": {
@@ -2799,7 +2799,7 @@ exit: 0
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "items": {
-            "description": "Each document — an id at a path — a revision `HEAD` reaches held,\n`HEAD` included, that the project no longer holds there: under the id\nor at the path asked about, or, asked about neither, every one whose\nid the working tree no longer holds. Uncommitted removals first, then\ncommitted ones latest first, then those no commit removed.",
+            "description": "Each document — an id at a path — a revision `HEAD` reaches held,\n`HEAD` included, that the project no longer holds there, under the id\nor at the path asked about; asked about neither, each a commit or the\nwork tree removed whose id the working tree no longer holds.\nUncommitted removals first, then committed ones latest first, then\nthose nothing removed.",
             "items": {
               "$ref": "#/$defs/RemovedDocument"
             },
