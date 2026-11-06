@@ -404,8 +404,9 @@ severity = "error"
 }
 
 /// A dangling citation of a document history recorded, its removal committed
-/// or only staged, is told from a name no document carried; a clone holding
-/// part of its history cannot tell them apart and is refused.
+/// or only staged, is told from a name no document carried. A clone holding
+/// part of its history cannot tell them apart, so the commands that classify
+/// are refused there while a command that does not ask still answers.
 #[test]
 fn unresolved_policy_tells_a_removed_document_from_a_name_never_recorded() {
     let tmp = scratch();
@@ -478,6 +479,8 @@ severity = "error"
     );
     let refused = envelope_of(nodex(clone.path()).arg("check"));
     assert_eq!(refused["error"]["code"], "CONFIG_ERROR", "{refused}");
+    let classified = run_json(nodex(clone.path()).args(["classify", "docs/guide.md"]));
+    assert_eq!(classified["items"][0]["in_scope"], true, "{classified}");
 }
 
 #[test]
