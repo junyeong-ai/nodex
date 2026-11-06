@@ -124,6 +124,7 @@ impl Rule for UnresolvedReferenceRule {
                         cause: e.cause,
                         sources: Evidence(e.sources.clone()),
                         source_protection: Evidence(e.source_protection),
+                        history: e.history.clone().map(Evidence),
                     },
                 )
             })

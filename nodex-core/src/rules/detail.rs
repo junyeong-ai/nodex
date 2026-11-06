@@ -463,6 +463,10 @@ pub enum ViolationDetails {
         /// Location and lock evidence do not change the unresolved relation.
         sources: Evidence<Vec<crate::model::ReferenceSource>>,
         source_protection: Evidence<crate::model::ReferenceProtection>,
+        /// What history holds of the target, where a policy row reads it.
+        /// Evidence: it describes the target, not the reference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<Evidence<crate::model::TargetRecord>>,
     },
     /// A live document cites `target`, a retired document whose lineage
     /// continues in a live one.
@@ -848,10 +852,23 @@ impl ViolationDetails {
                 raw_target,
                 location,
                 cause,
+                history,
                 ..
-            } => format!(
-                "reference to {raw_target:?} at {location} ({relation}) does not resolve: {cause}"
-            ),
+            } => {
+                let history = match history.as_deref() {
+                    Some(crate::model::TargetRecord::Recorded { id }) => {
+                        format!("; history records it as {id:?}")
+                    }
+                    Some(crate::model::TargetRecord::Unrecorded) => {
+                        "; no revision in history holds it".to_string()
+                    }
+                    None => String::new(),
+                };
+                format!(
+                    "reference to {raw_target:?} at {location} ({relation}) does not resolve: \
+                     {cause}{history}"
+                )
+            }
             Self::SupersededReference {
                 relation,
                 target,
@@ -1025,6 +1042,9 @@ mod tests {
                 cause: crate::UnresolvedCause::Missing,
                 sources: Evidence(Vec::new()),
                 source_protection: Evidence(crate::model::ReferenceProtection::Unknown),
+                history: Some(Evidence(crate::model::TargetRecord::Recorded {
+                    id: "gone".to_string(),
+                })),
             },
         ]
     }

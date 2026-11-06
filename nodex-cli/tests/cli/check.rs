@@ -4,7 +4,7 @@
 use crate::support::{
     envelope_of, git_runner, init_project, nodex, run_json, scratch, warning_msg, write_doc,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 use tempfile::TempDir;
 
@@ -469,6 +469,28 @@ severity = "error"
         failing,
         [("unresolved_reference/unknown-name", "never.md")],
         "{check}"
+    );
+    assert_eq!(
+        check["data"]["violations"][0]["details"]["history"],
+        json!({"type": "unrecorded"}),
+        "{check}"
+    );
+    nodex(root).arg("build").assert().success();
+    let issues = run_json(nodex(root).args(["query", "issues"]));
+    let histories: Vec<(&str, &Value)> = issues["unresolved_edges"]
+        .as_array()
+        .expect("unresolved_edges")
+        .iter()
+        .filter_map(|e| Some((e["raw_target"].as_str()?, &e["history"])))
+        .collect();
+    assert_eq!(
+        histories,
+        [
+            ("gone.md", &json!({"type": "recorded", "id": "gone"})),
+            ("never.md", &json!({"type": "unrecorded"})),
+            ("staged.md", &json!({"type": "recorded", "id": "staged"})),
+        ],
+        "{issues}"
     );
 
     let clone = scratch();
