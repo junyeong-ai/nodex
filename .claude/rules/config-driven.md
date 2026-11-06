@@ -15,6 +15,7 @@ A declaration read in more than one place is read through one seam:
 - forbidden fields: `Config::validate_forbidden`, `validate_merged_forbidden`
 - lifecycle steps at write seams: `BaselineProbe::refusals`, plus `BaselineProbe::undeclared_move` for the lifecycle and status-authoring seams; history semantics: [Rule population, findings and history](../../nodex-core/CLAUDE.md#rule-population-findings-and-history)
 - rule severity: `Rule::configured_severity` / `Rule::evaluate`, shared by checks, manifests and mutation gates
+- whether policy rows read history: `Config::history_policy_row`, for preflight's whole-history requirement and for whether `ProjectHistory` reads recorded bindings
 - the output directory: folded into nodex's path language once as `output.dir` is read, so the traversal guard, the scan's self-exclusion glob, every writer's join and the path `status` reports are one value on every platform
 
 Invariants behind what the reference states:
