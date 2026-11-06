@@ -6,6 +6,7 @@ use chrono::{Local, NaiveDate};
 use clap::{Parser, Subcommand};
 use commands::build::BuildArgs;
 use commands::check::CheckArgs;
+use commands::classify::ClassifyArgs;
 use commands::diff::DiffArgs;
 use commands::export::ExportCommand;
 use commands::impact::ImpactArgs;
@@ -64,6 +65,8 @@ enum Command {
     Build(BuildArgs),
     /// Report the graph snapshot's state (absent / unreadable / schema_mismatch / outdated / current)
     Status,
+    /// Report whether the scope admits a document at each path, and the kind, id and status it infers there
+    Classify(ClassifyArgs),
     /// Structural diff between two git refs (added/removed nodes & edges, status transitions, field changes)
     Diff(DiffArgs),
     /// What depends on what a diff changed: removed, moved and modified nodes paired with their dependents
@@ -187,6 +190,7 @@ fn main() -> std::process::ExitCode {
             Command::Init => commands::init::run(&root, pretty),
             Command::Build(args) => commands::build::run(&root, args, pretty),
             Command::Status => commands::status::run(&root, pretty),
+            Command::Classify(args) => commands::classify::run(&root, args, pretty),
             Command::Diff(args) => commands::diff::run(&root, args, pretty),
             Command::Impact(args) => commands::impact::run(&root, args, pretty),
             Command::Query(args) => commands::query::run(&root, args, pretty, today),

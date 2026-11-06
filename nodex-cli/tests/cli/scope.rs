@@ -752,8 +752,8 @@ fn a_seam_naming_a_document_by_an_unused_name_is_told_the_one_in_use() {
     // A followed link gives one document several names and the graph carries
     // one. Named by another, the source reads as untracked — a plain move, no
     // reference rewriting — so the real file leaves and every reference to the
-    // name in use dangles. Both planes ask the same question of the same
-    // channel.
+    // name in use dangles. Every seam naming a path asks the same question of
+    // the same channel.
     use std::os::unix::fs as unix_fs;
     let tmp = scratch();
     let root = tmp.path();
@@ -785,6 +785,7 @@ fn a_seam_naming_a_document_by_an_unused_name_is_told_the_one_in_use() {
 
     for env in [
         envelope_of(nodex(root).args(["rename", "real/a.md", "docs/a-moved.md"])),
+        envelope_of(nodex(root).args(["classify", "real/a.md"])),
         envelope_of(
             nodex(root)
                 .args(["check", "--content", "real/a.md=-"])
@@ -949,6 +950,7 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
             vec!["lifecycle", "supersede", "old", "--to", "new"],
         ),
         ("scaffold", scaffold.clone()),
+        ("classify", vec!["classify", "docs/linked/old.md"]),
     ];
     // Every other leaf, with why the working tree's boundary is not its
     // answer to give. A leaf that fits none of these has not been decided

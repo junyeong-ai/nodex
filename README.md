@@ -389,6 +389,7 @@ Queries answer from `_index/graph.json` without re-parsing. Before answering, a 
 | `nodex init` | Writes an annotated `nodex.toml`; its `[meta] nodex_version` pin names the running binary's minor and is left commented out |
 | `nodex build [--full]` | Builds the graph snapshot; `--full` ignores the cache |
 | `nodex status` | Whether the snapshot matches the working tree, and where it diverges |
+| `nodex classify <path>...` | Whether the scope admits a document at each path, and the kind, id and status one declaring none takes there |
 | `nodex check` | Every registered rule over the project; `--content` gates proposed bytes, `--staged` the next commit, `--since <ref>` a history range |
 | `nodex report` | Writes `GRAPH.md`, a readable summary of the graph |
 | `nodex diff <a> <b>` | The nodes, edges, statuses, fields, paths and annotations that changed between two git refs |

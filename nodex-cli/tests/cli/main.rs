@@ -17,6 +17,7 @@ mod build;
 mod check;
 mod check_content;
 mod checkout;
+mod classify;
 mod config;
 #[cfg(unix)]
 mod containment;

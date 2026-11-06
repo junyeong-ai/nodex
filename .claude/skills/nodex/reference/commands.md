@@ -4,7 +4,7 @@ Per-leaf flags and payload semantics. The authoritative list of leaves, their po
 
 ## Contents
 
-- [Build](#build) and [snapshot status](#status)
+- [Build](#build), [snapshot status](#status) and [path classification](#classify)
 - [Queries](#query): search, node detail, relations, similarity and annotations
 - [Check and proposed content](#check)
 - [Range checks](#check---since) and [staged checks](#check---staged)
@@ -45,6 +45,17 @@ A whole-document failure (unparseable YAML, non-mapping frontmatter, a mapping u
 `unbuildable_paths` lists the snapshot's recorded parse failures. They are covered by the digest the failed parse consumed, so unchanged broken bytes are never staleness — fix the document, `check` reds it. One exception: a path the build could not read at all had no bytes to digest, so the probe can never confirm it and the state stays `outdated` (naming that path in `changed_paths`) until the file is readable; a rebuild will not clear it.
 
 `snapshot_nodex_version` names the producing binary. Its version is part of what `config_changed` is keyed on, so an upgrade flags existing snapshots `outdated` with `config_changed: true` until one rebuild; an incompatible snapshot format reads `schema_mismatch` instead, and a query refuses that snapshot (`GRAPH_OUTDATED`) until it is rebuilt. The error names the recorded and supported schema versions. `--allow-stale` does not bypass schema compatibility.
+
+## classify
+
+```bash
+nodex classify <path>...
+```
+`{items: [{path, in_scope, inferred?: {kind, id, status}}], total}`, one entry per path in the order given. It reads the configuration and the scan alone, so it answers before a document exists and in a project that was never built; no graph is read or written.
+
+`in_scope` is the scan's verdict, the one `check --content` reports per proposal: `scope.include` and `exclude`, `prune_dirs`, hidden segments, links the walk does not descend, and `conditional_exclude` by the parent's current status. A path the tree does not hold is judged as a document there declaring nothing. `inferred` is what a document at an admitted path takes when it declares none of `kind`, `id` and `status`: the identity rules, then the entry status of the flow governing that kind. Frontmatter overrides each, so `query node --path` reads a graphed document's own values.
+
+Paths are normalized as write paths are (`./`, `\`). A path that escapes the root, that the filesystem spells differently, or that names a document the graph carries under another name is refused.
 
 ## query
 

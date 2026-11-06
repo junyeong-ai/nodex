@@ -1,6 +1,7 @@
 pub mod baseline;
 pub mod build;
 pub mod check;
+pub mod classify;
 pub mod content_source;
 pub mod diff;
 pub mod export;

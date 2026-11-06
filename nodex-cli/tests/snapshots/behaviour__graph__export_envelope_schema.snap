@@ -1,5 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
+assertion_line: 280
 expression: observed
 ---
 exit: 0
@@ -1537,6 +1538,87 @@ exit: 0
           "has_errors"
         ],
         "title": "CheckResult",
+        "type": "object"
+      },
+      "classify": {
+        "$defs": {
+          "ClassifyEntry": {
+            "description": "How the configuration reads one path.",
+            "properties": {
+              "in_scope": {
+                "description": "Whether the scope admits a document at the path, as the scan every\nbuild reads decides it.",
+                "type": "boolean"
+              },
+              "inferred": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/InferredFields"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The fields a document at the path takes when it declares none of\nthem; absent where the scope admits no document. A document's own\nfrontmatter overrides each, and `query node --path` reads the values a\ngraphed document holds."
+              },
+              "path": {
+                "description": "Normalized, forward-slash project path.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "in_scope"
+            ],
+            "type": "object"
+          },
+          "InferredFields": {
+            "description": "The identity and status a build completes for a document that leaves them\nout.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "status"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ClassifyEntry"
+            },
+            "type": "array"
+          },
+          "returned": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "ItemsEnvelopeShape",
         "type": "object"
       },
       "diff": {

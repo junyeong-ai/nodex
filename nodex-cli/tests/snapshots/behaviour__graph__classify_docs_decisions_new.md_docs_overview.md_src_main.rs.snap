@@ -1,0 +1,36 @@
+---
+source: nodex-cli/tests/behaviour.rs
+assertion_line: 280
+expression: observed
+---
+exit: 0
+{
+  "data": {
+    "items": [
+      {
+        "in_scope": true,
+        "inferred": {
+          "id": "adr-new",
+          "kind": "adr",
+          "status": "active"
+        },
+        "path": "docs/decisions/new.md"
+      },
+      {
+        "in_scope": true,
+        "inferred": {
+          "id": "generic-overview",
+          "kind": "generic",
+          "status": "active"
+        },
+        "path": "docs/overview.md"
+      },
+      {
+        "in_scope": false,
+        "path": "src/main.rs"
+      }
+    ],
+    "total": 3
+  },
+  "ok": true
+}
