@@ -384,6 +384,7 @@ flowchart LR
 | `nodex init` | 주석 달린 `nodex.toml` 생성. 실행 중인 바이너리의 minor 버전을 적은 `[meta] nodex_version` 핀은 주석 처리된 채로 들어감 |
 | `nodex build [--full]` | 그래프 스냅샷 빌드. `--full`은 캐시 무시 |
 | `nodex status` | 스냅샷이 working tree와 일치하는지, 어디서 어긋나는지 |
+| `nodex classify <path>...` | 각 경로의 문서를 scope가 받아들이는지, 아무것도 선언하지 않은 문서가 그 경로에서 갖는 kind·id·status |
 | `nodex check` | 프로젝트에 등록된 모든 룰. `--content`는 제안된 바이트, `--staged`는 다음 커밋, `--since <ref>`는 이력 구간을 판정 |
 | `nodex report` | 그래프를 읽기 좋게 요약한 `GRAPH.md` 생성 |
 | `nodex diff <a> <b>` | 두 git ref 사이에서 바뀐 노드·edge·status·필드·경로·annotation |

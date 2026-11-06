@@ -101,7 +101,9 @@ historical target validity. See [source protection](reference/config.md#unresolv
 
 Use `scaffold`, `rename`, `retarget` and `lifecycle` for guarded graph changes.
 Classification globs do not choose creation paths; scaffold needs `--path` or a
-`scaffold.paths` template. Scaffold without `--body` / `--field` writes even when
+`scaffold.paths` template. `nodex classify <path>...` answers, before anything is
+written, whether the scope admits a path and the kind, id and status a document
+there takes ([classify](reference/commands.md#classify)). Scaffold without `--body` / `--field` writes even when
 the new document has error-severity findings and reports them in
 `violations_introduced` warnings, so run `nodex check` after it; with `--body` or
 `--field`, an introduced error refuses the write (`CONTENT_VIOLATIONS`).
@@ -178,7 +180,7 @@ describes verification separately from parsing coverage.
 ```
 nodex init                      nodex build                     nodex status
 nodex check                     nodex report                    nodex migrate
-nodex diff <before> <after>     nodex impact <before> <after>
+nodex diff <before> <after>     nodex impact <before> <after>   nodex classify <path>...
 nodex scaffold                  nodex rename <old> <new>        nodex retarget <old_id> <new_id>
 nodex lifecycle review <id>     nodex lifecycle set <id>        nodex lifecycle supersede <id>
 nodex query search <keyword>    nodex query nodes               nodex query node <id>

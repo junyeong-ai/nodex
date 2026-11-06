@@ -1654,6 +1654,7 @@ fn envelope_shape() -> Value {
 /// hand-written schemas that could drift from the structs the CLI
 /// serialises.
 fn per_command_schemas() -> Map<String, Value> {
+    use crate::classify::ClassifyEntry;
     use crate::command_result::{
         BuildResult, CheckResult, InitResult, LifecycleResult, MigrateResult, RenameResult,
         ReportResult, RetargetResult,
@@ -1742,6 +1743,7 @@ fn per_command_schemas() -> Map<String, Value> {
 
     // Introspection
     out.insert("status".into(), schema_of::<crate::status::StatusReport>());
+    out.insert("classify".into(), items_envelope::<ClassifyEntry>());
 
     out
 }

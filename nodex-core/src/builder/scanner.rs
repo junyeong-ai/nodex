@@ -323,6 +323,23 @@ impl ScopeScan {
             .chain(&self.conditionally_excluded)
             .map(PathBuf::as_path)
     }
+
+    /// Whether this scan holds a document at `path`, a normalized project path.
+    ///
+    /// A path naming a document the scan holds under another name is refused,
+    /// naming the one in use: the answer would be about that document, and a
+    /// caller keyed on the name it asked under would attach it to nothing the
+    /// graph carries.
+    pub fn admits(&self, path: &Path) -> Result<bool> {
+        if let Some((_, named)) = self.aliases.iter().find(|(unused, _)| unused == path) {
+            return Err(Error::InvalidArgument(format!(
+                "path {:?} names the document the graph carries as {:?}; use that path",
+                crate::path_guard::forward_string(path),
+                crate::path_guard::forward_string(named)
+            )));
+        }
+        Ok(self.paths.iter().any(|admitted| admitted == path))
+    }
 }
 
 /// The boundary a scan could not read, as the one warning every command built

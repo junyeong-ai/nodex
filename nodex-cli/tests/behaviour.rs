@@ -40,6 +40,12 @@ const FIXTURES: &[&str] = &["minimal", "graph"];
 /// fixture in [`FIXTURES`].
 const SHARED: &[&[&str]] = &[
     &["status"],
+    &[
+        "classify",
+        "docs/decisions/new.md",
+        "docs/overview.md",
+        "src/main.rs",
+    ],
     &["check"],
     &["report"],
     &["query", "nodes"],

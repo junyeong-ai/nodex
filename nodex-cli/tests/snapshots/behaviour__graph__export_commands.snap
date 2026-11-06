@@ -1,5 +1,6 @@
 ---
 source: nodex-cli/tests/behaviour.rs
+assertion_line: 280
 expression: observed
 ---
 exit: 0
@@ -31,6 +32,18 @@ exit: 0
           "status"
         ],
         "schema": "status"
+      },
+      {
+        "path": [
+          "classify"
+        ],
+        "positionals": [
+          {
+            "name": "paths",
+            "required": true
+          }
+        ],
+        "schema": "classify"
       },
       {
         "path": [

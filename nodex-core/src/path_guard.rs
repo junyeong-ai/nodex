@@ -66,8 +66,8 @@ pub fn normalize_relative(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Canonicalize a user-supplied document path for a mutation or
-/// write-gate surface, returning the scanner's root-relative
+/// Canonicalize a user-supplied document path for a mutation, a
+/// write gate or `classify`, returning the scanner's root-relative
 /// forward-slashed form. One seam, four steps: fold `\` to `/` —
 /// nodex's path language is forward-slashed on every platform; the
 /// scanner's globs, the JSON serializer, and the lookup surface all
@@ -83,8 +83,8 @@ pub fn normalize_relative(path: &Path) -> Option<String> {
 /// The spelling test lives here rather than at each seam because
 /// every path a user names reaches a write through this one call, and
 /// a guard a handler can forget is one a handler will forget: the
-/// four surfaces that accept a document path (`scaffold --path`,
-/// `rename`'s source and destination, `check --content`) are exactly
+/// surfaces that accept a document path (`scaffold --path`, `rename`'s
+/// source and destination, `check --content`, `classify`) are exactly
 /// this function's callers.
 pub fn normalize_doc_path(root: &Path, input: &str) -> Result<String> {
     let folded = forward_str(input);

@@ -1,5 +1,6 @@
 pub mod ancestry;
 pub mod builder;
+pub mod classify;
 pub mod command_result;
 pub mod config;
 pub mod diff;
@@ -31,6 +32,7 @@ pub(crate) mod yaml_text;
 // path (e.g. `nodex_core::query::similar::compute_similarity`).
 
 pub use ancestry::{Ancestry, Lines, Position, Positions, Priors, Step};
+pub use classify::{ClassifyEntry, ClassifyOutcome, InferredFields, classify};
 pub use command_result::{
     BuildResult, CheckResult, FileWriteFailure, IdStability, InitResult, LifecycleResult,
     MigrateResult, MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,

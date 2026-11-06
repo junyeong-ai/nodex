@@ -467,6 +467,10 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ("export.commands", vec!["export", "commands"]),
         ("export.diagnostics", vec!["export", "diagnostics"]),
         ("status", vec!["status"]),
+        (
+            "classify",
+            vec!["classify", "docs/spec.md", "docs/new.md", "src/x.rs"],
+        ),
         ("query.search", vec!["query", "search", "spec"]),
         ("query.backlinks", vec!["query", "backlinks", "spec"]),
         ("query.chain", vec!["query", "chain", "old"]),
