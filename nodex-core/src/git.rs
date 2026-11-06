@@ -1022,7 +1022,7 @@ impl Repository {
                 "--no-abbrev",
                 "--raw",
                 "-z",
-                "--diff-filter=AD",
+                "--diff-filter=ADT",
                 "--format=%x00%x00%H%x00%ct%x00%s",
                 revisions,
                 "--",
@@ -1240,7 +1240,9 @@ pub struct FileEvent {
 
 /// The added and removed regular files in the stream of a
 /// `log --raw -z --format=%x00%x00%H%x00%ct%x00%s` walk, each beside the
-/// repository path git spells it at.
+/// repository path git spells it at. A type change ends or begins a regular
+/// file as a removal or an addition does, so a file turned into a symlink is
+/// removed there.
 fn file_events(stream: &[u8]) -> io::Result<Vec<(Vec<u8>, FileEvent)>> {
     let malformed = |detail: &str| io::Error::other(format!("git reported {detail}"));
     let fields: Vec<&[u8]> = stream.split(|byte| *byte == 0).collect();
@@ -1278,14 +1280,16 @@ fn file_events(stream: &[u8]) -> io::Result<Vec<(Vec<u8>, FileEvent)>> {
                 .get(at + 1)
                 .ok_or_else(|| malformed("a diff entry with no path"))?;
             let parts: Vec<&[u8]> = entry.split(|byte| *byte == b' ').collect();
-            let [old_mode, new_mode, old_blob, new_blob, status] = parts.as_slice() else {
+            let [old_mode, new_mode, old_blob, new_blob, _status] = parts.as_slice() else {
                 return Err(malformed("a diff entry of an unexpected shape"));
             };
-            let (kind, mode, blob) = match status.first() {
-                Some(b'D') => (FileEventKind::Removed, old_mode, old_blob),
-                _ => (FileEventKind::Added, new_mode, new_blob),
+            let regular = |mode: &[u8]| mode.starts_with(b"100");
+            let event = match (regular(old_mode), regular(new_mode)) {
+                (true, false) => Some((FileEventKind::Removed, old_blob)),
+                (false, true) => Some((FileEventKind::Added, new_blob)),
+                _ => None,
             };
-            if mode.starts_with(b"100") {
+            if let Some((kind, blob)) = event {
                 events.push((
                     path.to_vec(),
                     FileEvent {
@@ -2177,6 +2181,30 @@ mod tests {
             history_of(dir.path()).commits_since(Path::new("q.txt"), reviewed),
             4,
             "a merge resolving into something no parent had changed the file itself"
+        );
+    }
+
+    /// A file turned into a symlink is a regular file removed, and one turned
+    /// back an addition, as surely as a deletion or a creation is.
+    #[test]
+    fn a_type_change_removes_or_adds_the_regular_file() {
+        let stream = b"\0\0c0ffee\x001700000000\0convert\0\n\
+                       :100644 120000 aaa bbb T\0docs/a.md\0\
+                       :120000 100644 ccc ddd T\0docs/b.md\0\
+                       :100644 000000 eee 000 D\0docs/c.md\0\
+                       :000000 120000 000 fff A\0docs/d.md\0";
+        let events: Vec<(String, FileEventKind, String)> = file_events(stream)
+            .unwrap()
+            .into_iter()
+            .map(|(path, event)| (String::from_utf8(path).unwrap(), event.kind, event.blob))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                ("docs/a.md".into(), FileEventKind::Removed, "aaa".into()),
+                ("docs/b.md".into(), FileEventKind::Added, "ddd".into()),
+                ("docs/c.md".into(), FileEventKind::Removed, "eee".into()),
+            ]
         );
     }
 
