@@ -1364,6 +1364,11 @@ pub struct UnresolvedPolicyRuleConfig {
     /// document citing what no longer stands.
     #[serde(default)]
     pub source_kinds: Vec<String>,
+    /// Statuses of the document the reference is authored in; empty matches
+    /// every status. Tells a record that has settled from a document still
+    /// being written, whether or not a lock holds it.
+    #[serde(default)]
+    pub source_statuses: Vec<String>,
     /// What the project's history holds of the target; omitted matches
     /// either. Tells a citation of a document since removed from a name no
     /// document carried. Only legal on causes whose target is absent
@@ -1382,12 +1387,25 @@ impl UnresolvedPolicyRuleConfig {
         self.relations.is_empty() || self.relations.iter().any(|r| r == relation)
     }
 
+    /// Whether this row's protection filter admits a reference whose authored
+    /// sources hold as `state`.
+    pub(crate) fn admits_protection(&self, state: crate::model::ReferenceProtection) -> bool {
+        self.source_protection
+            .is_none_or(|selected| selected == state)
+    }
+
     /// Whether this row's source-kind filter admits a reference authored in
     /// a document of `kind`. An empty filter admits every reference, one
     /// whose source is unknown included.
-    pub(crate) fn admits_source(&self, kind: Option<&str>) -> bool {
-        self.source_kinds.is_empty()
-            || kind.is_some_and(|kind| self.source_kinds.iter().any(|k| k == kind))
+    pub(crate) fn admits_source_kind(&self, kind: Option<&str>) -> bool {
+        admits(&self.source_kinds, kind)
+    }
+
+    /// Whether this row's source-status filter admits a reference authored in
+    /// a document at `status`, read as [`Self::admits_source_kind`] reads a
+    /// kind.
+    pub(crate) fn admits_source_status(&self, status: Option<&str>) -> bool {
+        admits(&self.source_statuses, status)
     }
 
     /// Whether this row's history filter admits a reference whose target
@@ -1397,6 +1415,10 @@ impl UnresolvedPolicyRuleConfig {
         self.history
             .is_none_or(|selected| Some(selected) == history)
     }
+}
+
+fn admits(filter: &[String], value: Option<&str>) -> bool {
+    filter.is_empty() || value.is_some_and(|value| filter.iter().any(|v| v == value))
 }
 
 /// Severity assigned to an unresolved reference. Warning and error rows
@@ -1423,6 +1445,7 @@ pub(crate) fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
         glob: None,
         source_protection: None,
         source_kinds: Vec::new(),
+        source_statuses: Vec::new(),
         history: None,
         severity: UnresolvedSeverity::Info,
     }]

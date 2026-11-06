@@ -2331,6 +2331,7 @@ fn policy_row_for(
         glob: glob.map(str::to_string),
         source_protection: None,
         source_kinds: Vec::new(),
+        source_statuses: Vec::new(),
         history: None,
         severity,
     }
@@ -2368,38 +2369,87 @@ fn unresolved_policy_shadowing_covers_each_protection_state_independently() {
     assert!(error.contains("can never fire"), "{error}");
 }
 
+/// A source filter narrows a row to the kinds or statuses it lists, so a
+/// catch-all behind it keeps the rest, and only rows that between them take
+/// every kind-status pair leave it nothing. A filter names only values the
+/// vocabulary holds, each once.
 #[test]
-fn unresolved_policy_shadowing_covers_each_source_kind_independently() {
+fn unresolved_policy_shadowing_covers_each_source_kind_and_status_independently() {
     use crate::model::UnresolvedCause;
     let mut config = Config::default();
     config.kinds.allowed = vec!["generic".into(), "adr".into()];
-    let mut records = policy_row(
-        "records",
-        UnresolvedCause::Missing,
-        None,
-        UnresolvedSeverity::Info,
-    );
-    records.source_kinds = vec!["adr".into()];
-    let all = policy_row(
-        "all",
-        UnresolvedCause::Missing,
-        None,
-        UnresolvedSeverity::Error,
-    );
-    config.detection.unresolved_policy = vec![records.clone(), all.clone()];
-    config.validate().unwrap();
+    let row = |name: &str, kinds: &[&str], statuses: &[&str]| {
+        let mut row = policy_row(
+            name,
+            UnresolvedCause::Missing,
+            None,
+            UnresolvedSeverity::Info,
+        );
+        row.source_kinds = kinds.iter().map(|k| (*k).to_string()).collect();
+        row.source_statuses = statuses.iter().map(|s| (*s).to_string()).collect();
+        row
+    };
+    let settled = ["superseded", "archived", "deprecated", "abandoned"];
+    for (earlier, dead) in [
+        (vec![row("records", &["adr"], &[])], false),
+        (
+            vec![
+                row("records", &["adr"], &[]),
+                row("living", &["generic"], &[]),
+            ],
+            true,
+        ),
+        (vec![row("settled", &[], &settled)], false),
+        (
+            vec![
+                row("settled", &[], &settled),
+                row("current", &[], &["active"]),
+            ],
+            true,
+        ),
+        (
+            vec![row("records", &["adr"], &[]), row("settled", &[], &settled)],
+            false,
+        ),
+        (
+            vec![
+                row("records", &["adr"], &[]),
+                row("settled", &[], &settled),
+                row("living", &["generic"], &["active"]),
+            ],
+            true,
+        ),
+    ] {
+        let names: Vec<String> = earlier.iter().map(|row| row.name.clone()).collect();
+        config.detection.unresolved_policy =
+            earlier.into_iter().chain([row("all", &[], &[])]).collect();
+        match config.validate() {
+            Ok(()) => assert!(!dead, "{names:?} leave the catch-all nothing"),
+            Err(error) => assert!(
+                dead && error.to_string().contains("can never fire"),
+                "{names:?}: {error}"
+            ),
+        }
+    }
 
-    let mut living = records.clone();
-    living.name = "living".into();
-    living.source_kinds = vec!["generic".into()];
-    config.detection.unresolved_policy = vec![records.clone(), living, all];
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("can never fire"), "{error}");
-
-    records.source_kinds = vec!["note".into()];
-    config.detection.unresolved_policy = vec![records];
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("source_kinds \"note\""), "{error}");
+    for (filter, refused) in [
+        (
+            row("bad", &["note"], &[]),
+            "source_kinds \"note\" is not in kinds.allowed",
+        ),
+        (
+            row("bad", &[], &["draft"]),
+            "source_statuses \"draft\" is not in statuses.allowed",
+        ),
+        (
+            row("bad", &[], &["active", "active"]),
+            "lists \"active\" more than once",
+        ),
+    ] {
+        config.detection.unresolved_policy = vec![filter];
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains(refused), "{error}");
+    }
 }
 
 /// A row's history narrows it to one of two answers, so a catch-all after a

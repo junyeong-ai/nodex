@@ -348,11 +348,11 @@ severity = "info"
     nodex(project).arg("check").assert().code(1);
 }
 
-/// The same dead citation is history in a record and a defect in a living
-/// document: `source_kinds` classifies it by the kind of the document that
-/// holds it.
+/// The same dead citation is history in a record or a settled document and a
+/// defect in a living one: `source_kinds` and `source_statuses` classify it by
+/// the document that holds it.
 #[test]
-fn unresolved_policy_classifies_a_citation_by_the_kind_that_holds_it() {
+fn unresolved_policy_classifies_a_citation_by_the_document_that_holds_it() {
     let tmp = scratch();
     fs::write(
         tmp.path().join("nodex.toml"),
@@ -372,20 +372,28 @@ cause = "missing"
 source_kinds = ["adr"]
 severity = "info"
 [[detection.unresolved_policy]]
+name = "settled-history"
+cause = "missing"
+source_statuses = ["archived"]
+severity = "info"
+[[detection.unresolved_policy]]
 name = "living-dangling"
 cause = "missing"
 severity = "error"
 "#,
     )
     .unwrap();
-    for (path, id) in [
-        ("docs/decisions/a.md", "record"),
-        ("docs/guide.md", "living"),
+    for (path, id, status) in [
+        ("docs/decisions/a.md", "record", "active"),
+        ("docs/old.md", "settled", "archived"),
+        ("docs/guide.md", "living", "active"),
     ] {
         write_doc(
             tmp.path(),
             path,
-            &format!("---\nid: {id}\ntitle: T\n---\n# T\n\nSee [gone](gone.md).\n"),
+            &format!(
+                "---\nid: {id}\ntitle: T\nstatus: {status}\n---\n# T\n\nSee [gone](gone.md).\n"
+            ),
         );
     }
 

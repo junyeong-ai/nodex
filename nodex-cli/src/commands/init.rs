@@ -320,7 +320,7 @@ orphan_grace_days = 14
 # under the policy row's name. Unmatched references use the registered
 # `unresolved_reference` rule; this starter promotes it to error.
 #
-# Three optional axes narrow a row. `relations` picks which relation the
+# Optional axes narrow a row. `relations` picks which relation the
 # edge carries (omitted = every one) — the axis that tells a structural
 # edge from a prose citation when both name the same dead id, and the
 # only place `superseded_by` is nameable, since a resolved successor
@@ -332,6 +332,11 @@ orphan_grace_days = 14
 # before anything is looked up. `source_protection` selects protected,
 # unprotected or unknown sources; omitted matches every state. Protection
 # follows the evaluated locks and does not establish historical validity.
+# `source_kinds` and `source_statuses` select the kind and status of the
+# document holding the reference, so a settled record can keep a citation
+# a living document may not. `history` (on `missing` / `id_not_found`)
+# tells a removed document from a name no document carried, and needs the
+# whole git history.
 #
 # A row the earlier rows already claim is refused at load — first match
 # wins, so it could never fire, and an error row that never fires

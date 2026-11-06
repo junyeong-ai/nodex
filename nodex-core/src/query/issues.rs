@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config::{Config, UnresolvedPolicyRuleConfig, UnresolvedSeverity};
-use crate::model::{Edge, Graph, ParseFailure, ResolvedTarget, TargetHistory, UnresolvedCause};
+use crate::model::{
+    Edge, Graph, Node, ParseFailure, ResolvedTarget, TargetHistory, UnresolvedCause,
+};
 use crate::rules::{RuleCoverage, SkippedRule, Violation, check_with_unresolved};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
@@ -292,7 +294,7 @@ fn unresolved_from(
         &edge.relation,
         sought.names(),
         source_protection,
-        source_node.map(|node| node.kind.as_str()),
+        source_node,
         history,
         policy,
     );
@@ -326,29 +328,25 @@ fn unresolved_from(
 /// `relations` (which relation carries the reference — empty admits every
 /// one), `glob` (which name the resolution sought, matching any of them;
 /// load-time validation confines a glob to causes that sought a name at
-/// all), `source_protection`, `source_kinds` (the kind of the document
-/// holding the reference), and `history` (what the project's history holds of
-/// a target the project holds nowhere). The fallthrough is `warning`,
-/// unattributed.
+/// all), `source_protection`, `source_kinds` and `source_statuses` (the kind
+/// and status of the document holding the reference), and `history` (what the
+/// project's history holds of a target the project holds nowhere). The
+/// fallthrough is `warning`, unattributed.
 fn assign_policy(
     cause: UnresolvedCause,
     relation: &str,
     sought: &[String],
     source_protection: crate::model::ReferenceProtection,
-    source_kind: Option<&str>,
+    source: Option<&Node>,
     history: Option<TargetHistory>,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> (UnresolvedSeverity, Option<String>) {
     for (row, matcher) in policy {
         if row.cause != cause
-            || row
-                .source_protection
-                .is_some_and(|state| state != source_protection)
-        {
-            continue;
-        }
-        if !row.matches_relation(relation)
-            || !row.admits_source(source_kind)
+            || !row.admits_protection(source_protection)
+            || !row.matches_relation(relation)
+            || !row.admits_source_kind(source.map(|node| node.kind.as_str()))
+            || !row.admits_source_status(source.map(|node| node.status.as_str()))
             || !row.admits_history(history)
         {
             continue;
@@ -511,6 +509,7 @@ mod tests {
             glob: glob.map(str::to_string),
             source_protection: None,
             source_kinds: Vec::new(),
+            source_statuses: Vec::new(),
             history: None,
             severity,
         }
