@@ -566,7 +566,7 @@ dir = "_index"
 | `[[annotations]]` / `[output]` / `[report]` / `[similarity]` / `[search]` | Body markers, artifact location, report limits, ranking weights |
 | `[meta]` | `nodex_version`: the binary that may write the project |
 
-`[meta] nodex_version = ">=0.65, <0.66"` pins the binary that may **write** the project: outside it, reads run with a `binary_compat` warning and writes refuse with `VERSION_MISMATCH`. `--check-version <req>` refuses every command instead.
+`[meta] nodex_version = ">=0.66, <0.67"` pins the binary that may **write** the project: outside it, reads run with a `binary_compat` warning and writes refuse with `VERSION_MISMATCH`. `--check-version <req>` refuses every command instead.
 
 ---
 
@@ -584,7 +584,7 @@ iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/insta
 
 The installer downloads a verified prebuilt binary to `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows) and installs the Claude Code skill — `--skill user|project|none` (`-Skill` on Windows) or `NODEX_SKILL_LEVEL` chooses where. `scripts/uninstall.sh` (`uninstall.ps1`) removes both. Prebuilt targets: Linux x86_64 / arm64 (static musl), macOS universal, Windows x86_64 / arm64.
 
-From source: `./scripts/install.sh --from-source`, or `cargo install --path nodex-cli`. Pin the binary in CI with `nodex --check-version ">=0.65, <0.66" build`.
+From source: `./scripts/install.sh --from-source`, or `cargo install --path nodex-cli`. Pin the binary in CI with `nodex --check-version ">=0.66, <0.67" build`.
 
 ---
 
