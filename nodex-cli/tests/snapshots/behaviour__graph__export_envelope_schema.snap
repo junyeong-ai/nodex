@@ -2724,8 +2724,15 @@ exit: 0
                 "type": "string"
               },
               "last_removed": {
-                "$ref": "#/$defs/CommitStamp",
-                "description": "The latest commit removing the path."
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CommitStamp"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The latest commit removing the path; absent where the removal is not\ncommitted, and `blob` is then the revision `HEAD` holds."
               },
               "path": {
                 "type": "string"
@@ -2743,24 +2750,31 @@ exit: 0
               "kind",
               "status",
               "path",
-              "blob",
-              "last_removed"
+              "blob"
             ],
             "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "present": {
-            "description": "Whether the working tree holds a document under the id, or at the\npath.",
-            "type": "boolean"
-          },
-          "removed": {
-            "description": "Each document a commit `HEAD` reaches held under the id, or at the\npath, whose path `HEAD` no longer holds, latest removal first.",
+          "items": {
+            "description": "Each document a revision `HEAD` reaches held, `HEAD` included, at a\npath the project no longer holds: under the id or at the path asked\nabout, or, asked about neither, every one whose id the working tree\nno longer holds. Latest removal first, an uncommitted one before any.",
             "items": {
               "$ref": "#/$defs/RemovedDocument"
             },
             "type": "array"
+          },
+          "present": {
+            "description": "Whether the working tree holds a document under the id, or at the\npath, asked about; absent when asked about neither.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
           },
           "unparsed": {
             "description": "Removed paths whose last revision does not parse, so the id each held\nis unknown; for a path lookup, that path.",
@@ -2771,8 +2785,8 @@ exit: 0
           }
         },
         "required": [
-          "present",
-          "removed"
+          "items",
+          "total"
         ],
         "title": "HistoryReport",
         "type": "object"

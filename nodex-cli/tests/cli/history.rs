@@ -3,10 +3,12 @@ use serde_json::{Value, json};
 use std::fs;
 
 /// A removed document is named as its last revision reads, beside the
-/// commits that added and removed its path; one that moved is still present
-/// under its id; an id no document held has no history.
+/// commits that added and removed its path; a removal the work tree has not
+/// committed is named before any, as `HEAD` holds it. One that moved is still
+/// present under its id, so the listing of what is gone leaves it out; an id
+/// no document held has no history.
 #[test]
-fn history_names_what_head_no_longer_holds_and_the_commits_around_it() {
+fn history_names_what_the_project_no_longer_holds_and_the_commits_around_it() {
     let tmp = scratch();
     let root = tmp.path();
     let git = git_runner(root);
@@ -17,28 +19,34 @@ fn history_names_what_head_no_longer_holds_and_the_commits_around_it() {
     .unwrap();
     let gone = "---\nid: gone\ntitle: Gone\n---\n# Gone\n";
     write_doc(root, "docs/gone.md", gone);
-    write_doc(
-        root,
-        "docs/kept.md",
-        "---\nid: kept\ntitle: Kept\n---\n# Kept\n",
-    );
+    for id in ["kept", "leaving"] {
+        write_doc(
+            root,
+            &format!("docs/{id}.md"),
+            &format!("---\nid: {id}\ntitle: T\n---\n# T\n"),
+        );
+    }
     git(&["init", "-q"]);
     git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "add both"]);
+    git(&["commit", "-q", "-m", "add all"]);
     git(&["rm", "-q", "docs/gone.md"]);
     git(&["mv", "docs/kept.md", "docs/moved.md"]);
     git(&["commit", "-q", "-m", "remove gone, move kept"]);
+    git(&["rm", "-q", "docs/leaving.md"]);
 
     let removed = |data: &Value| -> Vec<Value> {
-        data["removed"]
+        assert_eq!(
+            data["total"],
+            data["items"].as_array().expect("items").len()
+        );
+        data["items"]
             .as_array()
-            .expect("removed")
+            .expect("items")
             .iter()
             .map(|entry| {
                 json!({
                     "id": entry["id"],
                     "path": entry["path"],
-                    "title": entry["title"],
                     "added": entry["first_added"]["subject"],
                     "removed": entry["last_removed"]["subject"],
                 })
@@ -46,19 +54,20 @@ fn history_names_what_head_no_longer_holds_and_the_commits_around_it() {
             .collect()
     };
 
+    let departed = run_json(nodex(root).arg("history"));
+    assert_eq!(departed.get("present"), None);
+    assert_eq!(
+        removed(&departed),
+        [
+            json!({"id": "leaving", "path": "docs/leaving.md", "added": "add all", "removed": null}),
+            json!({"id": "gone", "path": "docs/gone.md", "added": "add all", "removed": "remove gone, move kept"}),
+        ]
+    );
+
     let by_id = run_json(nodex(root).args(["history", "gone"]));
     assert_eq!(by_id["present"], false);
-    assert_eq!(
-        removed(&by_id),
-        [json!({
-            "id": "gone",
-            "path": "docs/gone.md",
-            "title": "Gone",
-            "added": "add both",
-            "removed": "remove gone, move kept",
-        })]
-    );
-    let blob = by_id["removed"][0]["blob"].as_str().expect("blob");
+    assert_eq!(removed(&by_id), removed(&departed)[1..]);
+    let blob = by_id["items"][0]["blob"].as_str().expect("blob");
     let printed = git(&["cat-file", "-p", blob]);
     assert_eq!(String::from_utf8_lossy(&printed.stdout), gone);
 
@@ -70,7 +79,7 @@ fn history_names_what_head_no_longer_holds_and_the_commits_around_it() {
     assert_eq!(removed(&by_path)[0]["id"], "kept");
 
     let never = run_json(nodex(root).args(["history", "never"]));
-    assert_eq!(never, json!({"present": false, "removed": []}));
+    assert_eq!(never, json!({"items": [], "total": 0, "present": false}));
 }
 
 /// A clone holding part of its history cannot say a document was never in

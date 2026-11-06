@@ -11,14 +11,14 @@ pub mod traverse;
 
 use chrono::NaiveDate;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::model::Node;
 
 /// Common identifying view of a node embedded in every query result.
 /// Flattened by serde so the JSON shape is `{ id, title, kind, status,
 /// path, ...query-specific fields }` — uniform across every query.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NodeRef {
     pub id: String,
     pub title: String,

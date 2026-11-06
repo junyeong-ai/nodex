@@ -306,7 +306,7 @@ A violating write is refused with `LOCKED`, naming the lock and the remedy. CI p
 
 ### Remove documents without losing them
 
-A project can delete retired documents and keep them only in git history. `nodex history <id>` (or `--path <file>`) returns each removed document as its last revision reads, with the commits that added and removed it. An unresolved-reference policy can then tell a citation of a removed document from a typo:
+A project can delete retired documents and keep them only in git history. `nodex history <id>` (or `--path <file>`) returns each removed document as its last revision reads, with the commits that added and removed it; with neither, every document whose id the working tree no longer holds. An unresolved-reference policy can then tell a citation of a removed document from a typo:
 
 ```toml
 [[detection.unresolved_policy]]   # a decision record may cite what stood on its day
@@ -343,7 +343,7 @@ A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `
 | `nodex report` | Writes `GRAPH.md`, a readable summary |
 | `nodex diff <a> <b>` | Nodes, edges, statuses, fields and paths changed between two git refs |
 | `nodex impact <a> <b>` | The diff plus each change's dependents and dangling references |
-| `nodex history <id>` | Documents history held under an id (or `--path`) that `HEAD` no longer holds |
+| `nodex history [<id>]` | Documents history held that the project no longer holds: under an id, at a `--path`, or all |
 | `nodex query search <kw>` | Ranked id, title and tag matches with per-field scores |
 | `nodex query nodes` | Documents matching kind, status, tag, field and body filters |
 | `nodex query node <id>` | One document with its edges and, on request, its body |

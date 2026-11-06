@@ -72,7 +72,7 @@ enum Command {
     Diff(DiffArgs),
     /// What depends on what a diff changed: removed, moved and modified nodes paired with their dependents
     Impact(ImpactArgs),
-    /// The documents history held under an id, or at a path, that HEAD no longer holds
+    /// The documents history held that the project no longer holds: under an id, at a path, or all
     History(HistoryArgs),
     /// Search and explore the graph
     Query(QueryArgs),

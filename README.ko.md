@@ -306,7 +306,7 @@ transitions = { proposed = ["active"], active = ["superseded", "archived"] }
 
 ### 문서를 지워도 잃지 않기
 
-퇴역한 문서를 지우고 git 이력에만 남기는 프로젝트가 있습니다. `nodex history <id>`(또는 `--path <file>`)는 삭제된 문서를 마지막 판 그대로, 추가하고 삭제한 커밋과 함께 돌려줍니다. 미해결 참조 정책은 삭제된 문서를 가리키는 인용과 오타를 구분할 수 있습니다.
+퇴역한 문서를 지우고 git 이력에만 남기는 프로젝트가 있습니다. `nodex history <id>`(또는 `--path <file>`)는 삭제된 문서를 마지막 판 그대로, 추가하고 삭제한 커밋과 함께 돌려줍니다. 둘 다 주지 않으면 작업 트리에 id가 더는 없는 문서를 모두 돌려줍니다. 미해결 참조 정책은 삭제된 문서를 가리키는 인용과 오타를 구분할 수 있습니다.
 
 ```toml
 [[detection.unresolved_policy]]   # 결정 기록은 당시에 있던 것을 인용해도 됨
@@ -343,7 +343,7 @@ severity = "error"
 | `nodex report` | 읽기 쉬운 요약 `GRAPH.md` 작성 |
 | `nodex diff <a> <b>` | 두 git ref 사이에 바뀐 node, edge, status, field, 경로 |
 | `nodex impact <a> <b>` | diff에 더해 각 변경의 dependent와 끊어진 참조 |
-| `nodex history <id>` | 이력이 그 id로(또는 `--path`로) 가졌고 `HEAD`가 더는 갖지 않은 문서 |
+| `nodex history [<id>]` | 이력이 가졌고 프로젝트가 더는 갖지 않은 문서: 그 id로, `--path`로, 또는 전부 |
 | `nodex query search <kw>` | id, title, tag 순위 검색과 필드별 점수 |
 | `nodex query nodes` | kind, status, tag, field, 본문 필터에 맞는 문서 |
 | `nodex query node <id>` | 문서 하나와 그 edge, 요청 시 본문 |
