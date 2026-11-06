@@ -6,6 +6,7 @@ pub mod content_source;
 pub mod diff;
 pub mod export;
 pub mod git_checkout;
+pub mod history;
 pub mod impact;
 pub mod init;
 pub mod lifecycle;

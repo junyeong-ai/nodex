@@ -395,15 +395,22 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         "docs/orphan.md",
         "---\nid: orphan\ntitle: Orphan\nkind: generic\nstatus: draft\n---\n# Orphan\n",
     );
+    write_doc(
+        root,
+        "docs/gone.md",
+        "---\nid: gone\ntitle: Gone\nkind: generic\nstatus: active\n---\n# Gone\n",
+    );
     git(&["init", "-q"]);
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "base"]);
-    // A second commit so diff/impact have a non-empty HEAD~1..HEAD delta.
+    // A second commit so diff/impact have a non-empty HEAD~1..HEAD delta,
+    // and history a removed document.
     write_doc(
         root,
         "docs/new.md",
         "---\nid: new\ntitle: New v2\nkind: generic\nstatus: active\nsupersedes: old\n---\n# New\n",
     );
+    fs::remove_file(root.join("docs/gone.md")).unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "v2"]);
     nodex(root).arg("build").assert().success();
@@ -444,6 +451,7 @@ fn every_command_real_output_conforms_to_its_per_command_schema() {
         ("check", vec!["check"]),
         ("diff", vec!["diff", "HEAD~1", "HEAD"]),
         ("impact", vec!["impact", "HEAD~1", "HEAD"]),
+        ("history", vec!["history", "gone"]),
         ("report", vec!["report"]),
         ("migrate", vec!["migrate"]),
         (

@@ -394,6 +394,7 @@ Queries answer from `_index/graph.json` without re-parsing. Before answering, a 
 | `nodex report` | Writes `GRAPH.md`, a readable summary of the graph |
 | `nodex diff <a> <b>` | The nodes, edges, statuses, fields, paths and annotations that changed between two git refs |
 | `nodex impact <a> <b>` | The diff, plus what depends on each changed document and which references now dangle |
+| `nodex history <id>` | Each document history held under the id, or `--path` at a path, that `HEAD` no longer holds: its last revision and the commits that added and removed it |
 | `nodex query search <kw>` | id, title and tag matches, with each field's contribution to the score |
 | `nodex query nodes` | Documents matching kind, status, tag, field, missing-field and body-text filters, projected to the fields asked for |
 | `nodex query node <id>` | One document with its edges and, on request, its body; `--path` looks it up by file |

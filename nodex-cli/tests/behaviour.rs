@@ -134,6 +134,10 @@ const EXEMPT: &[(&[&str], &str)] = &[
     ),
     (&["impact"], "takes two git refs, as `diff` does"),
     (
+        &["history"],
+        "reads git history, which a git-history fixture carries and this corpus does not",
+    ),
+    (
         &["lifecycle", "supersede"],
         "mutates frontmatter and has no preview; the post-state belongs to a mutation corpus \
          that snapshots files, not envelopes",

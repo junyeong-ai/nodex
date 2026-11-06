@@ -8,6 +8,7 @@ pub mod error;
 pub mod export;
 pub mod git;
 pub(crate) mod hash;
+pub mod history;
 pub mod impact;
 pub mod lifecycle;
 pub mod model;
@@ -55,7 +56,8 @@ pub use export::{
     compute_commands_diff, compute_envelope_schema_diff, export_config, export_enums,
     export_envelope_schema, export_rules, export_schema,
 };
-pub use git::{Before, MergeBase, RefState, Repository};
+pub use git::{Before, CommitStamp, MergeBase, RefState, Removal, Repository};
+pub use history::{HistoryOutcome, HistoryReport, HistorySubject, RemovedDocument, find_history};
 pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{

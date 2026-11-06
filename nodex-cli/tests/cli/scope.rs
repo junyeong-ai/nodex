@@ -1,6 +1,8 @@
 //! What the scan reads: scope patterns, links, and the disclosure of what
 //! it did not read.
 
+#[cfg(unix)]
+use crate::support::git_runner;
 use crate::support::{
     envelope_of, init_project, nodex, run_envelope, run_json, scratch, warning_msg, write_doc,
 };
@@ -951,6 +953,7 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
         ),
         ("scaffold", scaffold.clone()),
         ("classify", vec!["classify", "docs/linked/old.md"]),
+        ("history", vec!["history", "old"]),
     ];
     // Every other leaf, with why the working tree's boundary is not its
     // answer to give. A leaf that fits none of these has not been decided
@@ -1042,6 +1045,11 @@ fn every_command_built_on_the_graph_states_what_the_walk_did_not_read() {
 
     for (id, command) in &driven {
         let (tmp, _outside) = fixture(true);
+        if *id == "history" {
+            // It reads a repository; the boundary rides the working-tree
+            // build its `present` is read from.
+            git_runner(tmp.path())(&["init", "-q"]);
+        }
         let env = envelope_of(nodex(tmp.path()).args(command));
         assert!(
             names_the_boundary(&env),

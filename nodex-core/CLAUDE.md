@@ -57,6 +57,12 @@ prefix, not a resolving file/gitlink; document baselines come from checking out
 and graphing that tree, not per-document ref reads. Variable groups and invocation
 safety: `src/git.rs` rustdoc.
 
+`Repository::removals` reads every commit `HEAD` reaches (`--full-history`) for
+files added and no longer held; `history::find_history` admits them by
+`ScopeSpelling` (the scope's patterns, since no tree is walked at a past path) and
+parses each last revision under the current config, the one lens `diff` uses. A
+reshaped clone is refused: an absence there is not evidence.
+
 ## Mutation verdicts and baselines
 
 - `mutate::BaselineBinding::resolve` binds `rules.immutable_baseline` once per

@@ -9,6 +9,7 @@ use commands::check::CheckArgs;
 use commands::classify::ClassifyArgs;
 use commands::diff::DiffArgs;
 use commands::export::ExportCommand;
+use commands::history::HistoryArgs;
 use commands::impact::ImpactArgs;
 use commands::lifecycle::LifecycleCommand;
 use commands::migrate::MigrateArgs;
@@ -71,6 +72,8 @@ enum Command {
     Diff(DiffArgs),
     /// What depends on what a diff changed: removed, moved and modified nodes paired with their dependents
     Impact(ImpactArgs),
+    /// The documents history held under an id, or at a path, that HEAD no longer holds
+    History(HistoryArgs),
     /// Search and explore the graph
     Query(QueryArgs),
     /// Run validation rules
@@ -193,6 +196,7 @@ fn main() -> std::process::ExitCode {
             Command::Classify(args) => commands::classify::run(&root, args, pretty),
             Command::Diff(args) => commands::diff::run(&root, args, pretty),
             Command::Impact(args) => commands::impact::run(&root, args, pretty),
+            Command::History(args) => commands::history::run(&root, args, pretty),
             Command::Query(args) => commands::query::run(&root, args, pretty, today),
             Command::Check(args) => commands::check::run(&root, args, pretty, today),
             Command::Lifecycle { sub } => commands::lifecycle::run(&root, sub, pretty, today),
