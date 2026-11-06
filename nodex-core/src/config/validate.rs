@@ -214,101 +214,151 @@ where
     Ok(())
 }
 
-/// One `[[detection.unresolved_policy]]` row's selector, for the load-time
-/// reachability check.
+/// The earlier rows that between them claim every edge `row` selects, or
+/// `None` when some edge is still left for it.
 ///
 /// Rows are first-match-wins, so a row the earlier ones already claim can never
 /// classify an edge — and an error-severity row that never fires reports a
 /// clean gate over whatever it was declared to catch, with a `rule_coverage`
 /// reach that looks exactly like a thorough pass.
-struct PolicySelector<'a> {
-    name: &'a str,
-    cause: crate::model::UnresolvedCause,
-    relations: std::collections::BTreeSet<&'a str>,
-    glob: Option<&'a str>,
-    source_protection: Option<crate::model::ReferenceProtection>,
-    source_kinds: std::collections::BTreeSet<&'a str>,
-    history: Option<crate::model::TargetHistory>,
-}
-
-impl<'a> PolicySelector<'a> {
-    /// The earlier rows that between them claim every edge this one selects,
-    /// or `None` when some edge is still left for it.
-    ///
-    /// Claiming accumulates: two rows each taking one relation, or one part of
-    /// the targets, leave nothing for a third that names both, and asking
-    /// pairwise would miss it. So each relation this row selects, under each
-    /// protection state, source kind and target history, asks whether the
-    /// earlier rows claiming it select every target its glob does
-    /// ([`super::cover::Coverage::covered_by`]).
-    ///
-    /// `selects` is the relations this row admits, an omitted filter standing
-    /// for every relation the cause can arise on — so a wildcard row is dead
-    /// exactly when earlier rows have enumerated that vocabulary between them,
-    /// which is the same question asked of the same set.
-    fn claimed_by(
-        &self,
-        earlier: &[Self],
-        vocabulary: &std::collections::BTreeSet<String>,
-        kinds: &[String],
-        parser: &ParserConfig,
-        coverage: &mut super::cover::Coverage<'a>,
-    ) -> Option<Vec<&'a str>> {
-        let selects: std::collections::BTreeSet<&str> = if self.relations.is_empty() {
-            vocabulary
+///
+/// Claiming accumulates: two rows each taking one relation, or one part of
+/// the targets, leave nothing for a third that names both, and asking
+/// pairwise would miss it. So each combination of relation, protection state,
+/// source kind, source status and target history `row` selects asks which
+/// earlier rows admit it — through the predicates classification asks — and
+/// whether those select every target its glob does
+/// ([`super::cover::Coverage::covered_by`]).
+///
+/// An omitted filter stands for its whole vocabulary: every relation the
+/// cause can arise on, every allowed kind and status. A wildcard row is then
+/// dead exactly when earlier rows have enumerated that vocabulary between
+/// them, which is the same question asked of the same set.
+fn claimants<'a>(
+    row: &'a UnresolvedPolicyRuleConfig,
+    earlier: &'a [UnresolvedPolicyRuleConfig],
+    config: &Config,
+    relations: &std::collections::BTreeSet<String>,
+    coverage: &mut super::cover::Coverage<'a>,
+) -> Option<Vec<&'a str>> {
+    use crate::model::ReferenceProtection::{Protected, Unknown, Unprotected};
+    use crate::model::TargetHistory::{Recorded, Unrecorded};
+    let relations = classes(
+        &row.relations,
+        relations.iter().filter(|relation| {
+            row.cause
+                .reachable_for(config.parser.is_id_relation(relation))
+        }),
+        |relation| {
+            earlier
                 .iter()
-                .map(String::as_str)
-                .filter(|relation| self.cause.reachable_for(parser.is_id_relation(relation)))
-                .collect()
-        } else {
-            self.relations.clone()
-        };
-        use crate::model::ReferenceProtection::{Protected, Unknown, Unprotected};
-        let states = self.source_protection.map_or_else(
-            || vec![Protected, Unprotected, Unknown],
-            |state| vec![state],
-        );
-        let sources: Vec<&str> = if self.source_kinds.is_empty() {
-            kinds.iter().map(String::as_str).collect()
-        } else {
-            self.source_kinds.iter().copied().collect()
-        };
-        use crate::model::TargetHistory::{Recorded, Unrecorded};
-        let histories = self
-            .history
-            .map_or_else(|| vec![Recorded, Unrecorded], |history| vec![history]);
-        let mut claimants = Vec::new();
-        for state in states {
-            for relation in &selects {
-                for source in &sources {
-                    for history in &histories {
+                .any(|other| other.relations.contains(relation))
+        },
+    );
+    let kinds = classes(&row.source_kinds, &config.kinds.allowed, |kind| {
+        earlier
+            .iter()
+            .any(|other| other.source_kinds.contains(kind))
+    });
+    let statuses = classes(&row.source_statuses, &config.statuses.allowed, |status| {
+        earlier
+            .iter()
+            .any(|other| other.source_statuses.contains(status))
+    });
+    let states = row.source_protection.map_or_else(
+        || vec![Protected, Unprotected, Unknown],
+        |state| vec![state],
+    );
+    let histories = row
+        .history
+        .map_or_else(|| vec![Recorded, Unrecorded], |history| vec![history]);
+    let mut claimants = Vec::new();
+    for relation in &relations {
+        for kind in &kinds {
+            for status in &statuses {
+                for &state in &states {
+                    for &history in &histories {
                         let claiming: Vec<(usize, Option<&str>)> = earlier
                             .iter()
                             .enumerate()
-                            .filter(|(_, row)| {
-                                row.cause == self.cause
-                                    && row
-                                        .source_protection
-                                        .is_none_or(|selected| selected == state)
-                                    && (row.relations.is_empty()
-                                        || row.relations.contains(relation))
-                                    && (row.source_kinds.is_empty()
-                                        || row.source_kinds.contains(source))
-                                    && row.history.is_none_or(|selected| selected == *history)
+                            .filter(|(_, other)| {
+                                other.cause == row.cause
+                                    && other.admits_protection(state)
+                                    && other.matches_relation(relation)
+                                    && other.admits_source_kind(Some(kind))
+                                    && other.admits_source_status(Some(status))
+                                    && other.admits_history(Some(history))
                             })
-                            .map(|(index, row)| (index, row.glob))
+                            .map(|(index, other)| (index, other.glob.as_deref()))
                             .collect();
-                        for index in coverage.covered_by(&claiming, self.glob)? {
-                            if !claimants.contains(&earlier[index].name) {
-                                claimants.push(earlier[index].name);
+                        for index in coverage.covered_by(&claiming, row.glob.as_deref())? {
+                            if !claimants.contains(&earlier[index].name.as_str()) {
+                                claimants.push(earlier[index].name.as_str());
                             }
                         }
                     }
                 }
             }
         }
-        Some(claimants)
     }
+    Some(claimants)
+}
+
+/// The values one axis of a row selects — those it lists, else its whole
+/// `vocabulary` — cut to the ones the earlier rows can tell apart: each value
+/// an earlier row lists, and one of the rest standing for them all, since only
+/// a row leaving the axis open admits a value no row lists. The search then
+/// grows with what the rows name rather than with the vocabulary.
+fn classes<'v>(
+    selected: &'v [String],
+    vocabulary: impl IntoIterator<Item = &'v String>,
+    listed: impl Fn(&String) -> bool,
+) -> Vec<&'v str> {
+    let domain: Vec<&String> = if selected.is_empty() {
+        vocabulary.into_iter().collect()
+    } else {
+        selected.iter().collect()
+    };
+    let mut classes: Vec<&str> = Vec::new();
+    let mut stand_in = None;
+    for value in domain {
+        if listed(value) {
+            classes.push(value);
+        } else {
+            stand_in.get_or_insert(value.as_str());
+        }
+    }
+    classes.extend(stand_in);
+    classes
+}
+
+/// A policy row's filter over the document holding the reference: every entry
+/// in `vocabulary`, none twice.
+fn validate_source_filter(
+    idx: usize,
+    row: &UnresolvedPolicyRuleConfig,
+    axis: &str,
+    values: &[String],
+    vocabulary: &[String],
+    vocabulary_name: &str,
+) -> Result<()> {
+    for (at, value) in values.iter().enumerate() {
+        if !vocabulary.contains(value) {
+            return Err(Error::Config(format!(
+                "detection.unresolved_policy[{idx}] ({name:?}).{axis} {value:?} is not in \
+                 {vocabulary_name}",
+                name = row.name,
+            )));
+        }
+        if values[..at].contains(value) {
+            return Err(Error::Config(format!(
+                "detection.unresolved_policy[{idx}] ({name:?}).{axis} lists {value:?} more \
+                 than once",
+                name = row.name,
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl Config {
@@ -1155,8 +1205,9 @@ impl Config {
     /// it is refused at load. `[[detection.unresolved_policy]]` rows:
     /// names unique and non-reserved, relations known and not repeated,
     /// globs compile and only appear on causes that named a target, a
-    /// history only on causes whose target is absent, and
-    /// no row an earlier one already covers ([`PolicySelector::covers`])
+    /// history only on causes whose target is absent, source filters within
+    /// the kind and status vocabularies, and no row an earlier one already
+    /// covers ([`claimants`])
     /// — the same "no silent runtime skips" discipline as every other
     /// per-block rule family.
     fn validate_detection(&self) -> Result<()> {
@@ -1195,7 +1246,6 @@ impl Config {
         let reserved = [categories::UNRESOLVED_EDGE];
         let unresolved_relations = self.unresolved_edge_relations();
         let mut policy_names = std::collections::BTreeSet::new();
-        let mut selectors: Vec<PolicySelector<'_>> = Vec::new();
         let mut coverage = super::cover::Coverage::default();
         for (idx, row) in self.detection.unresolved_policy.iter().enumerate() {
             // The TOML vocabulary spelling (snake_case), for messages
@@ -1281,23 +1331,22 @@ impl Config {
                     ))
                 })?;
             }
-            let mut source_kinds = std::collections::BTreeSet::new();
-            for kind in &row.source_kinds {
-                if !self.kinds.allowed.contains(kind) {
-                    return Err(Error::Config(format!(
-                        "detection.unresolved_policy[{idx}] ({name:?}).source_kinds {kind:?} is \
-                         not in kinds.allowed",
-                        name = row.name,
-                    )));
-                }
-                if !source_kinds.insert(kind.as_str()) {
-                    return Err(Error::Config(format!(
-                        "detection.unresolved_policy[{idx}] ({name:?}).source_kinds lists \
-                         {kind:?} more than once",
-                        name = row.name,
-                    )));
-                }
-            }
+            validate_source_filter(
+                idx,
+                row,
+                "source_kinds",
+                &row.source_kinds,
+                &self.kinds.allowed,
+                "kinds.allowed",
+            )?;
+            validate_source_filter(
+                idx,
+                row,
+                "source_statuses",
+                &row.source_statuses,
+                &self.statuses.allowed,
+                "statuses.allowed",
+            )?;
             if row.history.is_some() && !row.cause.target_absent() {
                 return Err(Error::Config(format!(
                     "detection.unresolved_policy[{idx}] ({name:?}) declares a history, but \
@@ -1307,15 +1356,6 @@ impl Config {
                     name = row.name,
                 )));
             }
-            let selector = PolicySelector {
-                name: row.name.as_str(),
-                cause: row.cause,
-                relations: seen_relations,
-                glob: row.glob.as_deref(),
-                source_protection: row.source_protection,
-                source_kinds,
-                history: row.history,
-            };
             if matches!(
                 row.source_protection,
                 Some(
@@ -1353,11 +1393,11 @@ impl Config {
                     row.name
                 )));
             }
-            if let Some(claimants) = selector.claimed_by(
-                &selectors,
+            if let Some(claimants) = claimants(
+                row,
+                &self.detection.unresolved_policy[..idx],
+                self,
                 &unresolved_relations,
-                &self.kinds.allowed,
-                &self.parser,
                 &mut coverage,
             ) {
                 return Err(Error::Config(format!(
@@ -1368,7 +1408,6 @@ impl Config {
                     name = row.name,
                 )));
             }
-            selectors.push(selector);
         }
         Ok(())
     }

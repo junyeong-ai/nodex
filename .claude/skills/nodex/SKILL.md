@@ -155,7 +155,7 @@ using them as a gate. A document removed from the tree stays in git: `nodex hist
 and the blob `git cat-file -p` prints ([history](reference/commands.md#history)). `--content` excludes `--staged` and `--since`.
 To have `check` tell a citation of a removed document from a name no document
 carried, give an `unresolved_policy` row `history = "recorded"` or `"unrecorded"`,
-optionally with `source_kinds` ([policy rows](reference/config.md#unresolved-reference-policy)).
+optionally with `source_kinds` or `source_statuses` ([policy rows](reference/config.md#unresolved-reference-policy)).
 
 `[meta].nodex_version` warns on incompatible reads and refuses document writes;
 dry runs stay reads. `--check-version <requirement>` refuses any command outside it.

@@ -648,6 +648,7 @@ mod tests {
             glob: None,
             source_protection: None,
             source_kinds: Vec::new(),
+            source_statuses: Vec::new(),
             history: Some(crate::model::TargetHistory::Recorded),
             severity: crate::config::UnresolvedSeverity::Info,
         }];
