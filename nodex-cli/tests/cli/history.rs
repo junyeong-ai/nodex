@@ -2,13 +2,14 @@ use super::support::*;
 use serde_json::{Value, json};
 use std::fs;
 
-/// A removed document is named as its last revision reads, beside the
-/// commits that added and removed its path; a removal the work tree has not
-/// committed is named before any, as `HEAD` holds it. One that moved is still
-/// present under its id, so the listing of what is gone leaves it out; an id
-/// no document held has no history.
+/// Each document — an id at a path — the project no longer holds is named as
+/// a revision that held it reads, with how it left: a commit removed it, the
+/// work tree removed it, or no commit did because its id changed in place. A
+/// path another document took again still names the one that left it. One
+/// that moved is still present under its id, so the listing of what is gone
+/// leaves it out; an id no document held has no history.
 #[test]
-fn history_names_what_the_project_no_longer_holds_and_the_commits_around_it() {
+fn history_names_what_the_project_no_longer_holds_and_how_it_left() {
     let tmp = scratch();
     let root = tmp.path();
     let git = git_runner(root);
@@ -17,24 +18,31 @@ fn history_names_what_the_project_no_longer_holds_and_the_commits_around_it() {
         "[scope]\ninclude = [\"docs/**/*.md\"]\n",
     )
     .unwrap();
-    let gone = "---\nid: gone\ntitle: Gone\n---\n# Gone\n";
-    write_doc(root, "docs/gone.md", gone);
-    for id in ["kept", "leaving"] {
-        write_doc(
-            root,
-            &format!("docs/{id}.md"),
-            &format!("---\nid: {id}\ntitle: T\n---\n# T\n"),
-        );
+    let doc = |id: &str| format!("---\nid: {id}\ntitle: T\n---\n# T\n");
+    let gone = doc("gone");
+    for (path, id) in [
+        ("gone", "gone"),
+        ("kept", "kept"),
+        ("leaving", "leaving"),
+        ("plan", "first-plan"),
+        ("named", "old-name"),
+    ] {
+        write_doc(root, &format!("docs/{path}.md"), &doc(id));
     }
     git(&["init", "-q"]);
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "add all"]);
-    git(&["rm", "-q", "docs/gone.md"]);
+    git(&["rm", "-q", "docs/gone.md", "docs/plan.md"]);
     git(&["mv", "docs/kept.md", "docs/moved.md"]);
-    git(&["commit", "-q", "-m", "remove gone, move kept"]);
+    write_doc(root, "docs/named.md", &doc("new-name"));
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "retire"]);
+    write_doc(root, "docs/plan.md", &doc("second-plan"));
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "reuse plan"]);
     git(&["rm", "-q", "docs/leaving.md"]);
 
-    let removed = |data: &Value| -> Vec<Value> {
+    let left = |data: &Value| -> Vec<Value> {
         assert_eq!(
             data["total"],
             data["items"].as_array().expect("items").len()
@@ -48,35 +56,48 @@ fn history_names_what_the_project_no_longer_holds_and_the_commits_around_it() {
                     "id": entry["id"],
                     "path": entry["path"],
                     "added": entry["first_added"]["subject"],
-                    "removed": entry["last_removed"]["subject"],
+                    "removal": entry["removal"]["type"],
+                    "by": entry["removal"]["commit"]["subject"],
                 })
             })
             .collect()
     };
+    let entry = |id: &str, path: &str, removal: &str, by: Option<&str>| json!({"id": id, "path": path, "added": "add all", "removal": removal, "by": by});
 
     let departed = run_json(nodex(root).arg("history"));
     assert_eq!(departed.get("present"), None);
     assert_eq!(
-        removed(&departed),
+        left(&departed),
         [
-            json!({"id": "leaving", "path": "docs/leaving.md", "added": "add all", "removed": null}),
-            json!({"id": "gone", "path": "docs/gone.md", "added": "add all", "removed": "remove gone, move kept"}),
+            entry("leaving", "docs/leaving.md", "uncommitted", None),
+            entry("gone", "docs/gone.md", "committed", Some("retire")),
+            entry("first-plan", "docs/plan.md", "committed", Some("retire")),
+            entry("old-name", "docs/named.md", "unattributed", None),
         ]
     );
 
     let by_id = run_json(nodex(root).args(["history", "gone"]));
     assert_eq!(by_id["present"], false);
-    assert_eq!(removed(&by_id), removed(&departed)[1..]);
+    assert_eq!(left(&by_id), left(&departed)[1..2]);
     let blob = by_id["items"][0]["blob"].as_str().expect("blob");
     let printed = git(&["cat-file", "-p", blob]);
     assert_eq!(String::from_utf8_lossy(&printed.stdout), gone);
 
+    let reused = run_json(nodex(root).args(["history", "--path", "docs/plan.md"]));
+    assert_eq!(reused["present"], true);
+    assert_eq!(left(&reused), left(&departed)[2..3]);
+    let renamed = run_json(nodex(root).args(["history", "old-name"]));
+    assert_eq!(left(&renamed), left(&departed)[3..]);
+
     let moved = run_json(nodex(root).args(["history", "kept"]));
     assert_eq!(moved["present"], true);
-    assert_eq!(removed(&moved)[0]["path"], "docs/kept.md");
+    assert_eq!(
+        left(&moved),
+        [entry("kept", "docs/kept.md", "committed", Some("retire"))]
+    );
     let by_path = run_json(nodex(root).args(["history", "--path", "./docs/kept.md"]));
     assert_eq!(by_path["present"], false);
-    assert_eq!(removed(&by_path)[0]["id"], "kept");
+    assert_eq!(left(&by_path), left(&moved));
 
     let never = run_json(nodex(root).args(["history", "never"]));
     assert_eq!(never, json!({"items": [], "total": 0, "present": false}));
