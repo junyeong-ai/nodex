@@ -104,6 +104,19 @@ impl Config {
         }
     }
 
+    /// The statuses, in `statuses.allowed` order, at which a block arms:
+    /// [`Self::lock_arms`] asked of each. Published beside a block's own
+    /// declaration so a reader holds a record against it without restating
+    /// what the trigger means.
+    pub(crate) fn arming_statuses(&self, lock: LockArming<'_>) -> Vec<&str> {
+        self.statuses
+            .allowed
+            .iter()
+            .map(String::as_str)
+            .filter(|status| self.lock_arms(lock.trigger, lock.statuses, status))
+            .collect()
+    }
+
     /// Judge this run's locks against `reference` in place of
     /// `rules.immutable_baseline`, exactly as if `nodex.toml` named it there:
     /// `immutable_baseline_mode` still selects the commit from it, and

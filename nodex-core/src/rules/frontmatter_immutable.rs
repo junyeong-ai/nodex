@@ -97,7 +97,7 @@ impl Rule for FrontmatterImmutableRule {
         RuleSource::Config
     }
 
-    fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("fields".into(), json!(self.config.fields));
         m.insert("except".into(), json!(self.config.except));
@@ -111,6 +111,10 @@ impl Rule for FrontmatterImmutableRule {
         );
         m.insert("kinds".into(), json!(self.config.kinds));
         m.insert("statuses".into(), json!(self.config.statuses));
+        m.insert(
+            "arms_at".into(),
+            json!(config.arming_statuses(self.config.arming())),
+        );
         m
     }
 
@@ -704,15 +708,20 @@ mod tests {
     }
 
     #[test]
-    fn params_carry_the_trigger_and_the_statuses_it_reads() {
+    fn params_carry_the_trigger_and_the_statuses_it_arms_at() {
         let c = armed(ImmutableTrigger::Status, &["active"], vec!["owner"]);
         let params = rule_for(&c).params(&c);
         assert_eq!(params["trigger"], serde_json::json!("status"));
         assert_eq!(params["statuses"], serde_json::json!(["active"]));
+        assert_eq!(params["arms_at"], serde_json::json!(["active"]));
         let terminal = armed(ImmutableTrigger::Terminal, &[], vec!["owner"]);
+        let params = rule_for(&terminal).params(&terminal);
+        assert_eq!(params["trigger"], serde_json::json!("terminal"));
+        assert_eq!(params["arms_at"], serde_json::json!(["superseded"]));
+        let creation = armed(ImmutableTrigger::Creation, &[], vec!["owner"]);
         assert_eq!(
-            rule_for(&terminal).params(&terminal)["trigger"],
-            serde_json::json!("terminal")
+            rule_for(&creation).params(&creation)["arms_at"],
+            serde_json::json!(["proposed", "active", "superseded"])
         );
     }
 
