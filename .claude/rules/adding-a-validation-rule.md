@@ -67,7 +67,9 @@ paths:
    not.
 3. Read only from `RuleContext`. An environment-backed rule verifies
    its prerequisites in `rules::preflight` (fail fast as
-   `CONFIG_ERROR`) and measures inside `check`; stay inside `root`.
+   `CONFIG_ERROR`), or, where only some commands read the environment,
+   where it is read (`ProjectHistory` for a `history` policy row), and
+   measures inside `check`; stay inside `root`.
    Consume merged config views (`required_for`, `types_for`, …) —
    never raw `schema_override_for`.
 4. Diff-aware rule: override `diff_aware` to `true`, and have

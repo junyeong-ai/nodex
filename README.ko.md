@@ -323,7 +323,7 @@ history = "recorded"
 severity = "error"
 ```
 
-`history` 행은 전체 이력이 필요합니다(`fetch-depth: 0`). shallow clone에서는 `check`, `query issues`, 쓰기 명령이 `CONFIG_ERROR`로 거부되고, 나머지 명령은 그대로 실행됩니다. [정책 행](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
+`history` 행은 전체 이력이 필요합니다(`fetch-depth: 0`). shallow clone에서는 `check`, `query issues`, `migrate`를 뺀 쓰기 명령이 `CONFIG_ERROR`로 거부되고, 나머지 명령은 그대로 실행됩니다. [정책 행](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
 
 ### 그래프 없이 답하기
 
