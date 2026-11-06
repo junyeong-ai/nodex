@@ -49,7 +49,8 @@ A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 kind, status, field, relation or annotation name, a `--body-lines` range outside
 the body, a zero cap, a scaffold with no path); the refusal message names what is
 accepted, so correct the argument or the declaration it points to. `CONFIG_ERROR`
-is `nodex.toml` itself.
+is `nodex.toml` or the environment it requires, such as git for
+`git_drift_threshold` or the whole history for an `unresolved_policy` row's `history`.
 `nodex status` distinguishes `absent`, `unreadable`, `schema_mismatch`, `outdated`
 and `current`; rebuild with `--full` for a schema mismatch
 ([status](reference/commands.md#status)).
@@ -152,6 +153,9 @@ Read the [history-check semantics](reference/commands.md#check---since) before
 using them as a gate. A document removed from the tree stays in git: `nodex history
 <id>` (or `--path`) names its last revision, the commits that added and removed it,
 and the blob `git cat-file -p` prints ([history](reference/commands.md#history)). `--content` excludes `--staged` and `--since`.
+To have `check` tell a citation of a removed document from a name no document
+carried, give an `unresolved_policy` row `history = "recorded"` or `"unrecorded"`,
+optionally with `source_kinds` ([policy rows](reference/config.md#unresolved-reference-policy)).
 
 `[meta].nodex_version` warns on incompatible reads and refuses document writes;
 dry runs stay reads. `--check-version <requirement>` refuses any command outside it.
