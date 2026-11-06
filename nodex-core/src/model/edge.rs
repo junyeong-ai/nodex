@@ -288,8 +288,9 @@ pub enum TargetHistory {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TargetRecord {
-    /// A recorded revision would have bound it to the document `id`, the
-    /// subject `nodex history` takes.
+    /// History records it bound to the document `id` — at a path several
+    /// documents held, the one recorded there last — which `nodex history`
+    /// lists.
     Recorded { id: String },
     /// No recorded revision would have.
     Unrecorded,

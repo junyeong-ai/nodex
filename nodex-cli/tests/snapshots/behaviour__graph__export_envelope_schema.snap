@@ -627,7 +627,7 @@ exit: 0
             "description": "What the project's history holds of a reference nothing binds now, with the\ndocument it would have bound.",
             "oneOf": [
               {
-                "description": "A recorded revision would have bound it to the document `id`, the\nsubject `nodex history` takes.",
+                "description": "History records it bound to the document `id` — at a path several\ndocuments held, the one recorded there last — which `nodex history`\nlists.",
                 "properties": {
                   "id": {
                     "type": "string"
@@ -2699,11 +2699,59 @@ exit: 0
             ],
             "type": "object"
           },
+          "Removal": {
+            "description": "How a document left the project.",
+            "oneOf": [
+              {
+                "description": "The latest commit removing the path while it held the id.",
+                "properties": {
+                  "commit": {
+                    "$ref": "#/$defs/CommitStamp"
+                  },
+                  "type": {
+                    "const": "committed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "commit"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`HEAD` holds it, and the work tree has removed it, staged or not, or\ngiven the path another id.",
+                "properties": {
+                  "type": {
+                    "const": "uncommitted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "No commit the walk reads removed it: the id was changed in place, or\nonly a merge's resolution dropped the path.",
+                "properties": {
+                  "type": {
+                    "const": "unattributed",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "RemovedDocument": {
-            "description": "A document as its last revision reads under the current configuration,\nwith the commits that added and removed its path.",
+            "description": "A document as a revision that held it reads under the current\nconfiguration, with how it left the project.",
             "properties": {
               "blob": {
-                "description": "The last revision's blob; `git cat-file -p <blob>` prints it.",
+                "description": "The revision read; `git cat-file -p <blob>` prints it. The one its\nremoval took away, `HEAD`'s for an uncommitted removal, and the one\nthat first added it where no commit removed it.",
                 "type": "string"
               },
               "first_added": {
@@ -2715,7 +2763,7 @@ exit: 0
                     "type": "null"
                   }
                 ],
-                "description": "The earliest commit adding the path; absent where only a merge's\nresolution added it."
+                "description": "The earliest commit adding the path with the id; absent where none\ndid — only a merge's resolution added it, or the id was given in place."
               },
               "id": {
                 "type": "string"
@@ -2723,19 +2771,11 @@ exit: 0
               "kind": {
                 "type": "string"
               },
-              "last_removed": {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/CommitStamp"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The latest commit removing the path; absent where the removal is not\ncommitted, and `blob` is then the revision `HEAD` holds."
-              },
               "path": {
                 "type": "string"
+              },
+              "removal": {
+                "$ref": "#/$defs/Removal"
               },
               "status": {
                 "type": "string"
@@ -2750,7 +2790,8 @@ exit: 0
               "kind",
               "status",
               "path",
-              "blob"
+              "blob",
+              "removal"
             ],
             "type": "object"
           }
@@ -2758,7 +2799,7 @@ exit: 0
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "items": {
-            "description": "Each document a revision `HEAD` reaches held, `HEAD` included, at a\npath the project no longer holds: under the id or at the path asked\nabout, or, asked about neither, every one whose id the working tree\nno longer holds. Latest removal first, an uncommitted one before any.",
+            "description": "Each document — an id at a path — a revision `HEAD` reaches held,\n`HEAD` included, that the project no longer holds there: under the id\nor at the path asked about, or, asked about neither, every one whose\nid the working tree no longer holds. Uncommitted removals first, then\ncommitted ones latest first, then those no commit removed.",
             "items": {
               "$ref": "#/$defs/RemovedDocument"
             },
@@ -2777,7 +2818,7 @@ exit: 0
             "type": "integer"
           },
           "unparsed": {
-            "description": "Removed paths whose last revision does not parse, so the id each held\nis unknown; for a path lookup, that path.",
+            "description": "Paths a removal took a revision from that does not parse, so the id it\nheld is unknown; for a path lookup, that path.",
             "items": {
               "type": "string"
             },
@@ -4284,7 +4325,7 @@ exit: 0
             "description": "What the project's history holds of a reference nothing binds now, with the\ndocument it would have bound.",
             "oneOf": [
               {
-                "description": "A recorded revision would have bound it to the document `id`, the\nsubject `nodex history` takes.",
+                "description": "History records it bound to the document `id` — at a path several\ndocuments held, the one recorded there last — which `nodex history`\nlists.",
                 "properties": {
                   "id": {
                     "type": "string"

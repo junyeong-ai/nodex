@@ -58,13 +58,18 @@ and graphing that tree, not per-document ref reads. Variable groups and invocati
 safety: `src/git.rs` rustdoc.
 
 `Repository::file_events` (files each commit `HEAD` reaches added or removed,
-`--full-history`) and `held_files` (a tree's files and blobs) are the facts history
-readers share. Each admits a path by `ScopeSpelling` (the scope's patterns, since
-no tree is walked at a past path) and parses a revision under the current config,
-the one lens `diff` uses: `find_history` derives the documents `HEAD` no longer
-holds, and `ProjectHistory` the bindings every revision added, removed or held at
-`HEAD` offered, which an `unresolved_policy` row's `history` resolves against with
-`resolve_target`. A reshaped clone is refused: an absence there is not evidence.
+`--full-history`), `held_files` (a tree's files and blobs) and `removed_since`
+(what the work tree and index dropped from `HEAD`, asked of plumbing so the
+operator's index is never written) are the facts history readers share. Each
+admits a path by `ScopeSpelling` (the scope's patterns, since no tree is walked at
+a past path) and parses a revision under the current config, the one lens `diff`
+uses. Both readers read one ledger, `recorded.json`, kept per `(path, id)`:
+`ProjectHistory` binds every revision added, removed or held at `HEAD` (a path to
+the id recorded there last), which an `unresolved_policy` row's `history` resolves
+against with `resolve_target`, and `find_history` lists each `(path, id)` the
+project no longer holds, so every id the bindings record and the project no
+longer holds is one it lists. A reshaped clone is refused: an absence there is not
+evidence.
 
 ## Mutation verdicts and baselines
 

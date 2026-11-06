@@ -1099,12 +1099,14 @@ impl Repository {
     /// The regular files under `roots` that `revision` holds and the work
     /// tree no longer does, its index included: a removal staged or not yet
     /// staged. A file git is told not to check out (sparse, skip-worktree) is
-    /// not one.
+    /// not one. Asked of plumbing, which never writes the operator's index:
+    /// `git diff` refreshes it, taking the lock a `git commit` running beside
+    /// this read needs.
     pub fn removed_since(&self, revision: &str, roots: &[String]) -> io::Result<Vec<PathBuf>> {
         let diffed = self
             .command()
             .args([
-                "diff",
+                "diff-index",
                 "--no-renames",
                 "--name-only",
                 "-z",

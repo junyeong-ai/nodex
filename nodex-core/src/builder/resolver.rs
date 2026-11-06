@@ -18,7 +18,8 @@ pub struct Bindings {
 
 impl Bindings {
     /// The documents a reading offers, each as the path it stands at
-    /// paired with the id it carries.
+    /// paired with the id it carries. A path offered more than once binds to
+    /// the id offered last.
     pub(crate) fn of<'a>(documents: impl IntoIterator<Item = (&'a Path, &'a str)>) -> Self {
         let mut path_index = BTreeMap::new();
         let mut id_set = BTreeMap::new();
