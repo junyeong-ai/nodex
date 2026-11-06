@@ -227,6 +227,7 @@ struct PolicySelector<'a> {
     relations: std::collections::BTreeSet<&'a str>,
     glob: Option<&'a str>,
     source_protection: Option<crate::model::ReferenceProtection>,
+    source_kinds: std::collections::BTreeSet<&'a str>,
 }
 
 impl<'a> PolicySelector<'a> {
@@ -236,8 +237,9 @@ impl<'a> PolicySelector<'a> {
     /// Claiming accumulates: two rows each taking one relation, or one part of
     /// the targets, leave nothing for a third that names both, and asking
     /// pairwise would miss it. So each relation this row selects, under each
-    /// protection state, asks whether the earlier rows claiming it select
-    /// every target its glob does ([`super::cover::Coverage::covered_by`]).
+    /// protection state and source kind, asks whether the earlier rows
+    /// claiming it select every target its glob does
+    /// ([`super::cover::Coverage::covered_by`]).
     ///
     /// `selects` is the relations this row admits, an omitted filter standing
     /// for every relation the cause can arise on — so a wildcard row is dead
@@ -247,6 +249,7 @@ impl<'a> PolicySelector<'a> {
         &self,
         earlier: &[Self],
         vocabulary: &std::collections::BTreeSet<String>,
+        kinds: &[String],
         parser: &ParserConfig,
         coverage: &mut super::cover::Coverage<'a>,
     ) -> Option<Vec<&'a str>> {
@@ -264,24 +267,33 @@ impl<'a> PolicySelector<'a> {
             || vec![Protected, Unprotected, Unknown],
             |state| vec![state],
         );
+        let sources: Vec<&str> = if self.source_kinds.is_empty() {
+            kinds.iter().map(String::as_str).collect()
+        } else {
+            self.source_kinds.iter().copied().collect()
+        };
         let mut claimants = Vec::new();
         for state in states {
             for relation in &selects {
-                let claiming: Vec<(usize, Option<&str>)> = earlier
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, row)| {
-                        row.cause == self.cause
-                            && row
-                                .source_protection
-                                .is_none_or(|selected| selected == state)
-                            && (row.relations.is_empty() || row.relations.contains(relation))
-                    })
-                    .map(|(index, row)| (index, row.glob))
-                    .collect();
-                for index in coverage.covered_by(&claiming, self.glob)? {
-                    if !claimants.contains(&earlier[index].name) {
-                        claimants.push(earlier[index].name);
+                for source in &sources {
+                    let claiming: Vec<(usize, Option<&str>)> = earlier
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, row)| {
+                            row.cause == self.cause
+                                && row
+                                    .source_protection
+                                    .is_none_or(|selected| selected == state)
+                                && (row.relations.is_empty() || row.relations.contains(relation))
+                                && (row.source_kinds.is_empty()
+                                    || row.source_kinds.contains(source))
+                        })
+                        .map(|(index, row)| (index, row.glob))
+                        .collect();
+                    for index in coverage.covered_by(&claiming, self.glob)? {
+                        if !claimants.contains(&earlier[index].name) {
+                            claimants.push(earlier[index].name);
+                        }
                     }
                 }
             }
@@ -1248,12 +1260,30 @@ impl Config {
                     ))
                 })?;
             }
+            let mut source_kinds = std::collections::BTreeSet::new();
+            for kind in &row.source_kinds {
+                if !self.kinds.allowed.contains(kind) {
+                    return Err(Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}).source_kinds {kind:?} is \
+                         not in kinds.allowed",
+                        name = row.name,
+                    )));
+                }
+                if !source_kinds.insert(kind.as_str()) {
+                    return Err(Error::Config(format!(
+                        "detection.unresolved_policy[{idx}] ({name:?}).source_kinds lists \
+                         {kind:?} more than once",
+                        name = row.name,
+                    )));
+                }
+            }
             let selector = PolicySelector {
                 name: row.name.as_str(),
                 cause: row.cause,
                 relations: seen_relations,
                 glob: row.glob.as_deref(),
                 source_protection: row.source_protection,
+                source_kinds,
             };
             if matches!(
                 row.source_protection,
@@ -1295,6 +1325,7 @@ impl Config {
             if let Some(claimants) = selector.claimed_by(
                 &selectors,
                 &unresolved_relations,
+                &self.kinds.allowed,
                 &self.parser,
                 &mut coverage,
             ) {

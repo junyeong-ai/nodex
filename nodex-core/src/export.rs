@@ -2265,6 +2265,7 @@ mod tests {
             relations: vec!["references".into()],
             glob: Some("docs/**".into()),
             source_protection: None,
+            source_kinds: Vec::new(),
             severity: crate::config::UnresolvedSeverity::Error,
         }];
         let m = export_rules(&c);

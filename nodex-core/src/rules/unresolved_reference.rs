@@ -83,6 +83,7 @@ impl Rule for UnresolvedReferenceRule {
             m.insert("relations".into(), json!(row.relations));
             m.insert("glob".into(), json!(row.glob));
             m.insert("source_protection".into(), json!(row.source_protection));
+            m.insert("source_kinds".into(), json!(row.source_kinds));
         }
         m
     }
@@ -196,6 +197,7 @@ mod tests {
             relations: Vec::new(),
             glob: glob.map(str::to_string),
             source_protection: None,
+            source_kinds: Vec::new(),
             severity,
         }
     }

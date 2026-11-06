@@ -2330,6 +2330,7 @@ fn policy_row_for(
         relations: relations.iter().map(|r| (*r).to_string()).collect(),
         glob: glob.map(str::to_string),
         source_protection: None,
+        source_kinds: Vec::new(),
         severity,
     }
 }
@@ -2364,6 +2365,40 @@ fn unresolved_policy_shadowing_covers_each_protection_state_independently() {
     config.detection.unresolved_policy = vec![protected, unprotected, unknown, all];
     let error = config.validate().unwrap_err().to_string();
     assert!(error.contains("can never fire"), "{error}");
+}
+
+#[test]
+fn unresolved_policy_shadowing_covers_each_source_kind_independently() {
+    use crate::model::UnresolvedCause;
+    let mut config = Config::default();
+    config.kinds.allowed = vec!["generic".into(), "adr".into()];
+    let mut records = policy_row(
+        "records",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Info,
+    );
+    records.source_kinds = vec!["adr".into()];
+    let all = policy_row(
+        "all",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Error,
+    );
+    config.detection.unresolved_policy = vec![records.clone(), all.clone()];
+    config.validate().unwrap();
+
+    let mut living = records.clone();
+    living.name = "living".into();
+    living.source_kinds = vec!["generic".into()];
+    config.detection.unresolved_policy = vec![records.clone(), living, all];
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("can never fire"), "{error}");
+
+    records.source_kinds = vec!["note".into()];
+    config.detection.unresolved_policy = vec![records];
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("source_kinds \"note\""), "{error}");
 }
 
 #[test]
