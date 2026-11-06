@@ -261,6 +261,7 @@ fn unresolved_from(
         &edge.relation,
         sought.names(),
         source_protection,
+        source_node.map(|node| node.kind.as_str()),
         policy,
     );
     if policy_name.is_none()
@@ -288,18 +289,19 @@ fn unresolved_from(
     })
 }
 
-/// First-match-wins policy assignment over the four axes a row can
-/// narrow on, each of which must admit the edge: `cause` (why the lookup
-/// failed), `relations` (which relation carries the reference — empty
-/// admits every one), and `glob` (which name the resolution sought,
-/// matching any of them; load-time validation confines a glob to causes
-/// that sought a name at all), and `source_protection`. The fallthrough is `warning`,
-/// unattributed.
+/// First-match-wins policy assignment over the axes a row can narrow on,
+/// each of which must admit the edge: `cause` (why the lookup failed),
+/// `relations` (which relation carries the reference — empty admits every
+/// one), `glob` (which name the resolution sought, matching any of them;
+/// load-time validation confines a glob to causes that sought a name at
+/// all), `source_protection`, and `source_kinds` (the kind of the document
+/// holding the reference). The fallthrough is `warning`, unattributed.
 fn assign_policy(
     cause: UnresolvedCause,
     relation: &str,
     sought: &[String],
     source_protection: crate::model::ReferenceProtection,
+    source_kind: Option<&str>,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> (UnresolvedSeverity, Option<String>) {
     for (row, matcher) in policy {
@@ -310,7 +312,7 @@ fn assign_policy(
         {
             continue;
         }
-        if !row.matches_relation(relation) {
+        if !row.matches_relation(relation) || !row.admits_source(source_kind) {
             continue;
         }
         if let Some(matcher) = matcher
@@ -470,6 +472,7 @@ mod tests {
             relations: relations.iter().map(|r| (*r).to_string()).collect(),
             glob: glob.map(str::to_string),
             source_protection: None,
+            source_kinds: Vec::new(),
             severity,
         }
     }

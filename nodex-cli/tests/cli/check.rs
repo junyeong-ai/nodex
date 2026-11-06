@@ -1,7 +1,9 @@
 //! `check`: verdicts, severity, `--since` report scope, and the findings of
 //! individual rules.
 
-use crate::support::{git_runner, init_project, nodex, run_json, scratch, warning_msg, write_doc};
+use crate::support::{
+    envelope_of, git_runner, init_project, nodex, run_json, scratch, warning_msg, write_doc,
+};
 use serde_json::Value;
 use std::fs;
 use tempfile::TempDir;
@@ -344,6 +346,61 @@ severity = "info"
     assert_eq!(severities.get("references").copied(), Some("info"));
 
     nodex(project).arg("check").assert().code(1);
+}
+
+/// The same dead citation is history in a record and a defect in a living
+/// document: `source_kinds` classifies it by the kind of the document that
+/// holds it.
+#[test]
+fn unresolved_policy_classifies_a_citation_by_the_kind_that_holds_it() {
+    let tmp = scratch();
+    fs::write(
+        tmp.path().join("nodex.toml"),
+        r#"
+[scope]
+include = ["docs/**/*.md"]
+[kinds]
+allowed = ["generic", "adr"]
+[detection]
+orphan_ok_kinds = ["generic", "adr"]
+[[identity.kind_rules]]
+glob = "docs/decisions/**"
+kind = "adr"
+[[detection.unresolved_policy]]
+name = "record-history"
+cause = "missing"
+source_kinds = ["adr"]
+severity = "info"
+[[detection.unresolved_policy]]
+name = "living-dangling"
+cause = "missing"
+severity = "error"
+"#,
+    )
+    .unwrap();
+    for (path, id) in [
+        ("docs/decisions/a.md", "record"),
+        ("docs/guide.md", "living"),
+    ] {
+        write_doc(
+            tmp.path(),
+            path,
+            &format!("---\nid: {id}\ntitle: T\n---\n# T\n\nSee [gone](gone.md).\n"),
+        );
+    }
+
+    let check = envelope_of(nodex(tmp.path()).arg("check"));
+    let failing: Vec<(&str, &str)> = check["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter_map(|v| Some((v["rule_id"].as_str()?, v["node_id"].as_str()?)))
+        .collect();
+    assert_eq!(
+        failing,
+        [("unresolved_reference/living-dangling", "living")],
+        "{check}"
+    );
 }
 
 #[test]

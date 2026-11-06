@@ -1359,6 +1359,11 @@ pub struct UnresolvedPolicyRuleConfig {
     /// every state; protected requires every source to be protected.
     #[serde(default)]
     pub source_protection: Option<crate::model::ReferenceProtection>,
+    /// Kinds of the document the reference is authored in; empty matches
+    /// every kind. Tells a record citing what stood on its day from a living
+    /// document citing what no longer stands.
+    #[serde(default)]
+    pub source_kinds: Vec<String>,
     /// Which reporting plane matching edges land on.
     pub severity: UnresolvedSeverity,
 }
@@ -1369,6 +1374,14 @@ impl UnresolvedPolicyRuleConfig {
     /// filter takes.
     pub(crate) fn matches_relation(&self, relation: &str) -> bool {
         self.relations.is_empty() || self.relations.iter().any(|r| r == relation)
+    }
+
+    /// Whether this row's source-kind filter admits a reference authored in
+    /// a document of `kind`. An empty filter admits every reference, one
+    /// whose source is unknown included.
+    pub(crate) fn admits_source(&self, kind: Option<&str>) -> bool {
+        self.source_kinds.is_empty()
+            || kind.is_some_and(|kind| self.source_kinds.iter().any(|k| k == kind))
     }
 }
 
@@ -1395,6 +1408,7 @@ pub(crate) fn default_unresolved_policy() -> Vec<UnresolvedPolicyRuleConfig> {
         relations: Vec::new(),
         glob: None,
         source_protection: None,
+        source_kinds: Vec::new(),
         severity: UnresolvedSeverity::Info,
     }]
 }
