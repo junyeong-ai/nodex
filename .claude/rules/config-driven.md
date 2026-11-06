@@ -47,7 +47,7 @@ This applies to:
 - Predicate correctness (when/require must reference declared fields)
 - Pattern compilation (globs and regexes must compile)
 - Vocabulary alignment (field values must be in allowed sets)
-- Cardinal rules (every filter/override must be non-empty, duplicates rejected)
+- Cardinal rules (duplicates rejected; a list a feature cannot run without — a vocabulary, `scope.include`, a relation list a rule walks, an override's `kinds` — must be non-empty, while an empty selection filter reads as no restriction, the same as omitting it)
 
 See `Config::validate()` for comprehensive guards.
 

@@ -39,7 +39,10 @@ per-process isolation catches shared-state test bugs `cargo test` hides.
 
 The `.claude/rules/` directory holds the authoritative rules. A file's `paths:`
 frontmatter says when it loads; `principles.md` and `config-driven.md` have none
-and load in every session:
+and load in every session. A session loads them from the checkout it started in,
+so one started at the main checkout applies main's rules to a worktree under
+`.claude/worktrees/`, which may predate the branch: start the session in the
+worktree, or read the worktree's own rule file before acting on one.
 
 - `principles.md` — evidence-based, root-cause-first, triage-before-fixing, config-over-code
 - `config-driven.md` — self-consistency invariants between config validation, runtime, and tool-written documents
