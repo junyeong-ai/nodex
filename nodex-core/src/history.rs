@@ -34,10 +34,11 @@ pub enum HistorySubject<'a> {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HistoryReport {
     /// Each document — an id at a path — a revision `HEAD` reaches held,
-    /// `HEAD` included, that the project no longer holds there: under the id
-    /// or at the path asked about, or, asked about neither, every one whose
-    /// id the working tree no longer holds. Uncommitted removals first, then
-    /// committed ones latest first, then those no commit removed.
+    /// `HEAD` included, that the project no longer holds there, under the id
+    /// or at the path asked about; asked about neither, each a commit or the
+    /// work tree removed whose id the working tree no longer holds.
+    /// Uncommitted removals first, then committed ones latest first, then
+    /// those nothing removed.
     pub items: Vec<RemovedDocument>,
     pub total: usize,
     /// Whether the working tree holds a document under the id, or at the
@@ -56,9 +57,9 @@ pub struct HistoryReport {
 pub struct RemovedDocument {
     #[serde(flatten)]
     pub node: NodeRef,
-    /// The revision read; `git cat-file -p <blob>` prints it. The one its
-    /// removal took away, `HEAD`'s for an uncommitted removal, and the one
-    /// that first added it where no commit removed it.
+    /// The revision read; `git cat-file -p <blob>` prints it: the one its
+    /// removal took away, else `HEAD`'s where `HEAD` holds it, else the one
+    /// that first added it.
     pub blob: String,
     /// The earliest commit adding the path with the id; absent where none
     /// did — only a merge's resolution added it, or the id was given in place.
@@ -73,11 +74,11 @@ pub struct RemovedDocument {
 pub enum Removal {
     /// The latest commit removing the path while it held the id.
     Committed { commit: CommitStamp },
-    /// `HEAD` holds it, and the work tree has removed it, staged or not, or
-    /// given the path another id.
+    /// `HEAD` holds it, and the work tree has removed it, staged or not.
     Uncommitted,
-    /// No commit the walk reads removed it: the id was changed in place, or
-    /// only a merge's resolution dropped the path.
+    /// Nothing removed it: the id was changed in place, committed or not, or
+    /// only a merge's resolution, which the walk does not read, dropped the
+    /// path.
     Unattributed,
 }
 
@@ -91,7 +92,9 @@ pub struct HistoryOutcome {
 /// The documents — an id at a path — the history `HEAD` reaches held, `HEAD`
 /// included, that the project no longer holds there, read under the current
 /// configuration: a path counts where the scope's spelling admits it, and each
-/// revision is parsed as a build would parse it now. `present` reads the
+/// revision is parsed as a build would parse it now. Asked about no id or
+/// path, only what a commit or the work tree removed is listed: an id changed
+/// in place left a document the project still has. `present` reads the
 /// working tree.
 ///
 /// A path whose revision at `HEAD`, or in the work tree, does not parse is not
@@ -162,20 +165,27 @@ pub fn find_history(
                         commit: removed.commit.clone(),
                     },
                 }),
-                (None, Some(added)) => {
+                (None, Some(added)) if subject.is_some() => {
                     unread.push((path, &added.blob, first_added, Removal::Unattributed));
                 }
-                (None, None) => {}
+                (None, _) => {}
             }
         }
     }
     for (path, held) in &ledger.held {
-        let left = deleted.contains(path)
-            || held
+        let removal = if deleted.contains(path) {
+            Removal::Uncommitted
+        } else if subject.is_some()
+            && held
                 .id
                 .as_deref()
-                .is_some_and(|id| worked.get(path).is_some_and(|working| *working != id));
-        if !left || !asked(path, held.id.as_deref()) {
+                .is_some_and(|id| worked.get(path).is_some_and(|working| *working != id))
+        {
+            Removal::Unattributed
+        } else {
+            continue;
+        };
+        if !asked(path, held.id.as_deref()) {
             continue;
         }
         let first_added = held.id.as_ref().and_then(|id| {
@@ -188,7 +198,7 @@ pub fn find_history(
                 .as_ref()
                 .map(|added| &added.commit)
         });
-        unread.push((path, &held.blob, first_added, Removal::Uncommitted));
+        unread.push((path, &held.blob, first_added, removal));
     }
 
     let contents = repository

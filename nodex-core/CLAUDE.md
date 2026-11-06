@@ -66,9 +66,9 @@ a past path) and parses a revision under the current config, the one lens `diff`
 uses. Both readers read one ledger, `recorded.json`, kept per `(path, id)`:
 `ProjectHistory` binds every revision added, removed or held at `HEAD` (a path to
 the id recorded there last), which an `unresolved_policy` row's `history` resolves
-against with `resolve_target`, and `find_history` lists each `(path, id)` the
+against with `resolve_target`, and `find_history` names each `(path, id)` the
 project no longer holds, so every id the bindings record and the project no
-longer holds is one it lists. A reshaped clone is refused: an absence there is not
+longer holds is one it names when asked; its listing keeps what was removed. A reshaped clone is refused: an absence there is not
 evidence.
 
 ## Mutation verdicts and baselines
@@ -293,8 +293,8 @@ evidence.
   and extend a reachable kept reading only by new commits. Shallow/graft/replace
   history bypasses drift persistence and refuses recorded bindings.
   recorded.json is the one ledger of what history recorded: `find_history`
-  lists from it too. Only working-tree/index check and `nodex history` refresh
-  and report cache IO; proposal gates and other readers consult without writing. Source: `src/history.rs`,
+  lists from it too. Only working-tree/index check refreshes and reports cache
+  IO, and `nodex history` for recorded.json; proposal gates and other readers consult without writing. Source: `src/history.rs`,
   `src/rules/git_drift.rs` and `src/git.rs` rustdoc.
 
 ## References and cycles

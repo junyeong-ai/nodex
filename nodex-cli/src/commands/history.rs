@@ -8,8 +8,8 @@ use super::git_checkout::ensure_repository;
 
 #[derive(Args)]
 pub struct HistoryArgs {
-    /// Node identifier; omitted with `--path` too, every document whose id the
-    /// working tree no longer holds
+    /// Node identifier; omitted with `--path` too, every document a commit or
+    /// the working tree removed whose id the working tree no longer holds
     #[arg(value_name = "ID", conflicts_with = "path")]
     pub id: Option<String>,
     /// Project-relative file path (mutually exclusive with `<id>`)
@@ -17,8 +17,8 @@ pub struct HistoryArgs {
     pub path: Option<String>,
 }
 
-/// `nodex history` — the documents history recorded at a path the project no
-/// longer holds: under an id, at a path, or every one whose id is gone.
+/// `nodex history` — the documents history recorded that the project no longer
+/// holds: under an id, at a path, or every removed one whose id is gone.
 pub fn run(root: &Path, args: HistoryArgs, pretty: bool) -> Result<()> {
     let config = nodex_core::load_project(root)?;
     let repository = ensure_repository(root, "nodex history")?;

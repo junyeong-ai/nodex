@@ -4,10 +4,11 @@ use std::fs;
 
 /// Each document — an id at a path — the project no longer holds is named as
 /// a revision that held it reads, with how it left: a commit removed it, the
-/// work tree removed it, or no commit did because its id changed in place. A
-/// path another document took again still names the one that left it. One
-/// that moved is still present under its id, so the listing of what is gone
-/// leaves it out; an id no document held has no history.
+/// work tree removed it, or nothing did because its id changed in place,
+/// committed or not. A path another document took again still names the one
+/// that left it. The listing of what is gone holds only what was removed:
+/// not an id changed in place, nor one that moved and is still present; an
+/// id no document held has no history.
 #[test]
 fn history_names_what_the_project_no_longer_holds_and_how_it_left() {
     let tmp = scratch();
@@ -41,6 +42,7 @@ fn history_names_what_the_project_no_longer_holds_and_how_it_left() {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "reuse plan"]);
     git(&["rm", "-q", "docs/leaving.md"]);
+    write_doc(root, "docs/named.md", &doc("newest-name"));
 
     let left = |data: &Value| -> Vec<Value> {
         assert_eq!(
@@ -72,7 +74,6 @@ fn history_names_what_the_project_no_longer_holds_and_how_it_left() {
             entry("leaving", "docs/leaving.md", "uncommitted", None),
             entry("gone", "docs/gone.md", "committed", Some("retire")),
             entry("first-plan", "docs/plan.md", "committed", Some("retire")),
-            entry("old-name", "docs/named.md", "unattributed", None),
         ]
     );
 
@@ -86,8 +87,15 @@ fn history_names_what_the_project_no_longer_holds_and_how_it_left() {
     let reused = run_json(nodex(root).args(["history", "--path", "docs/plan.md"]));
     assert_eq!(reused["present"], true);
     assert_eq!(left(&reused), left(&departed)[2..3]);
-    let renamed = run_json(nodex(root).args(["history", "old-name"]));
-    assert_eq!(left(&renamed), left(&departed)[3..]);
+    for (id, added) in [("old-name", Some("add all")), ("new-name", None)] {
+        let renamed = run_json(nodex(root).args(["history", id]));
+        assert_eq!(
+            left(&renamed),
+            [
+                json!({"id": id, "path": "docs/named.md", "added": added, "removal": "unattributed", "by": null})
+            ]
+        );
+    }
 
     let moved = run_json(nodex(root).args(["history", "kept"]));
     assert_eq!(moved["present"], true);
