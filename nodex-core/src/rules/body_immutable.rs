@@ -94,10 +94,11 @@ impl Rule for BodyImmutableRule {
         RuleSource::Config
     }
 
-    fn params(&self, _config: &crate::config::Config) -> Map<String, Value> {
+    fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
         // Per-block params mirror the config's public surface so the
         // manifest entry is self-describing — same shape body_line
-        // uses for its params payload.
+        // uses for its params payload — plus `arms_at`, the statuses the
+        // trigger arms at.
         let mut m = Map::new();
         m.insert(
             "mode".into(),
@@ -117,6 +118,10 @@ impl Rule for BodyImmutableRule {
         m.insert("kinds".into(), json!(self.config.kinds));
         m.insert("statuses".into(), json!(self.config.statuses));
         m.insert("append_section".into(), json!(self.config.append_section));
+        m.insert(
+            "arms_at".into(),
+            json!(config.arming_statuses(self.config.arming())),
+        );
         m
     }
 
@@ -736,9 +741,14 @@ mod tests {
         let rule = rule_for(&config);
         let params = rule.params(&config);
         assert_eq!(params.get("trigger"), Some(&serde_json::json!("creation")));
+        assert_eq!(
+            params["arms_at"],
+            serde_json::json!(config.statuses.allowed)
+        );
         let terminal_cfg = cfg(BodyImmutableMode::Frozen, vec![]);
         let params = rule_for(&terminal_cfg).params(&terminal_cfg);
         assert_eq!(params.get("trigger"), Some(&serde_json::json!("terminal")));
+        assert_eq!(params["arms_at"], serde_json::json!(["superseded"]));
     }
 
     // ─── trigger = "status" ────────────────────────────────────────────
