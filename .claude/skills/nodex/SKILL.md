@@ -142,6 +142,7 @@ nodex diff origin/main HEAD
 nodex query dependents <id> --depth 3 --relations implements,supersedes
 nodex impact origin/main HEAD
 nodex history <id>               # a cited id resolving to nothing: removed, or never a document
+nodex history                    # every document the project retired, e.g. to sweep other files for citations
 ```
 
 `--staged` judges the index git commits. `--since` narrows findings and selects
@@ -189,7 +190,7 @@ describes verification separately from parsing coverage.
 nodex init                      nodex build                     nodex status
 nodex check                     nodex report                    nodex migrate
 nodex diff <before> <after>     nodex impact <before> <after>   nodex classify <path>...
-nodex history <id>
+nodex history [<id>]
 nodex scaffold                  nodex rename <old> <new>        nodex retarget <old_id> <new_id>
 nodex lifecycle review <id>     nodex lifecycle set <id>        nodex lifecycle supersede <id>
 nodex query search <keyword>    nodex query nodes               nodex query node <id>

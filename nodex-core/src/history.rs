@@ -1,8 +1,10 @@
-//! What the project's history holds of its documents: the documents a commit
-//! `HEAD` reaches held and `HEAD` no longer holds ([`find_history`]), and
-//! every binding a recorded revision offered ([`ProjectHistory`]), which tells
-//! a reference to a document since removed from a name no document carried.
+//! What the project's history holds of its documents, read once into a ledger
+//! kept between commands: the documents a revision `HEAD` reaches held that
+//! the project no longer holds ([`find_history`]), and every binding a recorded
+//! revision offered ([`ProjectHistory`]), which tells a reference to a
+//! document since removed from a name no document carried.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -16,7 +18,6 @@ use crate::builder::scanner::ScopeSpelling;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::git::{CommitStamp, FileEvent, FileEventKind, Repository};
-use crate::model::Node;
 use crate::parser::{ParseConfig, parse_document};
 use crate::query::NodeRef;
 use crate::rules::git_drift::DriftHistory;
@@ -32,12 +33,16 @@ pub enum HistorySubject<'a> {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HistoryReport {
+    /// Each document a revision `HEAD` reaches held, `HEAD` included, at a
+    /// path the project no longer holds: under the id or at the path asked
+    /// about, or, asked about neither, every one whose id the working tree
+    /// no longer holds. Latest removal first, an uncommitted one before any.
+    pub items: Vec<RemovedDocument>,
+    pub total: usize,
     /// Whether the working tree holds a document under the id, or at the
-    /// path.
-    pub present: bool,
-    /// Each document a commit `HEAD` reaches held under the id, or at the
-    /// path, whose path `HEAD` no longer holds, latest removal first.
-    pub removed: Vec<RemovedDocument>,
+    /// path, asked about; absent when asked about neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
     /// Removed paths whose last revision does not parse, so the id each held
     /// is unknown; for a path lookup, that path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -56,20 +61,24 @@ pub struct RemovedDocument {
     /// resolution added it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_added: Option<CommitStamp>,
-    /// The latest commit removing the path.
-    pub last_removed: CommitStamp,
+    /// The latest commit removing the path; absent where the removal is not
+    /// committed, and `blob` is then the revision `HEAD` holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_removed: Option<CommitStamp>,
 }
 
-/// What [`find_history`] found, with the working-tree build's disclosures.
+/// What [`find_history`] found, with the working-tree build's disclosures and
+/// what keeping the ledger ran into.
 pub struct HistoryOutcome {
     pub report: HistoryReport,
     pub warnings: Vec<Warning>,
 }
 
-/// Every document the history `HEAD` reaches held under `subject` and no
-/// longer holds, read under the current configuration: a removed path counts
-/// where the scope's spelling admits it, and its last revision is parsed as a
-/// build would parse it now. `present` reads the working tree.
+/// The documents the history `HEAD` reaches held, `HEAD` included, at a path
+/// the project no longer holds — one `HEAD` does not hold, or one it holds
+/// that the work tree has removed — read under the current configuration: a
+/// path counts where the scope's spelling admits it, and its last revision is
+/// parsed as a build would parse it now. `present` reads the working tree.
 ///
 /// A clone whose history git reshapes — shallow, grafted or replaced — is
 /// refused: a document it does not hold is one it cannot say was never there.
@@ -77,133 +86,113 @@ pub fn find_history(
     root: &Path,
     config: &Config,
     repository: &Repository,
-    subject: HistorySubject<'_>,
+    subject: Option<HistorySubject<'_>>,
 ) -> Result<HistoryOutcome> {
     require_whole_history(repository, "nodex history")?;
     let built = crate::builder::build_with_overlay(root, config, &[])?;
-    let present = match subject {
+    let kept = KeptFile::new(root, config, LEDGER_FILE, true);
+    let ledger = ledger(repository, config, &kept)?;
+
+    let roots = ScopeSpelling::new(config)?.include_roots();
+    let uncommitted: Vec<(String, &HeldRevision)> = if ledger.head.is_empty() {
+        Vec::new()
+    } else {
+        repository
+            .removed_since(&ledger.head, &roots)
+            .map_err(|e| git_error("listing the documents the work tree removed", e))?
+            .iter()
+            .map(|path| crate::path_guard::forward_string(path))
+            .filter_map(|path| ledger.held.get(&path).map(|held| (path, held)))
+            .collect()
+    };
+    let contents = repository
+        .blobs(
+            &uncommitted
+                .iter()
+                .map(|(_, held)| held.blob.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| git_error("reading the removed documents' last revisions", e))?;
+    let parse_config = ParseConfig::new(config);
+    let committed = ledger
+        .paths
+        .iter()
+        .filter(|(path, _)| !ledger.held.contains_key(*path))
+        .filter_map(|(path, record)| {
+            let removal = record.last_removed.as_ref()?;
+            Some((
+                path.clone(),
+                removal.node.clone(),
+                removal.blob.clone(),
+                Some(removal.commit.clone()),
+            ))
+        });
+    let pending = uncommitted
+        .iter()
+        .zip(contents)
+        .map(|((path, held), content)| {
+            (
+                path.clone(),
+                parse_revision(Path::new(path), content, &parse_config),
+                held.blob.clone(),
+                None,
+            )
+        });
+
+    let mut items = Vec::new();
+    let mut unparsed = Vec::new();
+    for (path, node, blob, last_removed) in committed.chain(pending) {
+        let asked = match (subject, &node) {
+            (Some(HistorySubject::Path(asked)), _) => path == asked,
+            (_, None) => true,
+            (Some(HistorySubject::Id(id)), Some(node)) => node.id == id,
+            (None, Some(node)) => built.graph.node(&node.id).is_none(),
+        };
+        if !asked {
+            continue;
+        }
+        let Some(node) = node else {
+            unparsed.push(path);
+            continue;
+        };
+        items.push(RemovedDocument {
+            node,
+            blob,
+            first_added: ledger
+                .paths
+                .get(&path)
+                .and_then(|record| record.first_added.clone()),
+            last_removed,
+        });
+    }
+    items.sort_by_cached_key(|item| {
+        (
+            item.last_removed.is_some(),
+            Reverse(item.last_removed.as_ref().map(|commit| commit.committed)),
+            item.node.path.clone(),
+        )
+    });
+    unparsed.sort();
+
+    let present = subject.map(|subject| match subject {
         HistorySubject::Id(id) => built.graph.node(id).is_some(),
         HistorySubject::Path(path) => built
             .graph
             .nodes()
             .values()
             .any(|node| crate::path_guard::forward_string(&node.path) == path),
-    };
-
-    let spelling = ScopeSpelling::new(config)?;
-    let roots = spelling.include_roots();
-    let removals = match repository
-        .head()
-        .map_err(|e| git_error("resolving HEAD", e))?
-    {
-        Some(head) => {
-            let events = repository
-                .file_events(&head, &roots)
-                .map_err(|e| git_error("reading the documents history added and removed", e))?;
-            let held: BTreeSet<PathBuf> = repository
-                .held_files(&head, &roots)
-                .map_err(|e| git_error("listing the documents HEAD holds", e))?
-                .into_iter()
-                .map(|(path, _)| path)
-                .collect();
-            removals(
-                events.into_iter().filter(|event| {
-                    spelling.admits(&event.path)
-                        && match subject {
-                            HistorySubject::Path(path) => {
-                                crate::path_guard::forward_string(&event.path) == path
-                            }
-                            HistorySubject::Id(_) => true,
-                        }
-                }),
-                &held,
-            )
-        }
-        None => Vec::new(),
-    };
-    let contents = repository
-        .blobs(
-            &removals
-                .iter()
-                .map(|removal| removal.blob.clone())
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| git_error("reading the removed documents' last revisions", e))?;
-
-    let parse_config = ParseConfig::new(config);
-    let mut removed = Vec::new();
-    let mut unparsed = Vec::new();
-    for (removal, content) in removals.into_iter().zip(contents) {
-        let Some(node) = parse_revision(&removal.path, content, &parse_config) else {
-            unparsed.push(crate::path_guard::forward_string(&removal.path));
-            continue;
-        };
-        if let HistorySubject::Id(id) = subject
-            && node.id != id
-        {
-            continue;
-        }
-        removed.push(RemovedDocument {
-            node: NodeRef::from_node(&node),
-            blob: removal.blob,
-            first_added: removal.first_added,
-            last_removed: removal.last_removed,
-        });
-    }
+    });
+    let mut warnings = built.warnings;
+    warnings.extend(kept.warnings());
     Ok(HistoryOutcome {
         report: HistoryReport {
+            total: items.len(),
+            items,
             present,
-            removed,
             unparsed,
         },
-        warnings: built.warnings,
+        warnings,
     })
-}
-
-/// A document history removed and a tree no longer holds.
-struct Removal {
-    path: PathBuf,
-    /// The revision its latest removal took away.
-    blob: String,
-    first_added: Option<CommitStamp>,
-    last_removed: CommitStamp,
-}
-
-/// The files `events` (newest commit first) saw removed whose path `held`
-/// does not hold, each with its latest removal and its path's earliest
-/// addition, latest removal first.
-fn removals(events: impl Iterator<Item = FileEvent>, held: &BTreeSet<PathBuf>) -> Vec<Removal> {
-    let mut removals: BTreeMap<PathBuf, Removal> = BTreeMap::new();
-    let mut added: BTreeMap<PathBuf, CommitStamp> = BTreeMap::new();
-    for event in events.filter(|event| !held.contains(&event.path)) {
-        match event.kind {
-            FileEventKind::Removed => {
-                removals.entry(event.path.clone()).or_insert(Removal {
-                    path: event.path,
-                    blob: event.blob,
-                    first_added: None,
-                    last_removed: event.commit,
-                });
-            }
-            FileEventKind::Added => {
-                added.insert(event.path, event.commit);
-            }
-        }
-    }
-    let mut removals: Vec<Removal> = removals
-        .into_values()
-        .map(|mut removal| {
-            removal.first_added = added.remove(&removal.path);
-            removal
-        })
-        .collect();
-    removals.sort_by(|a, b| {
-        b.last_removed
-            .committed
-            .cmp(&a.last_removed.committed)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    removals
 }
 
 /// What git says about the project for one command, read once however many
@@ -220,8 +209,7 @@ fn removals(events: impl Iterator<Item = FileEvent>, held: &BTreeSet<PathBuf>) -
 pub struct ProjectHistory {
     drift: DriftHistory,
     recorded: Option<Bindings>,
-    /// What keeping the recorded bindings ran into, for the command that
-    /// stores them.
+    /// What keeping the ledger ran into, for the command that stores it.
     warnings: Vec<Warning>,
 }
 
@@ -242,7 +230,7 @@ impl ProjectHistory {
         Self::reading(config, root, false)
     }
 
-    /// [`Self::of`] for the command that owns the kept readings, a `check` of
+    /// [`Self::of`] for a command that owns the kept readings, a `check` of
     /// the working tree or the index: it stores what it reads wherever the
     /// kept reading did not already answer, and reports on [`Self::warnings`]
     /// what kept it from doing so.
@@ -259,9 +247,9 @@ impl ProjectHistory {
         let (recorded, warnings) = match config.history_policy_row() {
             Some(row) => {
                 let repository = row_repository(root, row)?;
-                let kept = KeptFile::new(root, config, RECORDED_FILE, refresh);
+                let kept = KeptFile::new(root, config, LEDGER_FILE, refresh);
                 (
-                    Some(recorded_bindings(&repository, config, &kept)?),
+                    Some(ledger(&repository, config, &kept)?.bindings()),
                     kept.warnings(),
                 )
             }
@@ -293,27 +281,44 @@ impl ProjectHistory {
     }
 }
 
-const RECORDED_FILE: &str = "recorded.json";
+const LEDGER_FILE: &str = "recorded.json";
 
-/// On-disk shape version of `recorded.json`. Bump on any change to
-/// [`KeptRecord`].
-const RECORDED_SCHEMA_VERSION: u32 = 1;
+/// On-disk shape version of `recorded.json`. Bump on any change to [`Ledger`].
+const LEDGER_SCHEMA_VERSION: u32 = 2;
 
-/// `recorded.json` as it is written. The key is everything a reading of
-/// `head` depends on besides the commit: what admits a path and infers an id,
-/// with the binary that read them (`graph_config_hash`), and the project's
-/// prefix, which bounds the walk.
-#[derive(Serialize, Deserialize)]
-struct KeptRecord {
+/// What history recorded of the project's documents up to `head`, as
+/// `recorded.json` keeps it. The key is everything a reading of `head` depends
+/// on besides the commit: what admits a path and infers an id, with the binary
+/// that read them (`graph_config_hash`), and the project's prefix, which
+/// bounds the walk. An empty `head` is a repository with no commit yet.
+#[derive(Default, Serialize, Deserialize)]
+struct Ledger {
     schema_version: u32,
     config: String,
     prefix: String,
     head: String,
-    /// Each path a commit added or removed a document at, with the id that
-    /// revision carried.
-    events: BTreeSet<(String, String)>,
+    /// Each path a commit added or removed a document at.
+    paths: BTreeMap<String, PathRecord>,
     /// Each document `head` holds, by path.
     held: BTreeMap<String, HeldRevision>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PathRecord {
+    /// The ids the revisions those commits added and removed carried.
+    ids: BTreeSet<String>,
+    /// The earliest commit adding a document at the path.
+    first_added: Option<CommitStamp>,
+    /// The latest commit removing one, with the revision it removed.
+    last_removed: Option<Removal>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Removal {
+    commit: CommitStamp,
+    blob: String,
+    /// `None` where the revision does not parse.
+    node: Option<NodeRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -323,54 +328,65 @@ struct HeldRevision {
     id: Option<String>,
 }
 
-impl KeptRecord {
+impl Ledger {
     fn bindings(&self) -> Bindings {
+        let recorded = self
+            .paths
+            .iter()
+            .flat_map(|(path, record)| record.ids.iter().map(move |id| (path, id)));
         let held = self
             .held
             .iter()
-            .filter_map(|(path, held)| held.id.as_deref().map(|id| (path, id)));
+            .filter_map(|(path, held)| held.id.as_ref().map(|id| (path, id)));
         Bindings::of(
-            self.events
-                .iter()
-                .map(|(path, id)| (path, id.as_str()))
+            recorded
                 .chain(held)
-                .map(|(path, id)| (Path::new(path.as_str()), id)),
+                .map(|(path, id)| (Path::new(path.as_str()), id.as_str())),
         )
     }
 }
 
-/// Every binding a revision of a document `HEAD` reaches offered, read as a
-/// build would read each revision now: at each commit adding or removing the
-/// document, and at `HEAD`. An id a document carried only between those
-/// revisions, changed in place, is not among them.
+/// Order commits by when git records them, the id settling a tie, so a ledger
+/// completed from a kept one picks the commits a whole walk picks.
+fn chronological(commit: &CommitStamp) -> (chrono::DateTime<chrono::Utc>, &str) {
+    (commit.committed, commit.id.as_str())
+}
+
+/// The ledger of `HEAD`, read as a build would read each revision now: at each
+/// commit adding or removing a document, and at `HEAD`. An id a document
+/// carried only between those revisions, changed in place, is not in it.
 ///
-/// A kept reading the current `HEAD` reaches is completed by the commits
-/// since; `HEAD`'s documents are listed again, and only a revision the kept
-/// reading did not hold is parsed.
-fn recorded_bindings(
-    repository: &Repository,
-    config: &Config,
-    kept: &KeptFile,
-) -> Result<Bindings> {
+/// A kept ledger the current `HEAD` reaches is completed by the commits since;
+/// `HEAD`'s documents are listed again, and only a revision the kept ledger
+/// did not hold is parsed.
+fn ledger(repository: &Repository, config: &Config, kept: &KeptFile) -> Result<Ledger> {
     let Some(head) = repository
         .head()
         .map_err(|e| git_error("resolving HEAD", e))?
     else {
-        return Ok(Bindings::default());
+        return Ok(Ledger::default());
     };
     let key = crate::builder::graph_config_hash(config);
     let prefix = repository.prefix().to_str();
     let prior = prefix.and_then(|prefix| {
-        kept.load::<KeptRecord>(RECORDED_SCHEMA_VERSION)
-            .filter(|record| record.config == key && record.prefix == prefix)
+        kept.load::<Ledger>(LEDGER_SCHEMA_VERSION)
+            .filter(|ledger| ledger.config == key && ledger.prefix == prefix)
     });
-    let (mut events, prior_held, range) = match prior {
-        Some(record) if record.head == head => return Ok(record.bindings()),
-        Some(record) if matches!(repository.is_ancestor(&record.head, &head), Ok(true)) => {
-            let range = format!("{}..{head}", record.head);
-            (record.events, record.held, range)
+    let mut ledger = Ledger {
+        schema_version: LEDGER_SCHEMA_VERSION,
+        config: key,
+        prefix: prefix.unwrap_or_default().to_owned(),
+        head: head.clone(),
+        ..Ledger::default()
+    };
+    let range = match prior {
+        Some(prior) if prior.head == head => return Ok(prior),
+        Some(prior) if matches!(repository.is_ancestor(&prior.head, &head), Ok(true)) => {
+            ledger.paths = prior.paths;
+            ledger.held = prior.held;
+            format!("{}..{head}", prior.head)
         }
-        _ => (BTreeSet::new(), BTreeMap::new(), head.clone()),
+        _ => head.clone(),
     };
 
     let spelling = ScopeSpelling::new(config)?;
@@ -400,7 +416,7 @@ fn recorded_bindings(
         .chain(
             listed
                 .iter()
-                .filter(|(path, blob)| prior_held.get(path).is_none_or(|held| held.blob != *blob))
+                .filter(|(path, blob)| ledger.held.get(path).is_none_or(|held| held.blob != *blob))
                 .cloned(),
         )
         .collect();
@@ -415,49 +431,71 @@ fn recorded_bindings(
         )
         .map_err(|e| git_error("reading the recorded revisions", e))?;
     let parse_config = ParseConfig::new(config);
-    let mut parsed: BTreeMap<(String, String), Option<String>> = revisions
+    let parsed: BTreeMap<(String, String), Option<NodeRef>> = revisions
         .into_iter()
         .zip(contents)
         .map(|((path, blob), content)| {
-            let id = parse_revision(Path::new(&path), content, &parse_config).map(|node| node.id);
-            ((path, blob), id)
+            let node = parse_revision(Path::new(&path), content, &parse_config);
+            ((path, blob), node)
         })
         .collect();
 
-    for event in &walked {
-        let revision = (
-            crate::path_guard::forward_string(&event.path),
-            event.blob.clone(),
-        );
-        if let Some(Some(id)) = parsed.get(&revision) {
-            events.insert((revision.0, id.clone()));
+    for event in walked {
+        let path = crate::path_guard::forward_string(&event.path);
+        let node = parsed
+            .get(&(path.clone(), event.blob.clone()))
+            .cloned()
+            .flatten();
+        let record = ledger.paths.entry(path).or_default();
+        if let Some(node) = &node {
+            record.ids.insert(node.id.clone());
+        }
+        match event.kind {
+            FileEventKind::Added => {
+                if record
+                    .first_added
+                    .as_ref()
+                    .is_none_or(|first| chronological(&event.commit) < chronological(first))
+                {
+                    record.first_added = Some(event.commit);
+                }
+            }
+            FileEventKind::Removed => {
+                if record
+                    .last_removed
+                    .as_ref()
+                    .is_none_or(|last| chronological(&event.commit) > chronological(&last.commit))
+                {
+                    record.last_removed = Some(Removal {
+                        commit: event.commit,
+                        blob: event.blob,
+                        node,
+                    });
+                }
+            }
         }
     }
-    let mut prior_held = prior_held;
-    let held = listed
+    let mut prior_held = std::mem::take(&mut ledger.held);
+    ledger.held = listed
         .into_iter()
         .map(|(path, blob)| {
             let id = match prior_held.remove(&path) {
                 Some(held) if held.blob == blob => held.id,
-                _ => parsed.remove(&(path.clone(), blob.clone())).flatten(),
+                _ => parsed
+                    .get(&(path.clone(), blob.clone()))
+                    .cloned()
+                    .flatten()
+                    .map(|node| node.id),
             };
             (path, HeldRevision { blob, id })
         })
         .collect();
-    let record = KeptRecord {
-        schema_version: RECORDED_SCHEMA_VERSION,
-        config: key,
-        prefix: prefix.unwrap_or_default().to_owned(),
-        head,
-        events,
-        held,
-    };
     kept.store(|| {
         prefix
-            .map(|_| &record)
+            .map(|_| &ledger)
             .ok_or("the project's path inside the repository is not UTF-8")
     });
-    Ok(record.bindings())
+    Ok(ledger)
 }
 
 /// The repository `row`'s history is read from: a work tree holding the
@@ -489,11 +527,15 @@ fn row_repository(
 }
 
 /// A revision as a build would parse it now; `None` where it does not parse.
-fn parse_revision(path: &Path, content: Vec<u8>, parse_config: &ParseConfig<'_>) -> Option<Node> {
+fn parse_revision(
+    path: &Path,
+    content: Vec<u8>,
+    parse_config: &ParseConfig<'_>,
+) -> Option<NodeRef> {
     let content = String::from_utf8(content).ok()?;
     parse_document(path, &content, parse_config)
         .ok()
-        .map(|parsed| parsed.node)
+        .map(|parsed| NodeRef::from_node(&parsed.node))
 }
 
 /// Refuse a clone whose history git reshapes — shallow, grafted or replaced:
@@ -523,10 +565,11 @@ fn git_error(context: &str, error: std::io::Error) -> Error {
 ///
 /// A reading of a commit is a function of that commit, so a kept one whose
 /// commit the current `HEAD` reaches is completed by reading only the commits
-/// between them. Only the owner, a `check` of the working tree or the index,
-/// stores a reading and reports what kept it from reading or storing one;
-/// every other command consults the file and writes nothing, so
-/// `check --content` stays the read-only gate it is. A file of another shape
+/// between them. Only an owner — a `check` of the working tree or the index,
+/// and `nodex history` for the ledger it lists from — stores a reading and
+/// reports what kept it from reading or storing one; every other command
+/// consults the file and writes nothing, so `check --content` stays the
+/// read-only gate it is. A file of another shape
 /// version is passed over without a word, as a foreign `cache.json` is: that
 /// is the expected invalidation after an upgrade, and the walk it forces
 /// answers the same.
@@ -673,30 +716,62 @@ mod tests {
         )
     }
 
-    /// A kept record `HEAD` reaches is completed by the commits since — the
+    /// The days a path was first added and last removed, as the ledger the
+    /// kept one completes records them.
+    fn cycle(root: &Path, config: &Config, path: &str) -> (Option<NaiveDate>, Option<NaiveDate>) {
+        let repository = Repository::discover(root).unwrap().unwrap();
+        let kept = KeptFile::new(root, config, LEDGER_FILE, false);
+        let ledger = ledger(&repository, config, &kept).unwrap();
+        let day =
+            |commit: &CommitStamp| commit.committed.with_timezone(&chrono::Local).date_naive();
+        let record = &ledger.paths[path];
+        (
+            record.first_added.as_ref().map(day),
+            record
+                .last_removed
+                .as_ref()
+                .map(|removal| day(&removal.commit)),
+        )
+    }
+
+    /// A kept ledger `HEAD` reaches is completed by the commits since — the
     /// id planted in it alone is still bound — and otherwise binds what a
     /// whole walk binds: an id a removed document carried, the one a
-    /// document carried when added, and the one `HEAD` holds it under. A
-    /// record taken under another scope is passed over.
+    /// document carried when added, and the one `HEAD` holds it under. A path
+    /// added and removed on both sides of the kept head keeps its earliest
+    /// addition and latest removal either way. A ledger taken under another
+    /// scope is passed over.
     #[test]
     fn a_kept_record_the_head_reaches_is_completed_by_the_commits_since() {
         let dir = history_repo();
         let root = dir.path();
         let config = reading();
-        let kept = root.join(&config.output.dir).join(RECORDED_FILE);
-        commit_on(root, day(1), 9, &[("docs/a.md", &doc("first"))]);
+        let kept = root.join(&config.output.dir).join(LEDGER_FILE);
+        commit_on(
+            root,
+            day(1),
+            9,
+            &[("docs/a.md", &doc("first")), ("docs/c.md", &doc("cycled"))],
+        );
+        run_git(root, &["rm", "-q", "docs/c.md"]);
+        commit_on(root, day(2), 9, &[]);
         ProjectHistory::refreshing(&config, root).unwrap();
         let mut record: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&kept).unwrap()).unwrap();
-        record["events"]
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::json!(["docs/ghost.md", "ghost"]));
+        record["paths"]["docs/ghost.md"] = serde_json::json!({"ids": ["ghost"]});
         std::fs::write(&kept, record.to_string()).unwrap();
-        commit_on(root, day(2), 9, &[("docs/b.md", &doc("passing"))]);
-        run_git(root, &["rm", "-q", "docs/b.md"]);
-        commit_on(root, day(3), 9, &[]);
-        commit_on(root, day(4), 9, &[("docs/a.md", &doc("renamed"))]);
+        commit_on(
+            root,
+            day(3),
+            9,
+            &[
+                ("docs/b.md", &doc("passing")),
+                ("docs/c.md", &doc("cycled")),
+            ],
+        );
+        run_git(root, &["rm", "-q", "docs/b.md", "docs/c.md"]);
+        commit_on(root, day(4), 9, &[]);
+        commit_on(root, day(5), 9, &[("docs/a.md", &doc("renamed"))]);
 
         let completed = ProjectHistory::of(&config, root).unwrap();
         assert!(binds(&completed, "ghost"), "the kept record was consulted");
@@ -704,6 +779,8 @@ mod tests {
             assert!(binds(&completed, id), "{id}");
         }
         assert!(!binds(&completed, "never"));
+        let cycled = (Some(day(1)), Some(day(4)));
+        assert_eq!(cycle(root, &config, "docs/c.md"), cycled);
 
         let mut rescoped = reading();
         rescoped.scope.include.push("notes/**/*.md".into());
@@ -716,5 +793,6 @@ mod tests {
         for id in ["first", "passing", "renamed"] {
             assert!(binds(&walked, id), "{id}");
         }
+        assert_eq!(cycle(root, &config, "docs/c.md"), cycled);
     }
 }

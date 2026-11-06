@@ -1096,6 +1096,42 @@ impl Repository {
         Ok(held)
     }
 
+    /// The regular files under `roots` that `revision` holds and the work
+    /// tree no longer does, its index included: a removal staged or not yet
+    /// staged. A file git is told not to check out (sparse, skip-worktree) is
+    /// not one.
+    pub fn removed_since(&self, revision: &str, roots: &[String]) -> io::Result<Vec<PathBuf>> {
+        let diffed = self
+            .command()
+            .args([
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                "--diff-filter=D",
+                revision,
+                "--",
+            ])
+            .args(self.pathspecs(roots))
+            .output()?;
+        if !diffed.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not compare {revision} with the work tree: {}",
+                String::from_utf8_lossy(&diffed.stderr).trim()
+            )));
+        }
+        let mut removed = Vec::new();
+        for path in diffed.stdout.split(|byte| *byte == 0) {
+            if path.is_empty() {
+                continue;
+            }
+            if let Some(path) = project_relative(&os_path(path.to_vec())?, &self.prefix) {
+                removed.push(PathBuf::from(path));
+            }
+        }
+        Ok(removed)
+    }
+
     /// Pathspecs limiting a walk to `roots`, or to the project where a root
     /// is empty.
     fn pathspecs(&self, roots: &[String]) -> Vec<OsString> {

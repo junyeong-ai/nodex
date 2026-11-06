@@ -286,9 +286,10 @@ holds, and `ProjectHistory` the bindings every revision added, removed or held a
   the command instead of moving a verdict. Both keep a `KeptFile` (history.json
   keys HEAD, binary and project prefix; recorded.json also the graph config hash)
   and extend a reachable kept reading only by new commits. Shallow/graft/replace
-  history bypasses drift persistence and refuses recorded bindings. Only
-  working-tree/index check refreshes and reports cache IO; proposal gates and
-  other readers consult without writing. Source: `src/history.rs`,
+  history bypasses drift persistence and refuses recorded bindings.
+  recorded.json is the one ledger of what history recorded: `find_history`
+  lists from it too. Only working-tree/index check and `nodex history` refresh
+  and report cache IO; proposal gates and other readers consult without writing. Source: `src/history.rs`,
   `src/rules/git_drift.rs` and `src/git.rs` rustdoc.
 
 ## References and cycles

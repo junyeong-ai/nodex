@@ -253,14 +253,15 @@ nodex impact <ref-a> <ref-b> [--depth N] [--relations implements,supersedes]
 ## history
 
 ```bash
+nodex history                 # every document whose id the working tree no longer holds
 nodex history <id>
 nodex history --path <file>
 ```
-`{present, removed: [{id, title, kind, status, path, blob, first_added?, last_removed}], unparsed?}`. `removed` holds each document a commit `HEAD` reaches held under the id, or at the path, whose path `HEAD` no longer holds, latest removal first. `present` says whether the working tree holds one now; a document that moved keeps its id and is both. A cited id that resolves to nothing is a removed document when `removed` names it, and never was one when `removed` is empty.
+`{items: [{id, title, kind, status, path, blob, first_added?, last_removed?}], total, present?, unparsed?}`. `items` holds each document a revision `HEAD` reaches held, `HEAD` included, at a path the project no longer holds: one `HEAD` does not hold, or one `HEAD` holds that the work tree has removed, staged or not. Asked about an id or a path, it lists the documents under that id or at that path, and `present` says whether the working tree holds one now; a document that moved keeps its id and is both. Asked about neither, it lists every one whose id the working tree no longer holds: what the project has retired. A cited id that resolves to nothing is a removed document when `items` names it, and never was one when `items` is empty. Latest removal first; a removal not yet committed comes first, without `last_removed`, and its `blob` is the revision `HEAD` holds.
 
 Each document is its last revision read under the current configuration, as `diff` reads a ref: a removed path counts where the scope's patterns admit it, and the identity rules complete what its frontmatter leaves out. `first_added` and `last_removed` are `{id, committed, subject}`, and `git cat-file -p <blob>` prints the last revision. `unparsed` lists removed paths whose last revision does not parse, so the id each held is unknown.
 
-Side branches are read, so a document added and removed before its branch merged is found; a path a merge's conflict resolution alone added or dropped is not. A document that changed its id in place, keeping its path, is no removal. An empty answer is a claim about the whole history, so a clone whose history git reshapes (shallow, grafted or replaced) is refused with `GIT_ERROR`.
+Side branches are read, so a document added and removed before its branch merged is found; a path a merge's conflict resolution alone added or dropped is not. A document that changed its id in place, keeping its path, is no removal, and neither is a path git does not check out (sparse checkout). An empty answer is a claim about the whole history, so a clone whose history git reshapes (shallow, grafted or replaced) is refused with `GIT_ERROR`. The reading is kept in `<output.dir>/recorded.json`, the one a `history` policy row reads, so a later run reads only the commits since.
 
 ## scaffold
 
