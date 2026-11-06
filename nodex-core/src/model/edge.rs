@@ -88,6 +88,22 @@ impl UnresolvedCause {
         }
     }
 
+    /// Whether the project holds nothing where the reference looked: no
+    /// document binds it and, for a path, no file stands there. Only then is
+    /// whether a document ever stood there a question for history, which a
+    /// `[[detection.unresolved_policy]]` row's `history` asks; `Config::validate`
+    /// refuses the axis on every other cause. Exhaustive by variant, as
+    /// [`Self::names_a_target`] is.
+    pub fn target_absent(&self) -> bool {
+        match self {
+            Self::IdNotFound | Self::Missing => true,
+            Self::TargetUnparsed
+            | Self::ExcludedFromScope
+            | Self::EscapesSource
+            | Self::Absolute => false,
+        }
+    }
+
     /// Whether an ID-only or path-based lookup can fail with this cause.
     ///
     /// Resolution mode decides it, and the two partitions line up exactly: an
@@ -254,6 +270,17 @@ pub enum ReferenceProtection {
     Protected,
     Unprotected,
     Unknown,
+}
+
+/// What the project's history holds of a reference nothing binds now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetHistory {
+    /// A revision of a document some commit `HEAD` reaches held, `HEAD`
+    /// included, would have bound it.
+    Recorded,
+    /// No recorded revision would have.
+    Unrecorded,
 }
 
 /// An authored reference and the rules constraining its source.

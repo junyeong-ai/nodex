@@ -22,7 +22,7 @@ in `.claude/rules/` rather than being copied here.
   `normalize_for_lookup`, which also permits absolute paths under the root.
 - Every content write uses `path_guard::stage_in_root` or its stage/commit wrapper
   `write_atomic_in_root`: documents and graph.json, GRAPH.md, cache.json,
-  history.json, init's nodex.toml. The seam refuses final-component symlinks and
+  history.json, recorded.json, init's nodex.toml. The seam refuses final-component symlinks and
   checks root containment through ancestors; direct `std::fs::write` in a mutation
   path is a defect. Reading follows symlinks; document rewriting skips them.
 - Batch rewrites use `mutate::plan_file` → `narrow` → `stage_plan` / `write_plan`.
@@ -57,11 +57,14 @@ prefix, not a resolving file/gitlink; document baselines come from checking out
 and graphing that tree, not per-document ref reads. Variable groups and invocation
 safety: `src/git.rs` rustdoc.
 
-`Repository::removals` reads every commit `HEAD` reaches (`--full-history`) for
-files added and no longer held; `history::find_history` admits them by
-`ScopeSpelling` (the scope's patterns, since no tree is walked at a past path) and
-parses each last revision under the current config, the one lens `diff` uses. A
-reshaped clone is refused: an absence there is not evidence.
+`Repository::file_events` (files each commit `HEAD` reaches added or removed,
+`--full-history`) and `held_files` (a tree's files and blobs) are the facts history
+readers share. Each admits a path by `ScopeSpelling` (the scope's patterns, since
+no tree is walked at a past path) and parses a revision under the current config,
+the one lens `diff` uses: `find_history` derives the documents `HEAD` no longer
+holds, and `ProjectHistory` the bindings every revision added, removed or held at
+`HEAD` offered, which an `unresolved_policy` row's `history` resolves against with
+`resolve_target`. A reshaped clone is refused: an absence there is not evidence.
 
 ## Mutation verdicts and baselines
 
@@ -275,13 +278,17 @@ reshaped clone is refused: an absence there is not evidence.
   `every_listed_finding_is_counted_once_through_its_rule`.
 - `git_drift::drift_targets` resolves measured edges within the project.
   Unmeasurable targets remain explicit; `commits_since: None` is not zero.
-- `DriftHistory` lazily shares one indexed revision walk across passes. It counts
-  commits introducing path changes (`--full-history`, combined merge diffs), and
-  applies review-date bounds to indexed dates, independent of time of day.
-  history.json keys HEAD, binary and project prefix, extending reachable cached
-  history only by new commits (`History::joined`). Shallow/graft/replace history
-  bypasses persistence. Only working-tree/index check refreshes and reports cache
-  IO; proposal gates and other readers consult without writing. Source:
+- `ProjectHistory` is a command's one reading of git, shared across passes on
+  `RuleContext::history`. Its `DriftHistory` lazily shares one indexed revision
+  walk: it counts commits introducing path changes (`--full-history`, combined
+  merge diffs), and applies review-date bounds to indexed dates, independent of
+  time of day. Its recorded bindings are read at construction, so a failure refuses
+  the command instead of moving a verdict. Both keep a `KeptFile` (history.json
+  keys HEAD, binary and project prefix; recorded.json also the graph config hash)
+  and extend a reachable kept reading only by new commits. Shallow/graft/replace
+  history bypasses drift persistence and refuses recorded bindings. Only
+  working-tree/index check refreshes and reports cache IO; proposal gates and
+  other readers consult without writing. Source: `src/history.rs`,
   `src/rules/git_drift.rs` and `src/git.rs` rustdoc.
 
 ## References and cycles

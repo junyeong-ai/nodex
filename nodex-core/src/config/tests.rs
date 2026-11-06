@@ -2331,6 +2331,7 @@ fn policy_row_for(
         glob: glob.map(str::to_string),
         source_protection: None,
         source_kinds: Vec::new(),
+        history: None,
         severity,
     }
 }
@@ -2399,6 +2400,42 @@ fn unresolved_policy_shadowing_covers_each_source_kind_independently() {
     config.detection.unresolved_policy = vec![records];
     let error = config.validate().unwrap_err().to_string();
     assert!(error.contains("source_kinds \"note\""), "{error}");
+}
+
+/// A row's history narrows it to one of two answers, so a catch-all after a
+/// recorded row still has the unrecorded ones, and after both it has none.
+/// History speaks only of a target the project holds nowhere.
+#[test]
+fn unresolved_policy_history_covers_each_answer_and_only_an_absent_target() {
+    use crate::model::{TargetHistory, UnresolvedCause};
+    let mut config = Config::default();
+    let mut recorded = policy_row(
+        "recorded",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Info,
+    );
+    recorded.history = Some(TargetHistory::Recorded);
+    let all = policy_row(
+        "all",
+        UnresolvedCause::Missing,
+        None,
+        UnresolvedSeverity::Error,
+    );
+    config.detection.unresolved_policy = vec![recorded.clone(), all.clone()];
+    config.validate().unwrap();
+
+    let mut unrecorded = recorded.clone();
+    unrecorded.name = "unrecorded".into();
+    unrecorded.history = Some(TargetHistory::Unrecorded);
+    config.detection.unresolved_policy = vec![recorded.clone(), unrecorded, all];
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("can never fire"), "{error}");
+
+    recorded.cause = UnresolvedCause::ExcludedFromScope;
+    config.detection.unresolved_policy = vec![recorded];
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("declares a history"), "{error}");
 }
 
 #[test]

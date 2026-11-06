@@ -56,15 +56,18 @@ pub use export::{
     compute_commands_diff, compute_envelope_schema_diff, export_config, export_enums,
     export_envelope_schema, export_rules, export_schema,
 };
-pub use git::{Before, CommitStamp, MergeBase, RefState, Removal, Repository};
-pub use history::{HistoryOutcome, HistoryReport, HistorySubject, RemovedDocument, find_history};
+pub use git::{Before, CommitStamp, MergeBase, RefState, Repository};
+pub use history::{
+    HistoryOutcome, HistoryReport, HistorySubject, ProjectHistory, RemovedDocument, find_history,
+};
 pub use impact::{ChangeKind, ImpactEntry, ImpactReport, compute_impact};
 pub use lifecycle::{Action, check_supersede_safe, transition};
 pub use model::{
     Annotation, BUILTIN_EDGE_RELATIONS, BodyLineMatch, BodySection, BodyStructure, Edge,
     FieldParseIssue, Graph, GraphMeta, Kind, Node, ParseFailure, RawAnnotation, RawBodyLineMatch,
     RawEdge, Reference, ReferenceDefinition, ReferenceLocation, ReferenceProtection,
-    ReferenceSource, ReferenceSyntax, ResolvedTarget, SectionHeading, Status, UnresolvedCause,
+    ReferenceSource, ReferenceSyntax, ResolvedTarget, SectionHeading, Status, TargetHistory,
+    UnresolvedCause,
 };
 pub use mutate::{
     BaselineBinding, BaselineProbe, GraphedBaseline, HeldBack, Introduced, Kept, Narrowing,

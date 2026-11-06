@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config::{Config, UnresolvedPolicyRuleConfig, UnresolvedSeverity};
-use crate::model::{Edge, Graph, ParseFailure, ResolvedTarget, UnresolvedCause};
+use crate::model::{Edge, Graph, ParseFailure, ResolvedTarget, TargetHistory, UnresolvedCause};
 use crate::rules::{RuleCoverage, SkippedRule, Violation, check_with_unresolved};
 
 use super::detect::{OrphanEntry, StaleEntry, find_orphans, find_stale};
@@ -108,6 +108,7 @@ pub fn find_issues(
     graph: &Graph,
     config: &Config,
     root: &Path,
+    history: &crate::history::ProjectHistory,
     diff: Option<&crate::diff::GraphDiff>,
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
@@ -116,7 +117,7 @@ pub fn find_issues(
     let stale = find_stale(graph, config, today).map_or_else(Vec::new, |outcome| outcome.entries);
     let probe = crate::builder::file_probe::FileProbe::default();
     let files = crate::builder::scanner::ProjectFiles::working_tree(root).with_probe(&probe);
-    let unresolved_edges = find_unresolved_edges(graph, config, files, diff, steps);
+    let unresolved_edges = find_unresolved_edges(graph, config, files, history, diff, steps);
     // The caller supplies the same diff context `check` runs under (the
     // CLI resolves `rules.immutable_baseline` exactly as `nodex check`
     // does), so the violations reported here and by a default `check`
@@ -129,7 +130,7 @@ pub fn find_issues(
         graph,
         config,
         files,
-        &crate::rules::git_drift::DriftHistory::of(config, root),
+        history,
         diff.map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
         steps,
         unresolved_edges.clone(),
@@ -184,6 +185,7 @@ pub fn find_unresolved_edges(
     graph: &Graph,
     config: &Config,
     files: crate::builder::scanner::ProjectFiles<'_>,
+    history: &crate::history::ProjectHistory,
     diff: Option<&crate::diff::GraphDiff>,
     steps: Option<&[crate::ancestry::Step]>,
 ) -> Vec<UnresolvedEdge> {
@@ -208,7 +210,17 @@ pub fn find_unresolved_edges(
     let mut entries: Vec<UnresolvedEdge> = graph
         .edges()
         .iter()
-        .filter_map(|edge| unresolved_from(graph, edge, config, files, &policy, &mut locks))
+        .filter_map(|edge| {
+            unresolved_from(
+                graph,
+                edge,
+                config,
+                files,
+                history.recorded(),
+                &policy,
+                &mut locks,
+            )
+        })
         .collect();
 
     entries.sort_by(|a, b| {
@@ -226,6 +238,7 @@ fn unresolved_from(
     edge: &Edge,
     config: &Config,
     files: crate::builder::scanner::ProjectFiles<'_>,
+    recorded: Option<&crate::builder::resolver::Bindings>,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
     locks: &mut crate::rules::reference_protection::ReferenceLocks<'_>,
 ) -> Option<UnresolvedEdge> {
@@ -254,6 +267,24 @@ fn unresolved_from(
         files,
         crate::model::edge::is_path_only_relation(&edge.relation),
     );
+    // Whether the build's own lookup, run against every binding a recorded
+    // revision offered, would have bound the reference.
+    let history = recorded.filter(|_| cause.target_absent()).map(|recorded| {
+        let source_dir = source_node
+            .and_then(|node| node.path.parent())
+            .unwrap_or_else(|| Path::new(""));
+        match crate::builder::resolver::resolve_target(
+            edge.syntax(),
+            raw,
+            &edge.relation,
+            source_dir,
+            recorded,
+            &config.parser.extensions,
+        ) {
+            ResolvedTarget::Resolved { .. } => TargetHistory::Recorded,
+            ResolvedTarget::Unresolved { .. } => TargetHistory::Unrecorded,
+        }
+    });
     let sources = locks.sources(edge);
     let source_protection = crate::rules::reference_protection::protection(&sources);
     let (mut severity, policy_name) = assign_policy(
@@ -262,6 +293,7 @@ fn unresolved_from(
         sought.names(),
         source_protection,
         source_node.map(|node| node.kind.as_str()),
+        history,
         policy,
     );
     if policy_name.is_none()
@@ -294,14 +326,17 @@ fn unresolved_from(
 /// `relations` (which relation carries the reference — empty admits every
 /// one), `glob` (which name the resolution sought, matching any of them;
 /// load-time validation confines a glob to causes that sought a name at
-/// all), `source_protection`, and `source_kinds` (the kind of the document
-/// holding the reference). The fallthrough is `warning`, unattributed.
+/// all), `source_protection`, `source_kinds` (the kind of the document
+/// holding the reference), and `history` (what the project's history holds of
+/// a target the project holds nowhere). The fallthrough is `warning`,
+/// unattributed.
 fn assign_policy(
     cause: UnresolvedCause,
     relation: &str,
     sought: &[String],
     source_protection: crate::model::ReferenceProtection,
     source_kind: Option<&str>,
+    history: Option<TargetHistory>,
     policy: &[(&UnresolvedPolicyRuleConfig, Option<GlobMatcher>)],
 ) -> (UnresolvedSeverity, Option<String>) {
     for (row, matcher) in policy {
@@ -312,7 +347,10 @@ fn assign_policy(
         {
             continue;
         }
-        if !row.matches_relation(relation) || !row.admits_source(source_kind) {
+        if !row.matches_relation(relation)
+            || !row.admits_source(source_kind)
+            || !row.admits_history(history)
+        {
             continue;
         }
         if let Some(matcher) = matcher
@@ -473,6 +511,7 @@ mod tests {
             glob: glob.map(str::to_string),
             source_protection: None,
             source_kinds: Vec::new(),
+            history: None,
             severity,
         }
     }
@@ -738,6 +777,7 @@ mod tests {
             &graph,
             &Config::default(),
             crate::builder::scanner::ProjectFiles::working_tree(Path::new(".")),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -780,7 +820,15 @@ mod tests {
                 location: "L1".to_string(),
             }],
         );
-        let report = find_issues(&graph, &config, Path::new("."), None, None, today);
+        let report = find_issues(
+            &graph,
+            &config,
+            Path::new("."),
+            &crate::rules::UNMEASURED,
+            None,
+            None,
+            today,
+        );
 
         let gated = |rule: &str| -> Vec<&str> {
             report
@@ -835,6 +883,7 @@ mod tests {
             &graph,
             &Config::default(),
             Path::new("."),
+            &crate::rules::UNMEASURED,
             None,
             None,
             crate::test_today(),
@@ -868,6 +917,7 @@ mod tests {
             &graph,
             &Config::default(),
             Path::new("."),
+            &crate::rules::UNMEASURED,
             None,
             None,
             crate::test_today(),
@@ -906,6 +956,7 @@ mod tests {
             &graph,
             &narrow_first,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -930,6 +981,7 @@ mod tests {
             &graph,
             &broad_first,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -973,6 +1025,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -1013,6 +1066,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -1045,6 +1099,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -1084,6 +1139,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -1114,6 +1170,7 @@ mod tests {
             &reference,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -1125,6 +1182,7 @@ mod tests {
             &covers,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
+            &crate::rules::UNMEASURED,
             None,
             None,
         );
@@ -1149,6 +1207,7 @@ mod tests {
             &graph,
             &Config::default(),
             root.path(),
+            &crate::rules::UNMEASURED,
             None,
             None,
             crate::test_today(),
@@ -1184,6 +1243,7 @@ mod tests {
             &graph,
             &config,
             root.path(),
+            &crate::rules::UNMEASURED,
             None,
             None,
             crate::test_today(),
@@ -1221,6 +1281,7 @@ mod tests {
             &graph,
             &config,
             root.path(),
+            &crate::rules::UNMEASURED,
             None,
             None,
             crate::test_today(),
@@ -1285,6 +1346,7 @@ mod tests {
             &graph,
             &Config::default(),
             root.path(),
+            &crate::rules::UNMEASURED,
             None,
             None,
             crate::test_today(),

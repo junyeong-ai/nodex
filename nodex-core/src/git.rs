@@ -1004,17 +1004,102 @@ impl Repository {
         Ok(output.status.success() && !output.stdout.is_empty())
     }
 
-    /// Every file under `roots` that a commit `revision` reaches added and
-    /// `revision`'s tree no longer holds, newest removal first. `roots` are
-    /// project paths; an empty one is the whole project.
+    /// Every regular file under `roots` a commit `revisions` reaches added
+    /// or removed, newest commit first. `roots` are project paths; an empty
+    /// one is the whole project.
     ///
-    /// Side branches are read too (`--full-history`): a document added and
+    /// Side branches are read too (`--full-history`): a file added and
     /// removed on a branch its merge brought in was in the project for as
     /// long as that branch was. Merge commits' own diffs are not read, so a
-    /// path a conflict resolution alone added or dropped is not reported.
-    /// Symlinks and submodules are not documents and are passed over.
-    pub fn removals(&self, revision: &str, roots: &[String]) -> io::Result<Vec<Removal>> {
-        let pathspecs: Vec<OsString> = if roots.is_empty() || roots.iter().any(String::is_empty) {
+    /// file a conflict resolution alone added or dropped is not reported.
+    pub fn file_events(&self, revisions: &str, roots: &[String]) -> io::Result<Vec<FileEvent>> {
+        let walked = self
+            .command()
+            .args([
+                "log",
+                "--full-history",
+                "--no-renames",
+                "--no-abbrev",
+                "--raw",
+                "-z",
+                "--diff-filter=AD",
+                "--format=%x00%x00%H%x00%ct%x00%s",
+                revisions,
+                "--",
+            ])
+            .args(self.pathspecs(roots))
+            .output()?;
+        if !walked.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not walk {revisions}: {}",
+                String::from_utf8_lossy(&walked.stderr).trim()
+            )));
+        }
+        let mut events = Vec::new();
+        for (path, event) in file_events(&walked.stdout)? {
+            if let Some(path) = project_relative(&os_path(path)?, &self.prefix) {
+                events.push(FileEvent {
+                    path: PathBuf::from(path),
+                    ..event
+                });
+            }
+        }
+        Ok(events)
+    }
+
+    /// The regular files under `roots` that `revision`'s tree holds, each
+    /// with its blob.
+    pub fn held_files(
+        &self,
+        revision: &str,
+        roots: &[String],
+    ) -> io::Result<Vec<(PathBuf, String)>> {
+        let listed = self
+            .command()
+            .args(["ls-tree", "-r", "-z", "--full-tree", revision, "--"])
+            .args(self.pathspecs(roots))
+            .output()?;
+        if !listed.status.success() {
+            return Err(io::Error::other(format!(
+                "git could not list {revision}: {}",
+                String::from_utf8_lossy(&listed.stderr).trim()
+            )));
+        }
+        // `<mode> <type> <object>\t<path>`
+        let mut held = Vec::new();
+        for entry in listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|e| !e.is_empty())
+        {
+            let tab = entry
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .ok_or_else(|| io::Error::other("git listed a tree entry with no path"))?;
+            let meta: Vec<&[u8]> = entry[..tab].split(|byte| *byte == b' ').collect();
+            let [mode, _, blob] = meta.as_slice() else {
+                return Err(io::Error::other(
+                    "git listed a tree entry of an unexpected shape",
+                ));
+            };
+            if !mode.starts_with(b"100") {
+                continue;
+            }
+            if let Some(path) = project_relative(&os_path(entry[tab + 1..].to_vec())?, &self.prefix)
+            {
+                held.push((
+                    PathBuf::from(path),
+                    String::from_utf8_lossy(blob).into_owned(),
+                ));
+            }
+        }
+        Ok(held)
+    }
+
+    /// Pathspecs limiting a walk to `roots`, or to the project where a root
+    /// is empty.
+    fn pathspecs(&self, roots: &[String]) -> Vec<OsString> {
+        if roots.is_empty() || roots.iter().any(String::is_empty) {
             (!self.prefix.as_os_str().is_empty())
                 .then(|| self.prefix.clone().into_os_string())
                 .into_iter()
@@ -1024,90 +1109,7 @@ impl Repository {
                 .iter()
                 .map(|root| self.tracked_path(Path::new(root)))
                 .collect()
-        };
-        let mut log = self.command();
-        log.args([
-            "log",
-            "--full-history",
-            "--no-renames",
-            "--no-abbrev",
-            "--raw",
-            "-z",
-            "--diff-filter=AD",
-            "--format=%x00%x00%H%x00%ct%x00%s",
-            revision,
-            "--",
-        ])
-        .args(&pathspecs);
-        let walked = log.output()?;
-        if !walked.status.success() {
-            return Err(io::Error::other(format!(
-                "git could not walk {revision}: {}",
-                String::from_utf8_lossy(&walked.stderr).trim()
-            )));
         }
-        let mut listing = self.command();
-        listing
-            .args(["ls-tree", "-r", "-z", "--name-only", revision, "--"])
-            .args(&pathspecs);
-        let listed = listing.output()?;
-        if !listed.status.success() {
-            return Err(io::Error::other(format!(
-                "git could not list {revision}: {}",
-                String::from_utf8_lossy(&listed.stderr).trim()
-            )));
-        }
-        let held: std::collections::BTreeSet<&[u8]> = listed
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|name| !name.is_empty())
-            .collect();
-        let mut removals: std::collections::BTreeMap<Vec<u8>, Removal> =
-            std::collections::BTreeMap::new();
-        let mut added: std::collections::BTreeMap<Vec<u8>, CommitStamp> =
-            std::collections::BTreeMap::new();
-        for (stamp, change) in path_changes(&walked.stdout)? {
-            if held.contains(change.path.as_slice()) {
-                continue;
-            }
-            match change.status {
-                b'D' => {
-                    if !removals.contains_key(&change.path) {
-                        let Some(path) =
-                            project_relative(&os_path(change.path.clone())?, &self.prefix)
-                        else {
-                            continue;
-                        };
-                        removals.insert(
-                            change.path.clone(),
-                            Removal {
-                                path: PathBuf::from(path),
-                                blob: change.blob,
-                                first_added: None,
-                                last_removed: stamp,
-                            },
-                        );
-                    }
-                }
-                _ => {
-                    added.insert(change.path, stamp);
-                }
-            }
-        }
-        let mut removals: Vec<Removal> = removals
-            .into_iter()
-            .map(|(path, mut removal)| {
-                removal.first_added = added.remove(&path);
-                removal
-            })
-            .collect();
-        removals.sort_by(|a, b| {
-            b.last_removed
-                .committed
-                .cmp(&a.last_removed.committed)
-                .then_with(|| a.path.cmp(&b.path))
-        });
-        Ok(removals)
     }
 
     /// The content of each blob `ids` names, in order.
@@ -1179,39 +1181,32 @@ pub struct CommitStamp {
     pub subject: String,
 }
 
-/// A file [`Repository::removals`] found history held and a commit no longer
-/// does.
-#[derive(Debug, Clone)]
-pub struct Removal {
-    /// Project path.
-    pub path: PathBuf,
-    /// The blob the path held when it was last removed.
-    pub blob: String,
-    /// The earliest commit the walk read adding the path; `None` where only
-    /// a merge's resolution added it.
-    pub first_added: Option<CommitStamp>,
-    /// The latest commit that removed it.
-    pub last_removed: CommitStamp,
+/// Whether a commit added or removed a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileEventKind {
+    Added,
+    Removed,
 }
 
-/// One added or removed path in a commit's raw diff.
-struct PathChange {
-    /// Repository path, as git spells it.
-    path: Vec<u8>,
-    /// `A` or `D`.
-    status: u8,
+/// A regular file one commit added or removed.
+#[derive(Debug, Clone)]
+pub struct FileEvent {
+    /// Project path.
+    pub path: PathBuf,
+    pub kind: FileEventKind,
     /// The blob on the side that holds the file: the new one for an
     /// addition, the old one for a removal.
-    blob: String,
+    pub blob: String,
+    pub commit: CommitStamp,
 }
 
 /// The added and removed regular files in the stream of a
 /// `log --raw -z --format=%x00%x00%H%x00%ct%x00%s` walk, each beside the
-/// commit that made the change.
-fn path_changes(stream: &[u8]) -> io::Result<Vec<(CommitStamp, PathChange)>> {
+/// repository path git spells it at.
+fn file_events(stream: &[u8]) -> io::Result<Vec<(Vec<u8>, FileEvent)>> {
     let malformed = |detail: &str| io::Error::other(format!("git reported {detail}"));
     let fields: Vec<&[u8]> = stream.split(|byte| *byte == 0).collect();
-    let mut changes = Vec::new();
+    let mut events = Vec::new();
     let mut at = 0usize;
     while at < fields.len() {
         let opening = fields[at..].iter().take_while(|f| f.is_empty()).count();
@@ -1222,14 +1217,13 @@ fn path_changes(stream: &[u8]) -> io::Result<Vec<(CommitStamp, PathChange)>> {
         if opening < 2 || at + 2 >= fields.len() {
             return Err(malformed("a commit record that does not open as asked"));
         }
-        let id = String::from_utf8_lossy(fields[at]).into_owned();
         let committed = std::str::from_utf8(fields[at + 1])
             .ok()
             .and_then(|seconds| seconds.parse().ok())
             .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
             .ok_or_else(|| malformed("an unreadable commit time"))?;
-        let stamp = CommitStamp {
-            id,
+        let commit = CommitStamp {
+            id: String::from_utf8_lossy(fields[at]).into_owned(),
             committed,
             subject: String::from_utf8_lossy(fields[at + 2]).into_owned(),
         };
@@ -1249,24 +1243,25 @@ fn path_changes(stream: &[u8]) -> io::Result<Vec<(CommitStamp, PathChange)>> {
             let [old_mode, new_mode, old_blob, new_blob, status] = parts.as_slice() else {
                 return Err(malformed("a diff entry of an unexpected shape"));
             };
-            let (mode, blob) = match status.first() {
-                Some(b'D') => (old_mode, old_blob),
-                _ => (new_mode, new_blob),
+            let (kind, mode, blob) = match status.first() {
+                Some(b'D') => (FileEventKind::Removed, old_mode, old_blob),
+                _ => (FileEventKind::Added, new_mode, new_blob),
             };
             if mode.starts_with(b"100") {
-                changes.push((
-                    stamp.clone(),
-                    PathChange {
-                        path: path.to_vec(),
-                        status: status.first().copied().unwrap_or_default(),
+                events.push((
+                    path.to_vec(),
+                    FileEvent {
+                        path: PathBuf::new(),
+                        kind,
                         blob: String::from_utf8_lossy(blob).into_owned(),
+                        commit: commit.clone(),
                     },
                 ));
             }
             at += 2;
         }
     }
-    Ok(changes)
+    Ok(events)
 }
 
 /// A commit as a walk over history reads it.

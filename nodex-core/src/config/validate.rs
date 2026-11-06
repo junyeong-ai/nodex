@@ -228,6 +228,7 @@ struct PolicySelector<'a> {
     glob: Option<&'a str>,
     source_protection: Option<crate::model::ReferenceProtection>,
     source_kinds: std::collections::BTreeSet<&'a str>,
+    history: Option<crate::model::TargetHistory>,
 }
 
 impl<'a> PolicySelector<'a> {
@@ -237,8 +238,8 @@ impl<'a> PolicySelector<'a> {
     /// Claiming accumulates: two rows each taking one relation, or one part of
     /// the targets, leave nothing for a third that names both, and asking
     /// pairwise would miss it. So each relation this row selects, under each
-    /// protection state and source kind, asks whether the earlier rows
-    /// claiming it select every target its glob does
+    /// protection state, source kind and target history, asks whether the
+    /// earlier rows claiming it select every target its glob does
     /// ([`super::cover::Coverage::covered_by`]).
     ///
     /// `selects` is the relations this row admits, an omitted filter standing
@@ -272,27 +273,35 @@ impl<'a> PolicySelector<'a> {
         } else {
             self.source_kinds.iter().copied().collect()
         };
+        use crate::model::TargetHistory::{Recorded, Unrecorded};
+        let histories = self
+            .history
+            .map_or_else(|| vec![Recorded, Unrecorded], |history| vec![history]);
         let mut claimants = Vec::new();
         for state in states {
             for relation in &selects {
                 for source in &sources {
-                    let claiming: Vec<(usize, Option<&str>)> = earlier
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, row)| {
-                            row.cause == self.cause
-                                && row
-                                    .source_protection
-                                    .is_none_or(|selected| selected == state)
-                                && (row.relations.is_empty() || row.relations.contains(relation))
-                                && (row.source_kinds.is_empty()
-                                    || row.source_kinds.contains(source))
-                        })
-                        .map(|(index, row)| (index, row.glob))
-                        .collect();
-                    for index in coverage.covered_by(&claiming, self.glob)? {
-                        if !claimants.contains(&earlier[index].name) {
-                            claimants.push(earlier[index].name);
+                    for history in &histories {
+                        let claiming: Vec<(usize, Option<&str>)> = earlier
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, row)| {
+                                row.cause == self.cause
+                                    && row
+                                        .source_protection
+                                        .is_none_or(|selected| selected == state)
+                                    && (row.relations.is_empty()
+                                        || row.relations.contains(relation))
+                                    && (row.source_kinds.is_empty()
+                                        || row.source_kinds.contains(source))
+                                    && row.history.is_none_or(|selected| selected == *history)
+                            })
+                            .map(|(index, row)| (index, row.glob))
+                            .collect();
+                        for index in coverage.covered_by(&claiming, self.glob)? {
+                            if !claimants.contains(&earlier[index].name) {
+                                claimants.push(earlier[index].name);
+                            }
                         }
                     }
                 }
@@ -349,6 +358,17 @@ impl Config {
         crate::rules::registered_rules(self)
             .iter()
             .any(|rule| rule.judges_steps(self))
+    }
+
+    /// The first `[[detection.unresolved_policy]]` row asking what history
+    /// holds of a target — whether a command reads the names history
+    /// recorded at all, and the row a missing prerequisite is reported
+    /// against.
+    pub fn history_policy_row(&self) -> Option<&UnresolvedPolicyRuleConfig> {
+        self.detection
+            .unresolved_policy
+            .iter()
+            .find(|row| row.history.is_some())
     }
 
     /// Validate internal consistency. Called automatically by `load()`.
@@ -1134,7 +1154,8 @@ impl Config {
     /// or `None` — zero is ambiguous between "off" and "immediate", so
     /// it is refused at load. `[[detection.unresolved_policy]]` rows:
     /// names unique and non-reserved, relations known and not repeated,
-    /// globs compile and only appear on causes that named a target, and
+    /// globs compile and only appear on causes that named a target, a
+    /// history only on causes whose target is absent, and
     /// no row an earlier one already covers ([`PolicySelector::covers`])
     /// — the same "no silent runtime skips" discipline as every other
     /// per-block rule family.
@@ -1277,6 +1298,15 @@ impl Config {
                     )));
                 }
             }
+            if row.history.is_some() && !row.cause.target_absent() {
+                return Err(Error::Config(format!(
+                    "detection.unresolved_policy[{idx}] ({name:?}) declares a history, but \
+                     cause {cause_name:?} holds a target the project still has (or none it \
+                     looked up), so history has nothing to say of it; remove the history or \
+                     use cause \"missing\" or \"id_not_found\"",
+                    name = row.name,
+                )));
+            }
             let selector = PolicySelector {
                 name: row.name.as_str(),
                 cause: row.cause,
@@ -1284,6 +1314,7 @@ impl Config {
                 glob: row.glob.as_deref(),
                 source_protection: row.source_protection,
                 source_kinds,
+                history: row.history,
             };
             if matches!(
                 row.source_protection,

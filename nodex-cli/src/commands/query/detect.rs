@@ -112,6 +112,7 @@ pub(crate) fn run_issues(
         graph,
         &config,
         context.root,
+        &nodex_core::ProjectHistory::of(&config, context.root)?,
         diff.as_ref(),
         steps.as_deref(),
         today,

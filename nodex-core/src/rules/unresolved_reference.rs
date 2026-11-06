@@ -84,6 +84,7 @@ impl Rule for UnresolvedReferenceRule {
             m.insert("glob".into(), json!(row.glob));
             m.insert("source_protection".into(), json!(row.source_protection));
             m.insert("source_kinds".into(), json!(row.source_kinds));
+            m.insert("history".into(), json!(row.history));
         }
         m
     }
@@ -94,7 +95,14 @@ impl Rule for UnresolvedReferenceRule {
 
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun {
         let edges = self.classified.get_or_init(|| {
-            find_unresolved_edges(ctx.graph, ctx.config, ctx.files, ctx.since, ctx.steps)
+            find_unresolved_edges(
+                ctx.graph,
+                ctx.config,
+                ctx.files,
+                ctx.history,
+                ctx.since,
+                ctx.steps,
+            )
         });
         // Row names are unique (Config::validate), so an edge whose
         // `policy_name` equals this row's name was classified by this
@@ -198,6 +206,7 @@ mod tests {
             glob: glob.map(str::to_string),
             source_protection: None,
             source_kinds: Vec::new(),
+            history: None,
             severity,
         }
     }
@@ -332,7 +341,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
+            &crate::history::ProjectHistory::of(&config, root.path()).unwrap(),
             crate::rules::Since::None,
             None,
             crate::test_today(),
@@ -366,7 +375,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
+            &crate::history::ProjectHistory::of(&config, root.path()).unwrap(),
             crate::rules::Since::None,
             None,
             crate::test_today(),
@@ -386,7 +395,7 @@ mod tests {
             &graph,
             &config,
             crate::builder::scanner::ProjectFiles::working_tree(root.path()),
-            &crate::rules::git_drift::DriftHistory::of(&config, root.path()),
+            &crate::history::ProjectHistory::of(&config, root.path()).unwrap(),
             crate::rules::Since::None,
             None,
             vec![],

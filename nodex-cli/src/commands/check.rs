@@ -4,8 +4,8 @@ use clap::{Args, ValueEnum};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use nodex_core::ProjectHistory;
 use nodex_core::check;
-use nodex_core::rules::git_drift::DriftHistory;
 use nodex_core::rules::{Severity, Since};
 
 use crate::format::emit_read_with;
@@ -265,7 +265,7 @@ struct CheckTarget {
     /// passes this target takes: a `--content` target judges the working
     /// tree and the proposal it would become, and no unwritten byte is a
     /// commit.
-    history: DriftHistory,
+    history: ProjectHistory,
     /// Non-fatal advisories to surface on the envelope.
     warnings: Vec<nodex_core::Warning>,
     /// The proposal the target graph was built with, empty for a
@@ -333,7 +333,7 @@ fn resolve_target(
     // reports from the graph itself.
     let mut warnings = outcome.warnings;
     warnings.extend(baseline_warnings);
-    let history = DriftHistory::refreshing(&config, root);
+    let history = ProjectHistory::refreshing(&config, root)?;
     Ok((
         config,
         CheckTarget {
@@ -397,7 +397,7 @@ fn resolve_staged_target(
         )
     }));
     warnings.extend(baseline_warnings);
-    let history = DriftHistory::refreshing(&config, root);
+    let history = ProjectHistory::refreshing(&config, root)?;
     Ok((
         config,
         CheckTarget {
@@ -510,7 +510,7 @@ fn resolve_content_target(
         Some(nodex_core::diff::compute_diff(&before, &after))
     };
     let steps = probe.steps(&after);
-    let history = DriftHistory::of(config, root);
+    let history = ProjectHistory::of(config, root)?;
     let before_steps = probe.steps(&before);
     let before_diff = if config.rules.immutable_baseline.is_some() {
         probe.diff(&before)
