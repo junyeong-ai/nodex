@@ -241,7 +241,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
   "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
   "total": 2,
   "has_errors": true,
-  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ],
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "change": "content", "in_scope": true, "has_path_errors": true } ],
   "standing": [ { "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api", ... } ]
 } }
 ```
@@ -269,7 +269,7 @@ sequenceDiagram
   N-->>G: exit 0 passes · exit 1 blocks
 ```
 
-- `check --content <path>=<source>` overlays proposed bytes (`-` for stdin) on the working tree and fails on what they introduce. Several `--content` pairs are judged as one change.
+- `check --content <path>=<source>` overlays proposed bytes (`-` for stdin) on the working tree and fails on what they introduce. Several `--content` pairs are judged as one change, and `--remove <path>` adds a deletion to it, so removing a document and repointing what cites it are judged together.
 - The writing commands ask the same question before they write; `scaffold`, `rename` and `retarget` take `--dry-run`, which runs every gate and writes nothing.
 - `check --staged` judges what the next commit records, under the `nodex.toml` the index carries:
 
@@ -339,7 +339,7 @@ A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `
 | `nodex build [--full]` | Builds the graph snapshot; `--full` ignores the cache |
 | `nodex status` | Whether the snapshot matches the working tree |
 | `nodex classify <path>...` | Scope verdict and inferred kind, id and status per path, without a graph |
-| `nodex check` | Every registered rule; `--content`, `--staged`, `--since <ref>`, `--baseline <ref>` |
+| `nodex check` | Every registered rule; `--content`, `--remove`, `--staged`, `--since <ref>`, `--baseline <ref>` |
 | `nodex report` | Writes `GRAPH.md`, a readable summary |
 | `nodex diff <a> <b>` | Nodes, edges, statuses, fields and paths changed between two git refs |
 | `nodex impact <a> <b>` | The diff plus each change's dependents and dangling references |

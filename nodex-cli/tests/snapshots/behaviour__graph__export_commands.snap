@@ -633,6 +633,12 @@ exit: 0
             "takes_value": true
           },
           {
+            "long": "remove",
+            "repeatable": true,
+            "required": false,
+            "takes_value": true
+          },
+          {
             "long": "severity",
             "repeatable": false,
             "required": false,

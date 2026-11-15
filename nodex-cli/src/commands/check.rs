@@ -47,6 +47,13 @@ pub struct CheckArgs {
     /// once. Mutually exclusive with `--since`.
     #[arg(long, value_name = "PATH=SOURCE", conflicts_with = "since")]
     pub content: Vec<String>,
+    /// Validate removing the file at `PATH` before it is removed, judged
+    /// with every `--content` pair as one change, so a removal and the edits
+    /// that repoint what cites it gate together. Repeatable; a path may
+    /// appear once across `--content` and `--remove`. Mutually exclusive
+    /// with `--since`.
+    #[arg(long, value_name = "PATH", conflicts_with = "since")]
+    pub remove: Vec<String>,
     /// Narrow the `violations` list to one severity. Presentation only:
     /// `has_errors`, the per-proposal verdicts and the exit code answer for
     /// every violation checked, and anything the envelope stops carrying
@@ -63,8 +70,8 @@ pub struct CheckArgs {
     /// file never added is not judged, as it is not committed. Under the hook
     /// of a `git commit -a` or `git commit <path>` that index is the one git
     /// names in `GIT_INDEX_FILE`. The index's own `nodex.toml` is the config.
-    /// Mutually exclusive with `--content`.
-    #[arg(long, conflicts_with = "content")]
+    /// Mutually exclusive with `--content` and `--remove`.
+    #[arg(long, conflicts_with_all = ["content", "remove"])]
     pub staged: bool,
     #[command(flatten)]
     pub baseline: super::baseline::BaselineArg,
@@ -99,7 +106,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
                 || violation
                     .path
                     .as_ref()
-                    .is_some_and(|path| proposals.iter().any(|(proposed, _)| proposed == path))
+                    .is_some_and(|path| proposals.iter().any(|(proposed, ..)| proposed == path))
         });
     }
     // Released before a verdict can end the process, which runs no destructor.
@@ -120,7 +127,7 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
                     && v.path.as_deref().is_some_and(|p| {
                         proposals
                             .iter()
-                            .any(|(path, in_scope)| *in_scope && p == path)
+                            .any(|(path, in_scope, _)| *in_scope && p == path)
                     })
             })
             .cloned()
@@ -160,8 +167,9 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
     let proposals = target.proposals.as_ref().map(|proposals| {
         proposals
             .iter()
-            .map(|(path, in_scope)| nodex_core::ProposalEntry {
+            .map(|(path, in_scope, change)| nodex_core::ProposalEntry {
                 path: path.clone(),
+                change: *change,
                 in_scope: *in_scope,
                 has_path_errors: violations_filtered.iter().any(|v| {
                     v.severity == Severity::Error && v.path.as_deref() == Some(path.as_str())
@@ -256,11 +264,12 @@ struct CheckTarget {
     /// widens back to the whole project and says so; one git cannot
     /// resolve is refused before this is built.
     narrowed: Option<(nodex_core::diff::GraphDiff, String)>,
-    /// One `(normalized forward-slash path, in_scope)` per `--content`
-    /// proposal, in invocation order. `Some` only in `--content` mode —
-    /// drives the per-proposal verdicts so a clean or out-of-scope
-    /// proposal is reported as checked, never a silent green.
-    proposals: Option<Vec<(String, bool)>>,
+    /// One `(normalized forward-slash path, in_scope, change)` per
+    /// proposal: the `--content` pairs, then the `--remove` paths, each in
+    /// invocation order. `Some` only in proposal mode — drives the
+    /// per-proposal verdicts so a clean or out-of-scope proposal is reported
+    /// as checked, never a silent green.
+    proposals: Option<Vec<(String, bool, nodex_core::ProposalChange)>>,
     /// What git says about the project, read once for however many
     /// passes this target takes: a `--content` target judges the working
     /// tree and the proposal it would become, and no unwritten byte is a
@@ -310,8 +319,8 @@ fn resolve_target(
     }
     let mut config = nodex_core::load_project(root)?;
     args.baseline.apply_to(&mut config);
-    if !args.content.is_empty() {
-        let target = resolve_content_target(root, &args.content, &config, today)?;
+    if !args.content.is_empty() || !args.remove.is_empty() {
+        let target = resolve_content_target(root, &args.content, &args.remove, &config, today)?;
         return Ok((config, target));
     }
 
@@ -426,12 +435,13 @@ fn resolve_staged_target(
 fn resolve_content_target(
     root: &Path,
     pairs: &[String],
+    removals: &[String],
     config: &nodex_core::Config,
     today: NaiveDate,
 ) -> Result<CheckTarget> {
     let probe = super::git_checkout::write_baseline(root, config)?;
 
-    let overlay = parse_proposals(root, pairs)?;
+    let overlay = parse_proposals(root, pairs, removals)?;
 
     // The gate applies to exactly the bytes the scan would admit: an
     // out-of-scope path is vacuously clean whatever it contains (nodex
@@ -441,12 +451,24 @@ fn resolve_content_target(
     // `parse_failure` violation.
     let scan = nodex_core::builder::scanner::scan_scope_with_overlay(root, config, &overlay)
         .context("scope scan failed")?;
+    let standing =
+        nodex_core::builder::scanner::scan_scope(root, config).context("scope scan failed")?;
 
     let mut proposals = Vec::with_capacity(overlay.len());
     let mut out_of_scope = Vec::new();
-    for (path, _bytes) in &overlay {
-        let admitted = scan.admits(path)?;
+    for (path, proposed) in &overlay {
         let fwd = nodex_core::path_guard::forward_string(path);
+        // A removal is judged for what cited the file, a document or not,
+        // so its scope is the working tree's and silences nothing.
+        if matches!(proposed, nodex_core::builder::scanner::Proposed::Absent) {
+            proposals.push((
+                fwd,
+                standing.admits(path)?,
+                nodex_core::ProposalChange::Removal,
+            ));
+            continue;
+        }
+        let admitted = scan.admits(path)?;
         // A path the scan does not admit is vacuously clean whatever it
         // contains — a write gate would pass on a misaimed/out-of-scope
         // path having validated nothing. Surface it so the green is never
@@ -460,7 +482,7 @@ fn resolve_content_target(
                 ),
             ));
         }
-        proposals.push((fwd, admitted));
+        proposals.push((fwd, admitted, nodex_core::ProposalChange::Content));
     }
 
     let (before, after) = {
@@ -492,8 +514,6 @@ fn resolve_content_target(
     // no files there may be the very pattern the proposal's path matches — and
     // an envelope calling one proposal in scope while calling its pattern dead
     // contradicts itself.
-    let standing =
-        nodex_core::builder::scanner::scan_scope(root, config).context("scope scan failed")?;
     let mut warnings = after.warnings;
     warnings.extend(nodex_core::builder::scanner::coverage_warning(
         &standing,
@@ -550,17 +570,19 @@ fn resolve_content_target(
     })
 }
 
-/// Parse `--content PATH=SOURCE` pairs into a normalized overlay. Splits
-/// on the first `=`; normalizes each PATH through the one canonical
-/// document-path normalization (symmetric with scaffold / rename — fold
-/// `\` to `/`, refuse traversal / absolute forms, collapse `.`); reads
-/// each SOURCE (`-` = stdin, else a file). Two invocation-level guards
-/// live here at the write seam, where validity depends on the invocation
-/// not the project config: a target path may appear once (ambiguous
-/// bytes otherwise) and at most one SOURCE may be stdin (one stream).
+/// Parse `--content PATH=SOURCE` pairs and `--remove PATH` paths into a
+/// normalized overlay. Splits each pair on the first `=`; normalizes each
+/// PATH through the one canonical document-path normalization (symmetric
+/// with scaffold / rename — fold `\` to `/`, refuse traversal / absolute
+/// forms, collapse `.`); reads each SOURCE (`-` = stdin, else a file).
+/// Invocation-level guards live here at the write seam, where validity
+/// depends on the invocation not the project config: a path may appear
+/// once (ambiguous otherwise), at most one SOURCE may be stdin (one
+/// stream), and a removal names a file the working tree holds.
 fn parse_proposals(
     root: &Path,
     pairs: &[String],
+    removals: &[String],
 ) -> Result<Vec<(PathBuf, nodex_core::builder::scanner::Proposed)>> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut stdin_used = false;
@@ -582,7 +604,8 @@ fn parse_proposals(
         let path = nodex_core::path_guard::normalize_doc_path(root, raw_path)?;
         if !seen.insert(path.clone()) {
             return Err(nodex_core::error::Error::InvalidArgument(format!(
-                "--content names {path:?} more than once; each target path may appear once"
+                "{path:?} is proposed more than once; a path may appear once across --content \
+                 and --remove"
             ))
             .into());
         }
@@ -601,6 +624,35 @@ fn parse_proposals(
         overlay.push((
             PathBuf::from(path),
             nodex_core::builder::scanner::Proposed::Content(bytes),
+        ));
+    }
+    for raw_path in removals {
+        let path = nodex_core::path_guard::normalize_doc_path(root, raw_path)?;
+        if !seen.insert(path.clone()) {
+            return Err(nodex_core::error::Error::InvalidArgument(format!(
+                "{path:?} is proposed more than once; a path may appear once across --content \
+                 and --remove"
+            ))
+            .into());
+        }
+        match std::fs::symlink_metadata(root.join(&path)) {
+            Ok(entry) if !entry.is_dir() => {}
+            Ok(_) => {
+                return Err(nodex_core::error::Error::InvalidArgument(format!(
+                    "--remove names {path:?}, a directory; name each file it holds"
+                ))
+                .into());
+            }
+            Err(_) => {
+                return Err(nodex_core::error::Error::InvalidArgument(format!(
+                    "--remove names {path:?}, which holds no file"
+                ))
+                .into());
+            }
+        }
+        overlay.push((
+            PathBuf::from(path),
+            nodex_core::builder::scanner::Proposed::Absent,
         ));
     }
     Ok(overlay)

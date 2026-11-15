@@ -36,8 +36,8 @@ pub use ancestry::{Ancestry, Lines, Position, Positions, Priors, Step};
 pub use classify::{ClassifyEntry, ClassifyOutcome, InferredFields, classify};
 pub use command_result::{
     BuildResult, CheckResult, FileWriteFailure, IdStability, InitResult, LifecycleResult,
-    MigrateResult, MigrationChange, ProposalEntry, RenameResult, ReportResult, RetargetResult,
-    WriteCompletion,
+    MigrateResult, MigrationChange, ProposalChange, ProposalEntry, RenameResult, ReportResult,
+    RetargetResult, WriteCompletion,
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,

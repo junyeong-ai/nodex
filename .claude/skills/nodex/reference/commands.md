@@ -164,6 +164,7 @@ Annotations are for pre-graph identifiers — TODO topics, promotion candidates,
 nodex check
 nodex check --severity error
 nodex check --content docs/a.md=- --content docs/b.md=b.md
+nodex check --remove docs/old.md --content docs/b.md=-
 ```
 
 `CheckResult` contains `violations`, `skipped_rules`, `rule_coverage`, `total` and
@@ -183,15 +184,19 @@ before deciding whether a gap needs repair.
 exist yet. SOURCE is `-` (stdin) or a path relative to the invoking directory,
 never `-C`. At most one source is stdin; target paths must be distinct. Every
 proposal overlays one combined graph, so cross-proposal references resolve.
-Excludes `--since` and `--staged`; no cache is written.
+`--remove PATH` proposes deleting a file the working tree holds, a document or
+not: what cites it is judged in that same graph, so a deletion and the edits
+that repoint its citations gate as one change, and the verdict is the one
+`check` reaches once the file is gone. A path appears once across both flags.
+Both exclude `--since` and `--staged`; no cache is written.
 
 Ordinary rules judge introduced errors; a lock covering a proposed document
 judges its absolute drift against the configured baseline, or the working tree
 without one. `--baseline <ref>` names that baseline for one run, and every
 writing command takes it too, so a proposal and its write judge against one
 commit ([per-run baseline](config.md#naming-the-baseline-for-one-run)). Step rules judge the move the proposal would commit. Unrelated
-standing errors do not block a proposal. `proposals` reports `{path, in_scope,
-has_path_errors}` and `standing` reports the proposed nodes' warning findings;
+standing errors do not block a proposal. `proposals` reports `{path, change, in_scope,
+has_path_errors}`, `change` being `content` or `removal`, and `standing` reports the proposed nodes' warning findings;
 top-level `has_errors` gates the whole batch. A warning retained in `standing`
 is not suppressed by `--severity`.
 
