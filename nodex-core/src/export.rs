@@ -620,6 +620,8 @@ pub struct CommandManifestEntry {
 pub struct PositionalEntry {
     pub name: String,
     pub required: bool,
+    /// Whether it takes more than one value.
+    pub repeatable: bool,
 }
 
 /// One flag: how it is spelled and what it takes.
@@ -1006,10 +1008,12 @@ pub fn compute_envelope_schema_diff(baseline: &Value, head: &Value) -> ContractD
 /// two `nodex export commands` runs) by whether an invocation the baseline
 /// accepted still parses. Breaking: a leaf, positional, flag or short
 /// spelling removed; a positional or flag that became required, or one added
-/// as required; a flag that changed whether it takes a value, or stopped
-/// repeating. Additive: a leaf, an optional positional or flag, a requirement
-/// relaxed, a flag that may now repeat. A leaf flag that became global is not
-/// removed. As `compute_envelope_schema_diff` fails closed, a payload whose
+/// as required; a flag that changed whether it takes a value; a positional or
+/// flag that stopped repeating. Additive: a leaf, an optional positional or
+/// flag, a requirement relaxed, a positional or flag that may now repeat. A
+/// positional's repetition is compared only where both manifests record it. A
+/// leaf flag that became global is not removed. As
+/// `compute_envelope_schema_diff` fails closed, a payload whose
 /// `commands` list is absent or malformed is breaking, and so is one that
 /// records no flag grammar (`global_flags`), whose flags are then left
 /// uncompared rather than read as a leaf without flags.
@@ -1221,6 +1225,19 @@ fn diff_positionals(command: &str, before: &Value, after: &Value, diff: &mut Con
             (true, false) => {
                 diff.additive
                     .push(change(command, &location, "positional no longer required"))
+            }
+            _ => {}
+        }
+        let repeatable = |positional: &Value| positional.get("repeatable").and_then(Value::as_bool);
+        match (repeatable(positional), repeatable(now)) {
+            (Some(true), Some(false)) => diff.breaking.push(change(
+                command,
+                &location,
+                "positional no longer repeatable",
+            )),
+            (Some(false), Some(true)) => {
+                diff.additive
+                    .push(change(command, &location, "positional now repeatable"))
             }
             _ => {}
         }
@@ -3582,6 +3599,41 @@ mod tests {
                 at("global", "flags/--pretty", "flag removed"),
                 at("query.search", "leaf", "command removed"),
             ]
+        );
+    }
+
+    #[test]
+    fn commands_diff_reads_whether_a_positional_takes_several_values() {
+        let unrecorded = search_leaf();
+        let mut one = search_leaf();
+        one["positionals"][0]["repeatable"] = false.into();
+        let mut several = search_leaf();
+        several["positionals"][0]["repeatable"] = true.into();
+        let first = compute_commands_diff(&commands_of(unrecorded), &commands_of(several.clone()));
+        assert!(
+            first.breaking.is_empty() && first.additive.is_empty(),
+            "{first:?}"
+        );
+        let widened =
+            compute_commands_diff(&commands_of(one.clone()), &commands_of(several.clone()));
+        assert!(widened.breaking.is_empty(), "{widened:?}");
+        assert_eq!(
+            located(&widened.additive),
+            vec![at(
+                "query.search",
+                "positionals/keyword",
+                "positional now repeatable"
+            )]
+        );
+        let narrowed = compute_commands_diff(&commands_of(several), &commands_of(one));
+        assert!(narrowed.additive.is_empty(), "{narrowed:?}");
+        assert_eq!(
+            located(&narrowed.breaking),
+            vec![at(
+                "query.search",
+                "positionals/keyword",
+                "positional no longer repeatable"
+            )]
         );
     }
 

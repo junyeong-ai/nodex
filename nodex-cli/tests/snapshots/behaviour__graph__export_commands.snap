@@ -39,6 +39,7 @@ exit: 0
         "positionals": [
           {
             "name": "paths",
+            "repeatable": true,
             "required": true
           }
         ],
@@ -51,10 +52,12 @@ exit: 0
         "positionals": [
           {
             "name": "before",
+            "repeatable": false,
             "required": true
           },
           {
             "name": "after",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -81,10 +84,12 @@ exit: 0
         "positionals": [
           {
             "name": "before",
+            "repeatable": false,
             "required": true
           },
           {
             "name": "after",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -105,6 +110,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": false
           }
         ],
@@ -138,6 +144,7 @@ exit: 0
         "positionals": [
           {
             "name": "keyword",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -165,6 +172,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -186,6 +194,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -336,6 +345,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": false
           }
         ],
@@ -357,6 +367,7 @@ exit: 0
         "positionals": [
           {
             "name": "paths",
+            "repeatable": true,
             "required": true
           }
         ],
@@ -540,6 +551,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -606,6 +618,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -671,6 +684,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -698,6 +712,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -719,6 +734,7 @@ exit: 0
         "positionals": [
           {
             "name": "id",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -771,10 +787,12 @@ exit: 0
         "positionals": [
           {
             "name": "old",
+            "repeatable": false,
             "required": true
           },
           {
             "name": "new",
+            "repeatable": false,
             "required": true
           }
         ],
@@ -807,10 +825,12 @@ exit: 0
         "positionals": [
           {
             "name": "old_id",
+            "repeatable": false,
             "required": true
           },
           {
             "name": "new_id",
+            "repeatable": false,
             "required": true
           }
         ],

@@ -134,6 +134,7 @@ fn leaf_entry(
         .map(|arg| PositionalEntry {
             name: arg.get_id().to_string(),
             required: arg.is_required_set(),
+            repeatable: matches!(arg.get_action(), clap::ArgAction::Append),
         })
         .collect();
     let flags = leaf
