@@ -1195,6 +1195,36 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "A finding an external rule's program reported. `data` is what the\nprogram says the finding is, the whole of its identity beside the\nrule and the document; `message` and `line` only describe it, so a\nfinding whose wording or position moved is the same finding.",
+                "properties": {
+                  "data": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "line": {
+                    "description": "One-based file line in the document the finding names.",
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "external",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "A locked frontmatter field changed while the block's lock was armed.",
                 "properties": {
                   "before_status": {
@@ -5005,6 +5035,36 @@ exit: 0
                   "capture",
                   "value",
                   "allowed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A finding an external rule's program reported. `data` is what the\nprogram says the finding is, the whole of its identity beside the\nrule and the document; `message` and `line` only describe it, so a\nfinding whose wording or position moved is the same finding.",
+                "properties": {
+                  "data": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "line": {
+                    "description": "One-based file line in the document the finding names.",
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "external",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "message"
                 ],
                 "type": "object"
               },

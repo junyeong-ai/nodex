@@ -153,6 +153,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         })
     }
 
@@ -271,6 +272,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
         let narrowed: Vec<&str> = run
             .violations
@@ -331,6 +333,7 @@ mod tests {
                         history: &crate::rules::UNMEASURED,
                         since: None,
                         steps: None,
+                        external: &crate::rules::UNASKED,
                     },
                     &touched,
                     v,

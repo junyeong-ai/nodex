@@ -605,6 +605,7 @@ mod tests {
                 history: &crate::history::ProjectHistory::of(&config, dir.path()).unwrap(),
                 since: None,
                 steps: None,
+                external: &crate::rules::UNASKED,
             })
             .violations;
         assert!(
@@ -736,6 +737,7 @@ mod tests {
                     history: &history,
                     since: None,
                     steps: None,
+                    external: &crate::rules::UNASKED,
                 },
                 &touched,
                 &violation,
@@ -852,6 +854,7 @@ mod tests {
                 history: &crate::history::ProjectHistory::of(&config, dir.path()).unwrap(),
                 since: None,
                 steps: None,
+                external: &crate::rules::UNASKED,
             })
             .violations;
         assert_eq!(
@@ -959,6 +962,7 @@ mod tests {
             history: &crate::history::ProjectHistory::of(&config, dir.path()).unwrap(),
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         });
         assert_eq!(run.subjects, 2, "the nodes with nothing to measure");
         assert_eq!(run.unjudged, 1, "the node whose measurements all failed");

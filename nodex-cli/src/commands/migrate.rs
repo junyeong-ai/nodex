@@ -381,6 +381,34 @@ pub fn run(
             }
         }
     }
+    // The project the batch produces is asked of every rule before anything
+    // lands, as every other write is. nodex's own rules find nothing an
+    // injection introduces, since it writes only what each document already
+    // inferred, so what refuses here reads the bytes rather than the graph:
+    // an external rule.
+    if !narrowing.writable.is_empty() {
+        let before = nodex_core::builder::build_with_overlay(root, &config, &[])
+            .context("graph build failed")?;
+        let proposal: Vec<_> = narrowing
+            .writable
+            .iter()
+            .map(nodex_core::Planned::proposed)
+            .collect();
+        let introduced = nodex_core::introduced(
+            root,
+            &config,
+            &before.graph,
+            &proposal,
+            nodex_core::ProposalDiff::Configured,
+            &probe,
+            today,
+        )
+        .context("the project this migration would produce could not be checked")?;
+        if let Some(refusal) = introduced.refusal("migrate --apply") {
+            return Err(refusal.into());
+        }
+        warnings.extend(introduced.advisories());
+    }
     let mut failures = Vec::new();
     for plan in &narrowing.writable {
         let shown = nodex_core::path_guard::forward_string(&plan.rel_path);

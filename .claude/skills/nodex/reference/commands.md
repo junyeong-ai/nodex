@@ -221,6 +221,7 @@ Which findings those are is each rule's to say:
 - `superseded_reference`: also the cited document and every successor in its lineage, its own record or a pointer at it, since a terminal status or a succession declared there is the edit that makes a standing citation stale.
 - `git_drift`, whose reading is git's: a finding when the commits `<ref>..HEAD` added one it counts, on a measured document or a covered code path outside the graph alike.
 - Locks (`body_immutable`, `frontmatter_immutable`): every finding, because each is drift from the lock's baseline, and a configured baseline is not the range.
+- External rules (`external/<name>`): every finding, because the program's reading is its own, and nodex cannot tell which documents or files decided it.
 - A node-less, project-wide finding (`acyclic_relation`, `parse_failure`, `unique_numbering`, `sequential_numbering`): always.
 - `status_transition` / `status_entry`: every finding, each about a step inside the range, a move the range went on to undo included.
 
@@ -368,7 +369,7 @@ nodex report                 # writes GRAPH.md; build writes the JSON snapshot
 nodex init                   # writes an annotated nodex.toml
 ```
 
-`migrate --apply` refuses atomically on an id collision; per-file skips (symlink, unreadable, frontmatter that appeared between plan and apply) ride the warnings array. `total: 0` is a finished migration **or** a scan that reached nothing — a `scope_coverage` warning rides the second, on both `migrate` and `--apply`.
+`migrate --apply` refuses atomically on an id collision, and on what the write gate refuses in the project the batch produces; per-file skips (symlink, unreadable, frontmatter that appeared between plan and apply) ride the warnings array. `total: 0` is a finished migration **or** a scan that reached nothing — a `scope_coverage` warning rides the second, on both `migrate` and `--apply`.
 
 ## export
 

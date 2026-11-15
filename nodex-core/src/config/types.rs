@@ -736,6 +736,10 @@ pub struct RulesConfig {
     /// [`crate::rules::body_line::BodyLineRule`].
     #[serde(default)]
     pub body_line: Vec<BodyLineRuleConfig>,
+    /// Rules the project runs as programs of its own, one block each.
+    /// Drives [`crate::rules::external::ExternalRule`].
+    #[serde(default)]
+    pub external: Vec<ExternalRuleConfig>,
     /// Source ref for the baseline shared by checks, proposals and writes.
     /// An explicit `--since` scopes the report without replacing this source.
     /// Without a configured source, `--since` supplies the lock baseline and
@@ -776,6 +780,7 @@ impl Default for RulesConfig {
             frontmatter_immutable: Vec::new(),
             body_immutable: Vec::new(),
             body_line: Vec::new(),
+            external: Vec::new(),
             immutable_baseline: None,
             immutable_baseline_named_by: BaselineNamedBy::default(),
             immutable_baseline_mode: ImmutableBaselineMode::default(),
@@ -1057,6 +1062,33 @@ pub struct BodyLineRuleConfig {
     /// entry is required — a body_line rule with no enum check has
     /// no semantic.
     pub enums: BTreeMap<String, Vec<String>>,
+}
+
+/// One rule the project judges with a program of its own: nodex hands the
+/// documents of `kinds` to `command` on stdin and reads its findings from
+/// stdout ([`crate::rules::external`] has the protocol).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalRuleConfig {
+    /// Stable identifier used in the violation `rule_id`
+    /// (`external/<name>`) and in the rule manifest.
+    pub name: String,
+    /// The program and its arguments. A program named with a path
+    /// separator resolves against the project's working-tree root, where
+    /// it also runs; a bare name is looked up on `PATH`.
+    pub command: Vec<String>,
+    /// Which kinds the program judges. Empty = every kind. Every entry must
+    /// be in `kinds.allowed`; `Config::load` enforces.
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// The severity of every finding the program reports. The block owns
+    /// it, so `rules.severity` cannot name the rule.
+    #[serde(default = "default_external_severity")]
+    pub severity: crate::rules::Severity,
+}
+
+fn default_external_severity() -> crate::rules::Severity {
+    crate::rules::Severity::Error
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

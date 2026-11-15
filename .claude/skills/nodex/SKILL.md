@@ -132,6 +132,12 @@ from `export rules` / `export config`. Declared relations with `retarget = "keep
 remain historical citations; body links are repointed unless a lock holds them
 (`file_skipped`).
 
+A finding under `external/<name>` comes from a program the project declares
+(`params.command` in `export rules`; [external rules](reference/config.md#external-rules)):
+its `details.data` is what the finding is. A `CONFIG_ERROR` naming an external
+rule is that program failing to answer: read the stderr it quotes, then fix the
+program, its environment, or the document it failed on.
+
 Batch writes are not a filesystem transaction. Inspect `completion`, `failures`
 and warnings even on nonzero exits; successful earlier writes remain. Policy
 holds alone exit 0. After a partial write, inspect the tree and recompute the plan

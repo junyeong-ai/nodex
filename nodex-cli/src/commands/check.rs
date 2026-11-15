@@ -85,16 +85,19 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
     // the index's (`--staged`), and a rule that stat-probes the project has
     // to measure the project that graph describes rather than the tree on
     // disk. Any other target carries an empty overlay over the working tree,
-    // so one construction serves all three.
+    // so one construction serves all three. What the project runs, an
+    // external rule's program, runs in the working tree whichever bytes are
+    // judged: the index's checkout holds no tool the operator installed.
     let mut check_report = check(
         &target.graph,
         &config,
-        nodex_core::builder::scanner::ProjectFiles::proposed(&target.files, &target.overlay),
+        nodex_core::builder::scanner::ProjectFiles::proposed(&target.files, &target.overlay)
+            .checked_out_from(root),
         &target.history,
         target.since(),
         target.steps.as_deref(),
         today,
-    );
+    )?;
     if let Some(proposals) = &target.proposals {
         let locks: BTreeSet<_> = nodex_core::rules::registered_rules(&config)
             .into_iter()
@@ -550,7 +553,7 @@ fn resolve_content_target(
         before_diff.as_ref().map_or(Since::None, Since::Baseline),
         before_steps.as_deref(),
         today,
-    )
+    )?
     .violations
     .into_iter()
     .filter(|violation| !lock_ids.contains(&violation.rule_id))

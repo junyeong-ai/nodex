@@ -104,6 +104,15 @@ pub enum Error {
     #[error("config error: {0}")]
     Config(String),
 
+    /// The program an external rule declares could not answer for the
+    /// documents it was given: it did not start, did not exit cleanly, or
+    /// answered outside the protocol. Coded as config, whose remedy it
+    /// shares: the program the project declares, or the environment it
+    /// needs. A rule that cannot judge refuses the command rather than
+    /// passing it.
+    #[error("config error: external rule {rule} could not judge the project: {reason}")]
+    ExternalRule { rule: String, reason: String },
+
     /// The invocation cannot be served as given: a malformed or
     /// out-of-vocabulary flag value, a path the project would not graph, a
     /// spelling the filesystem does not use. The remedy is the arguments; the
@@ -225,7 +234,7 @@ impl Error {
         match self {
             Self::Io { .. } => "IO_ERROR",
             Self::Parse { .. } | Self::FrontmatterAbsent(_) => "PARSE_ERROR",
-            Self::Config(_) => "CONFIG_ERROR",
+            Self::Config(_) | Self::ExternalRule { .. } => "CONFIG_ERROR",
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
             Self::Locked { .. } => "LOCKED",
             Self::Internal(_) => "INTERNAL_ERROR",

@@ -702,15 +702,18 @@ impl BaselineProbe {
                 steps.as_deref(),
                 today,
             )
-            .violations
-            .into_iter()
-            .filter(|v| v.severity == crate::rules::Severity::Error)
-            .collect::<Vec<_>>()
+            .map(|report| {
+                report
+                    .violations
+                    .into_iter()
+                    .filter(|v| v.severity == crate::rules::Severity::Error)
+                    .collect::<Vec<_>>()
+            })
         };
 
         let proposed = crate::builder::build_with_overlay(root, config, proposal)?;
         let (absolute, delta): (Vec<_>, Vec<_>) =
-            judge(&proposed.graph, ProjectFiles::proposed(root, proposal))
+            judge(&proposed.graph, ProjectFiles::proposed(root, proposal))?
                 .into_iter()
                 .partition(|v| locks.contains(&v.rule_id));
 
@@ -721,7 +724,7 @@ impl BaselineProbe {
             true => Vec::new(),
             false => {
                 let standing = crate::builder::build_with_overlay(root, config, &[])?;
-                judge(&standing.graph, ProjectFiles::working_tree(root))
+                judge(&standing.graph, ProjectFiles::working_tree(root))?
             }
         };
         // Which `Cause` a lock's finding is comes from the project as it
@@ -1640,7 +1643,7 @@ pub fn introduced(
                     .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
                 after_steps.as_deref(),
                 today,
-            )
+            )?
             .violations,
             &crate::rules::run_rules(
                 gate_rules(config),
@@ -1653,7 +1656,7 @@ pub fn introduced(
                     .map_or(crate::rules::Since::None, crate::rules::Since::Baseline),
                 before_steps.as_deref(),
                 today,
-            )
+            )?
             .violations,
         ),
     })

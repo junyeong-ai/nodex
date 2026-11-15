@@ -135,6 +135,7 @@ cross_field = [
 severity = { unresolved_reference = "error" }
 # Uncomment to make every warning rule `severity` does not name an error,
 # so `check` fails on a rule a nodex upgrade adds until it is placed here.
+# Policy rows and external blocks keep the severity they declare.
 # default_severity = "error"
 # Ref that `nodex check` diffs against when `--since` is omitted, so the
 # diff-aware immutability rules below are enforced by default (against
@@ -236,6 +237,19 @@ immutable_baseline = "HEAD"
 # # `kinds` narrows which docs the rule scans. Empty = every kind;
 # # every listed kind must be in `kinds.allowed`.
 # # kinds = ["guide"]
+
+# A rule the project judges with a program of its own, one block per
+# program. `check`, `query issues` and, at error severity, every write
+# hand it the documents of `kinds` as JSON on stdin and read its findings
+# from stdout. Violations carry `rule_id = "external/<name>"`, and a
+# program that fails refuses the command. nodex runs whatever this
+# declares: read it before running nodex in a repository you do not trust.
+#
+# [[rules.external]]
+# name = "adr-outline"
+# command = ["python3", "tools/adr-outline.py"]   # runs in the project root
+# kinds = ["adr"]
+# # severity = "warning"   # default "error"
 
 # Body-text marker extraction — surfaced by `nodex query annotations`.
 # Pre-graph identifiers (TODO topics, promotion candidates, open

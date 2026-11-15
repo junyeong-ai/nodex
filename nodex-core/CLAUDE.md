@@ -118,10 +118,12 @@ evidence.
   Every gated write surfaces `Introduced::advisories`; `check --content`, which
   runs `rules::introduced_violations` directly, appends `mutate::evicted` itself
   (`nodex-cli/src/commands/check.rs`), so an advisory added to one goes to both.
-- `migrate` needs no introduced gate only because injected defaults preserve the
-  fields the bare document already inferred. The conditional-exclude parent
-  probe must use the same frontmatter parser and `parser::Completion` as builds;
-  a separate YAML/default interpretation could change scope during migration.
+- `migrate` asks the introduced gate over its whole batch. Injected defaults
+  preserve the fields each bare document already inferred, so nodex's own rules
+  find nothing it introduces; a refusal comes from a rule that reads bytes, an
+  external one. The conditional-exclude parent probe must use the same
+  frontmatter parser and `parser::Completion` as builds; a separate YAML/default
+  interpretation could change scope during migration.
 - Seam-specific guards remain only when they are a strict subset of the rule
   gate and provide a remedy it cannot express. Do not duplicate naming/schema
   rules. `model::validate_explicit_id` protects scaffold/retarget ids against
@@ -130,11 +132,15 @@ evidence.
 
 ## Rule population, findings and history
 
-- Rules use `RuleContext { graph, config, files, history, since, steps, today }`.
-  Filesystem probes go through `ProjectFiles`, which includes overlay proposals;
-  joining the working-tree root directly judges different bytes. Environment
-  preflight and measurements are distinct: git/stat-backed rules are not graph-
-  only computations. Diff-aware rules declare non-applicability via
+- Rules use `RuleContext { graph, config, files, history, since, steps, today,
+  external }`. Filesystem probes go through `ProjectFiles`, which includes overlay
+  proposals; joining the working-tree root directly judges different bytes.
+  `run_rules` asks each external rule's program before any rule runs
+  (`ExternalAnswers::ask`), the one reading of a pass that can fail: a program
+  that cannot answer refuses the command. It hands over the bytes `files` reads
+  and runs in `ProjectFiles::work_tree`, the operator's tree even for a checkout.
+  Environment preflight and measurements are distinct: git/stat-backed rules are
+  not graph-only computations. Diff-aware rules declare non-applicability via
   `is_applicable`; the runner records `skipped_rules`.
 - `FileProbe` shares exact directory names and terminal types within one
   evaluation. Issue queries, standalone unresolved classification, rule

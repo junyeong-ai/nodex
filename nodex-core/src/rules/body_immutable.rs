@@ -443,6 +443,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: diff,
             steps: None,
+            external: &crate::rules::UNASKED,
         }
     }
 

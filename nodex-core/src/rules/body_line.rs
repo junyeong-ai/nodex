@@ -220,6 +220,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         }
     }
 

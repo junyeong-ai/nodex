@@ -524,6 +524,12 @@ trigger = "creation"   # which lifecycle a record answers to, settled by its fir
 # kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
+# A program of the project's own judges ADRs; its findings gate checks and writes:
+# [[rules.external]]
+# name = "adr-outline"
+# command = ["python3", "tools/adr-outline.py"]
+# kinds = ["adr"]
+
 # Body markers surfaced by `nodex query annotations`:
 # [[annotations]]
 # name = "promotes"
@@ -562,7 +568,7 @@ dir = "_index"
 | `[identity]` / `[scaffold.paths]` | How a path infers kind and id; where `scaffold` creates each kind |
 | `[parser]` | Declared frontmatter relations, body `link_patterns`, `extensions`, `wikilink_enabled` |
 | `[schema]` | `required`, `types`, `enums`, `cross_field`, per-kind `overrides`, `mode`, `require_explicit` |
-| `[rules]` | Rule severity (`default_severity`, `severity`), the lock baseline, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line`, `acyclic_relations` |
+| `[rules]` | Rule severity (`default_severity`, `severity`), the lock baseline, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line`, `external`, `acyclic_relations` |
 | `[detection]` | Staleness, orphans, superseded references, `git_drift`, the `unresolved_policy` table |
 | `[[annotations]]` / `[output]` / `[report]` / `[similarity]` / `[search]` | Body markers, artifact location, report limits, ranking weights |
 | `[meta]` | `nodex_version`: the binary that may write the project |
