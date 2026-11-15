@@ -618,12 +618,9 @@ fn row_repository(
     row: &crate::config::UnresolvedPolicyRuleConfig,
 ) -> Result<Repository> {
     let reason = match Repository::discover(root) {
-        Ok(Some(repository)) => match repository.reshapes_history() {
-            Ok(false) => return Ok(repository),
-            Ok(true) => "this clone's history is shallow, grafted or replaced".to_string(),
-            Err(e) => {
-                format!("whether this clone holds its whole history could not be read ({e})")
-            }
+        Ok(Some(repository)) => match incomplete_history(&repository) {
+            None => return Ok(repository),
+            Some(reason) => reason,
         },
         Ok(None) => format!("no git work tree was found for {}", root.display()),
         Err(e) => format!("its repository could not be resolved ({e})"),
@@ -651,16 +648,27 @@ fn parse_revision(
 /// Refuse a clone whose history git reshapes — shallow, grafted or replaced:
 /// a document it does not hold is one it cannot say was never there.
 fn require_whole_history(repository: &Repository, reader: &str) -> Result<()> {
-    if repository
-        .reshapes_history()
-        .map_err(|e| git_error("whether the clone holds its whole history", e))?
-    {
-        return Err(Error::Git {
+    match incomplete_history(repository) {
+        None => Ok(()),
+        Some(reason) => Err(Error::Git {
             context: format!("{reader} requires the whole history; fetch it"),
-            stderr: "this clone's history is shallow, grafted or replaced".to_string(),
-        });
+            stderr: reason,
+        }),
     }
-    Ok(())
+}
+
+/// Why this clone cannot answer for its whole history, where it cannot: git
+/// can reshape it in place — a shallow cut, a graft, a replace ref — so what
+/// it does not reach is no evidence of what was never there. `None` for a
+/// clone that holds all of it. Every history reader asks this one question.
+pub(crate) fn incomplete_history(repository: &Repository) -> Option<String> {
+    match repository.reshapes_history() {
+        Ok(false) => None,
+        Ok(true) => Some("this clone's history is shallow, grafted or replaced".to_string()),
+        Err(e) => Some(format!(
+            "whether this clone holds its whole history could not be read ({e})"
+        )),
+    }
 }
 
 fn git_error(context: &str, error: std::io::Error) -> Error {

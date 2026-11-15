@@ -1077,6 +1077,29 @@ exit: 0
                 "type": "object"
               },
               {
+                "description": "The clone's history cannot be counted, so no document offering a path\nto count is judged. About the clone, not a document: the cause and how\nmany documents it leaves unjudged are evidence of its state, and the\nremedy is the same whatever they are.",
+                "properties": {
+                  "documents": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "git_drift_history_incomplete",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "reason",
+                  "documents"
+                ],
+                "type": "object"
+              },
+              {
                 "description": "A filename does not match its configured pattern.",
                 "properties": {
                   "filename": {
@@ -4917,6 +4940,29 @@ exit: 0
                   "type",
                   "targets",
                   "reviewed"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The clone's history cannot be counted, so no document offering a path\nto count is judged. About the clone, not a document: the cause and how\nmany documents it leaves unjudged are evidence of its state, and the\nremedy is the same whatever they are.",
+                "properties": {
+                  "documents": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "git_drift_history_incomplete",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "reason",
+                  "documents"
                 ],
                 "type": "object"
               },

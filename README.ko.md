@@ -279,7 +279,7 @@ sequenceDiagram
   exec nodex check --staged
   ```
 
-- `check --since <ref>`는 보고를 범위가 바꾼 것으로 좁히고, status 이동은 커밋마다 판정합니다. CI에서는 `fetch-depth: 0`으로 checkout합니다. `--introduced`를 붙이면 `<ref>`에 없던 finding만 보고하므로, 기존 finding이 남아 있어도 더 엄격한 룰로 새 작업을 막을 수 있습니다.
+- `check --since <ref>`는 보고를 범위가 바꾼 것으로 좁히고, status 이동은 커밋마다 판정합니다. CI에서는 `fetch-depth: 0`으로 checkout합니다. `git_drift`도 전체 이력이 있어야 셉니다. `--introduced`를 붙이면 `<ref>`에 없던 finding만 보고하므로, 기존 finding이 남아 있어도 더 엄격한 룰로 새 작업을 막을 수 있습니다.
 
 ### 정착된 기록을 잠그기
 
