@@ -711,6 +711,10 @@ pub struct RulesConfig {
     /// Project severity for registered rules; unresolved policy rows own their own severity.
     #[serde(default)]
     pub severity: BTreeMap<String, crate::rules::Severity>,
+    /// Severity of every rule nodex ships at warning that [`Self::severity`]
+    /// does not name. Read through [`crate::rules::Rule::configured_severity`].
+    #[serde(default = "default_rule_severity")]
+    pub default_severity: crate::rules::Severity,
     #[serde(default)]
     pub naming: Vec<NamingRuleConfig>,
     /// Named frontmatter locks, each selecting fields, kinds and an arming
@@ -767,6 +771,7 @@ impl Default for RulesConfig {
     fn default() -> Self {
         Self {
             severity: BTreeMap::new(),
+            default_severity: default_rule_severity(),
             naming: Vec::new(),
             frontmatter_immutable: Vec::new(),
             body_immutable: Vec::new(),
@@ -778,6 +783,10 @@ impl Default for RulesConfig {
             acyclic_relations: default_acyclic_relations(),
         }
     }
+}
+
+fn default_rule_severity() -> crate::rules::Severity {
+    crate::rules::Severity::Warning
 }
 
 pub(crate) fn default_acyclic_relations() -> Vec<String> {
@@ -1288,8 +1297,8 @@ pub struct DetectionConfig {
     /// expected-by-design varies by project, so the judgment lives
     /// here. Rows are evaluated in declared order and the first row
     /// whose selectors match wins; an edge no row matches takes the
-    /// unmatched `unresolved_reference` rule (warning unless promoted by
-    /// `rules.severity`).
+    /// unmatched `unresolved_reference` rule (warning unless `rules.severity`
+    /// or `rules.default_severity` places it otherwise).
     /// Declaring the table replaces this default entirely (the
     /// `rules.acyclic_relations` replacement discipline) — re-declare
     /// the `excluded_target` row to keep it. Evaluated at query/check

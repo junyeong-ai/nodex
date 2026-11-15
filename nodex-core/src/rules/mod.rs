@@ -594,13 +594,24 @@ pub trait Rule: Send + Sync {
     fn severity(&self) -> Severity;
     fn check(&self, ctx: &RuleContext<'_>) -> RuleRun;
 
+    /// The severity the project gives this rule: what `rules.severity` names,
+    /// else `rules.default_severity` for a warning rule whose own block does
+    /// not declare it, else [`Self::severity`].
     fn configured_severity(&self, config: &Config) -> Severity {
-        config
-            .rules
-            .severity
-            .get(self.id())
-            .copied()
-            .unwrap_or_else(|| self.severity())
+        if let Some(severity) = config.rules.severity.get(self.id()) {
+            return *severity;
+        }
+        match self.severity() {
+            Severity::Warning if !self.declares_severity() => config.rules.default_severity,
+            severity => severity,
+        }
+    }
+
+    /// Whether the rule's own config block states its severity, as an
+    /// unresolved-reference policy row does, so no project-wide default
+    /// overrides it.
+    fn declares_severity(&self) -> bool {
+        false
     }
 
     /// Apply project policy before either a read or a write interprets findings.
@@ -1098,6 +1109,33 @@ pub fn introduced_violations(after: Vec<Violation>, before: &[Violation]) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `default_severity = "error"` reaches every warning rule nothing else
+    /// places, the unmatched unresolved-reference rule included; a rule
+    /// `severity` names, a policy row's declared severity and a structural
+    /// rule keep theirs.
+    #[test]
+    fn default_severity_places_only_the_warning_rules_nothing_else_does() {
+        let config: Config = toml::from_str(
+            "[rules]\ndefault_severity = \"error\"\nseverity = { orphan = \"warning\" }\n\
+             [[detection.unresolved_policy]]\nname = \"departed\"\ncause = \"missing\"\n\
+             severity = \"warning\"\n",
+        )
+        .expect("a valid config");
+        config.validate().expect("a config load accepts");
+        let placed = |id: &str| {
+            registered_rules(&config)
+                .iter()
+                .find(|rule| rule.id() == id)
+                .unwrap_or_else(|| panic!("{id} is registered"))
+                .configured_severity(&config)
+        };
+        assert_eq!(placed("superseded_reference"), Severity::Error);
+        assert_eq!(placed("unresolved_reference"), Severity::Error);
+        assert_eq!(placed("orphan"), Severity::Warning);
+        assert_eq!(placed("unresolved_reference/departed"), Severity::Warning);
+        assert_eq!(placed("required_field"), Severity::Error);
+    }
 
     #[test]
     fn direct_evaluation_shares_observations_and_the_next_evaluation_refreshes_them() {

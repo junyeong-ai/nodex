@@ -4432,7 +4432,7 @@ exit: 0
               },
               "severity": {
                 "$ref": "#/$defs/UnresolvedSeverity",
-                "description": "Effective severity assigned by the matching policy row or the\nunmatched `unresolved_reference` rule, including configured promotion."
+                "description": "Effective severity: the matching policy row's, else the unmatched\n`unresolved_reference` rule's as `rules.severity` and\n`rules.default_severity` place it."
               },
               "sought": {
                 "items": {

@@ -18,6 +18,12 @@ use super::{
 /// instance in one registry, computed once on first check.
 pub type SharedClassification = Arc<OnceLock<Vec<UnresolvedEdge>>>;
 
+/// The severity of an unresolved reference no policy row classifies: the
+/// unmatched rule's, as the project places it.
+pub(crate) fn unmatched_severity(config: &crate::config::Config) -> Severity {
+    UnresolvedReferenceRule::fallback(SharedClassification::default()).configured_severity(config)
+}
+
 /// One non-info policy row or the unmatched fallback as a rule.
 pub struct UnresolvedReferenceRule {
     row: Option<UnresolvedPolicyRuleConfig>,
@@ -57,6 +63,10 @@ impl Rule for UnresolvedReferenceRule {
             Some(crate::config::UnresolvedSeverity::Error) => Severity::Error,
             _ => Severity::Warning,
         }
+    }
+
+    fn declares_severity(&self) -> bool {
+        self.row.is_some()
     }
 
     fn description(&self) -> &str {

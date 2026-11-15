@@ -312,7 +312,9 @@ So: move a locked document with `nodex rename`, and give it an id that is not de
 
 ## Rule severity
 
-`[rules] severity = { orphan = "error", unresolved_reference = "error" }` promotes registered warning rules consistently across checks, exports and the write gate. Structural errors cannot be weakened, and unresolved-policy rows own their severity. `init` makes unmatched unresolved references errors.
+`[rules] severity = { orphan = "error", unresolved_reference = "error" }` places registered warning rules consistently across checks, exports and the write gate. Structural errors cannot be weakened, and unresolved-policy rows own their severity. `init` makes unmatched unresolved references errors.
+
+`[rules] default_severity = "error"` gives every warning rule `severity` does not name that severity, unmatched unresolved references included and policy rows excepted. A rule a nodex upgrade adds then fails `check` until the project places it, and `severity = { orphan = "warning" }` keeps one advisory. Writes are gated on the same severities, so a write introducing such a finding is refused: `lifecycle supersede` of a record a live document cites, for one, where `retarget --supersede` repoints the citation in the same write. A `scaffold` from config defaults alone still writes, reporting its new document's own findings as `violations_introduced`. The default, `"warning"`, keeps each rule's own.
 
 ## Unresolved-reference policy
 
