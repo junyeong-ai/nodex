@@ -585,6 +585,41 @@ impl ViolationDetails {
         }
     }
 
+    /// Whether this finding is about the clone a run reads rather than the
+    /// project it judges. A judgment of another commit in the same clone
+    /// meets it too, so no such judgment carried it before.
+    pub fn about_the_clone(&self) -> bool {
+        match self {
+            Self::GitDriftHistoryIncomplete { .. } => true,
+            Self::FrontmatterFieldImmutable { .. }
+            | Self::StatusImmutable { .. }
+            | Self::StatusTransition { .. }
+            | Self::StatusEntry { .. }
+            | Self::BodyImmutable { .. }
+            | Self::ParseFailure { .. }
+            | Self::FieldParse { .. }
+            | Self::RequiredField { .. }
+            | Self::ForbiddenField { .. }
+            | Self::ExplicitField { .. }
+            | Self::FieldType { .. }
+            | Self::FieldEnum { .. }
+            | Self::UnknownField { .. }
+            | Self::CrossField { .. }
+            | Self::Orphan
+            | Self::StaleReview { .. }
+            | Self::GitDrift { .. }
+            | Self::GitDriftUnmeasurable { .. }
+            | Self::FilenamePattern { .. }
+            | Self::SequentialNumbering { .. }
+            | Self::UniqueNumbering { .. }
+            | Self::BodyLine { .. }
+            | Self::External { .. }
+            | Self::Cycle { .. }
+            | Self::UnresolvedReference { .. }
+            | Self::SupersededReference { .. } => false,
+        }
+    }
+
     /// Render the one human-readable line for this violation. The single
     /// source every `Violation::message` derives from.
     pub fn render_message(&self) -> String {

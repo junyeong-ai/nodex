@@ -806,8 +806,10 @@ pub enum BaselineResolution {
 /// as a check of that commit with nothing uncommitted is: what a lock arms
 /// there holds, so a citation it protects is read as protected, and the lock
 /// finds no drift. With no steps either, every lock and step finding the
-/// checked project carries stays reported. A ref that does not carry the
-/// project carried nothing.
+/// checked project carries stays reported, and so does every finding about
+/// the clone rather than a commit's project, which the ref's judgment in the
+/// same clone meets too. A ref that does not carry the project carried
+/// nothing.
 pub fn violations_at(
     repository: &Repository,
     at: &ResolvedRef<'_>,
@@ -842,7 +844,11 @@ pub fn violations_at(
         today,
     )
     .with_context(|| format!("the project at {} could not be judged", at.name))?;
-    Ok(report.violations)
+    Ok(report
+        .violations
+        .into_iter()
+        .filter(|violation| !violation.details.about_the_clone())
+        .collect())
 }
 
 /// Resolve `rules.immutable_baseline` and take the snapshot the write seams
