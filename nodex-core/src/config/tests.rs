@@ -5199,3 +5199,57 @@ severity = "error"
     assert!(parsed.validate().is_err());
     assert!(toml::from_str::<Config>(&config.replace("retarget = \"keep\"", "")).is_err());
 }
+
+/// An external rule names a program and owns its severity: load refuses a
+/// block it could not run and a second place to set what the block sets.
+#[test]
+fn an_external_rule_names_a_program_and_owns_its_severity() {
+    let load = |rules: &str| {
+        toml::from_str::<Config>(rules)
+            .expect("parses")
+            .validate()
+            .map_err(|e| e.to_string())
+    };
+    for (rules, refusal) in [
+        (
+            "[[rules.external]]\nname = \"x\"\ncommand = []\n",
+            "must name a program",
+        ),
+        (
+            "[[rules.external]]\nname = \"x\"\ncommand = [\"\"]\n",
+            "must name a program",
+        ),
+        (
+            "[[rules.external]]\nname = \"x\"\ncommand = [\"a\"]\n\
+             [[rules.external]]\nname = \"x\"\ncommand = [\"b\"]\n",
+            "declared more than once",
+        ),
+        (
+            "[[rules.external]]\nname = \"x\"\ncommand = [\"a\"]\nkinds = [\"nope\"]\n",
+            "nope",
+        ),
+        (
+            "[rules.severity]\n\"external/x\" = \"warning\"\n\
+             [[rules.external]]\nname = \"x\"\ncommand = [\"a\"]\n",
+            "duplicates the severity its own block declares",
+        ),
+    ] {
+        let reason = load(rules).expect_err(rules);
+        assert!(reason.contains(refusal), "{rules}: {reason}");
+    }
+
+    let config = toml::from_str::<Config>(
+        "[rules]\ndefault_severity = \"error\"\n\
+         [[rules.external]]\nname = \"x\"\ncommand = [\"a\"]\nseverity = \"warning\"\n",
+    )
+    .expect("parses");
+    config.validate().expect("loads");
+    let rule = crate::rules::registered_rules(&config)
+        .into_iter()
+        .find(|rule| rule.id() == "external/x")
+        .expect("registered");
+    assert_eq!(
+        rule.configured_severity(&config),
+        crate::rules::Severity::Warning
+    );
+}

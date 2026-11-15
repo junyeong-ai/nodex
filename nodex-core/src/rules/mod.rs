@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 pub mod body_immutable;
 pub mod body_line;
 pub mod detail;
+pub mod external;
 pub mod freshness;
 pub mod frontmatter_immutable;
 pub mod git_drift;
@@ -207,6 +208,9 @@ pub struct RuleContext<'a> {
     /// checked against the same date yields the same report, on any
     /// machine and on any day.
     pub today: NaiveDate,
+    /// What each external rule's program answered for this pass, asked
+    /// before any rule runs ([`external::ExternalAnswers`]).
+    pub external: &'a external::ExternalAnswers,
 }
 
 /// Whether a lock block holds a record of `kind` at `status`: its kind
@@ -449,6 +453,7 @@ fn lock_steps(
                     since: Some(&delta),
                     steps: None,
                     today: ctx.today,
+                    external: ctx.external,
                 };
                 let verdict = rule.evaluate(&reading).violations;
                 permitted |= verdict.is_empty();
@@ -812,6 +817,9 @@ fn rules_with_classification(
     for block in &config.rules.body_line {
         rules.push(Box::new(body_line::BodyLineRule::new(block.clone())));
     }
+    for block in &config.rules.external {
+        rules.push(Box::new(external::ExternalRule::new(block.clone())));
+    }
     // One rule per non-info `[[detection.unresolved_policy]]`
     // row. The instances share one classification cell, so the cause
     // probes (stat-only, in-root) run once per check pass however many
@@ -844,6 +852,11 @@ fn rules_with_classification(
 pub(crate) static UNMEASURED: crate::history::ProjectHistory =
     crate::history::ProjectHistory::unread();
 
+/// The answers of a pass that runs no external rule — every rule's unit
+/// tests that construct a context by hand.
+#[cfg(test)]
+pub(crate) static UNASKED: external::ExternalAnswers = external::ExternalAnswers::none();
+
 /// Test-only helper: build a [`RuleContext`] with a placeholder root.
 /// Lives here so each rule's unit tests can construct a context
 /// without redefining the same boilerplate.
@@ -857,6 +870,7 @@ pub(crate) fn test_ctx<'a>(graph: &'a Graph, config: &'a Config) -> RuleContext<
         since: None,
         steps: None,
         today: chrono::Local::now().date_naive(),
+        external: &UNASKED,
     }
 }
 
@@ -882,7 +896,8 @@ pub struct CheckReport {
 /// Rules that report themselves non-applicable (e.g. diff-aware rules
 /// invoked without `--since`) are surfaced in [`CheckReport::skipped_rules`]
 /// with their reason — silent non-fires are forbidden under
-/// `.claude/rules/config-driven.md`.
+/// `.claude/rules/config-driven.md`. Fails only where an external rule's
+/// program could not answer ([`external`]).
 pub fn check(
     graph: &Graph,
     config: &Config,
@@ -891,7 +906,7 @@ pub fn check(
     since: Since<'_>,
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
-) -> CheckReport {
+) -> crate::error::Result<CheckReport> {
     run_rules(
         registered_rules(config),
         graph,
@@ -922,7 +937,7 @@ pub(crate) fn check_with_unresolved(
     steps: Option<&[crate::ancestry::Step]>,
     unresolved: Vec<crate::query::issues::UnresolvedEdge>,
     today: NaiveDate,
-) -> CheckReport {
+) -> crate::error::Result<CheckReport> {
     let classification = unresolved_reference::SharedClassification::default();
     classification
         .set(unresolved)
@@ -953,7 +968,8 @@ pub(crate) fn run_rules(
     since: Since<'_>,
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
-) -> CheckReport {
+) -> crate::error::Result<CheckReport> {
+    let external = external::ExternalAnswers::ask(&rules, graph, config, files)?;
     let probe = crate::builder::file_probe::FileProbe::default();
     let files = files.with_probe(&probe);
     let ctx = RuleContext {
@@ -964,6 +980,7 @@ pub(crate) fn run_rules(
         since: since.diff(),
         steps,
         today,
+        external: &external,
     };
     let narrowing = match since {
         Since::Narrowed { changes, since, .. } => Some(changes.touched(since)),
@@ -1022,11 +1039,11 @@ pub(crate) fn run_rules(
     });
     skipped.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
 
-    CheckReport {
+    Ok(CheckReport {
         violations,
         skipped_rules: skipped,
         rule_coverage: coverage,
-    }
+    })
 }
 
 /// What makes two findings *the same finding* rather than the same text —
@@ -1181,6 +1198,7 @@ mod tests {
             since: None,
             steps: None,
             today: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            external: &crate::rules::UNASKED,
         };
         assert_eq!(ObservingRule.evaluate(&ctx).subjects, 0);
         assert_eq!(ObservingRule.evaluate(&ctx).subjects, 1);
@@ -1271,7 +1289,8 @@ mod tests {
             Since::None,
             None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
-        );
+        )
+        .unwrap();
 
         let mut accounted: Vec<String> = report
             .rule_coverage
@@ -1308,7 +1327,8 @@ mod tests {
             Since::None,
             None,
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date"),
-        );
+        )
+        .unwrap();
 
         let cycle = report
             .rule_coverage

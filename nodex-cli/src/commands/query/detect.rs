@@ -116,7 +116,7 @@ pub(crate) fn run_issues(
         diff.as_ref(),
         steps.as_deref(),
         today,
-    );
+    )?;
     context.emit_read_with(report, warnings, &config, pretty);
     Ok(())
 }

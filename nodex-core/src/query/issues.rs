@@ -108,9 +108,11 @@ pub struct IssueSummary {
 /// `[[scope.conditional_exclude]]`" (`ExcludedFromScope`). The probe
 /// joins paths against `root` (and the source file's parent directory)
 /// and never reads file contents; it cannot reach beyond the project
-/// root by construction. Callers that need a graph-only computation
-/// can read the individual sub-reports (`find_orphans`, `find_stale`,
-/// `rules::check`) directly.
+/// root by construction. The rule pass also runs every external rule's
+/// program over the documents of its kinds, and fails where one could not
+/// answer ([`crate::rules::external`]). Callers that need a graph-only
+/// computation can read the individual sub-reports (`find_orphans`,
+/// `find_stale`) directly.
 pub fn find_issues(
     graph: &Graph,
     config: &Config,
@@ -119,7 +121,7 @@ pub fn find_issues(
     diff: Option<&crate::diff::GraphDiff>,
     steps: Option<&[crate::ancestry::Step]>,
     today: NaiveDate,
-) -> IssueReport {
+) -> crate::error::Result<IssueReport> {
     let orphans = find_orphans(graph, config, today).entries;
     let stale = find_stale(graph, config, today).map_or_else(Vec::new, |outcome| outcome.entries);
     let probe = crate::builder::file_probe::FileProbe::default();
@@ -142,7 +144,7 @@ pub fn find_issues(
         steps,
         unresolved_edges.clone(),
         today,
-    );
+    )?;
 
     let mut by_category: BTreeMap<String, usize> = BTreeMap::new();
     // Warning and error findings count through their violations. Informational
@@ -166,7 +168,7 @@ pub fn find_issues(
 
     let total = report.violations.len();
 
-    IssueReport {
+    Ok(IssueReport {
         orphans,
         stale,
         unresolved_edges,
@@ -174,7 +176,7 @@ pub fn find_issues(
         skipped_rules: report.skipped_rules,
         rule_coverage: report.rule_coverage,
         summary: IssueSummary { total, by_category },
-    }
+    })
 }
 
 /// Collect every edge whose target failed to resolve during build.
@@ -831,7 +833,8 @@ mod tests {
             None,
             None,
             today,
-        );
+        )
+        .unwrap();
 
         let gated = |rule: &str| -> Vec<&str> {
             report
@@ -890,7 +893,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert_eq!(report.summary.total, 0);
         assert!(report.summary.by_category.is_empty());
     }
@@ -924,7 +928,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert_eq!(report.unresolved_edges.len(), 2);
         assert_eq!(
             report.summary.by_category["violation_unresolved_reference"],
@@ -1214,7 +1219,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(report.unresolved_edges.len(), 1);
         assert_eq!(
@@ -1238,7 +1244,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             report.unresolved_edges[0].severity,
             UnresolvedSeverity::Error
@@ -1266,7 +1273,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(report.unresolved_edges.len(), 1, "edge stays visible");
         assert_eq!(report.summary.by_category["ephemeral-specs"], 1);
@@ -1304,7 +1312,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(report.unresolved_edges.len(), 1);
         assert_eq!(
@@ -1369,7 +1378,8 @@ mod tests {
             None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         let edge = report
             .unresolved_edges
             .iter()

@@ -272,6 +272,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
 
         let rule = UnresolvedReferenceRule::new(
@@ -358,7 +359,8 @@ mod tests {
             crate::rules::Since::None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         let fired: Vec<_> = report
             .violations
             .iter()
@@ -392,7 +394,8 @@ mod tests {
             crate::rules::Since::None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             fresh
                 .violations
@@ -413,7 +416,8 @@ mod tests {
             None,
             vec![],
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert!(
             !seeded
                 .violations
@@ -456,6 +460,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
         let shared = SharedClassification::default();
         let docs_rule = UnresolvedReferenceRule::new(

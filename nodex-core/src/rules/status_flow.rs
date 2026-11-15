@@ -497,6 +497,7 @@ transitions = { proposed = ["active", "archived"], active = ["superseded", "arch
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: Some(steps),
+            external: &crate::rules::UNASKED,
         })
     }
 

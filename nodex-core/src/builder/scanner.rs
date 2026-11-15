@@ -186,6 +186,7 @@ pub struct ProjectFiles<'a> {
     root: &'a Path,
     overlay: &'a [(PathBuf, Proposed)],
     probe: Option<&'a super::file_probe::FileProbe>,
+    work_tree: &'a Path,
 }
 
 impl<'a> ProjectFiles<'a> {
@@ -196,6 +197,7 @@ impl<'a> ProjectFiles<'a> {
             root,
             overlay: &[],
             probe: None,
+            work_tree: root,
         }
     }
 
@@ -207,7 +209,16 @@ impl<'a> ProjectFiles<'a> {
             root,
             overlay,
             probe: None,
+            work_tree: root,
         }
+    }
+
+    /// These files as read from a checkout of the project at `work_tree` —
+    /// the index `check --staged` judges. The bytes stay the checkout's;
+    /// what the project runs, an external rule's program, runs where the
+    /// operator's tree has it installed.
+    pub fn checked_out_from(self, work_tree: &'a Path) -> Self {
+        Self { work_tree, ..self }
     }
 
     pub(crate) fn with_probe<'b>(self, probe: &'b super::file_probe::FileProbe) -> ProjectFiles<'b>
@@ -218,6 +229,7 @@ impl<'a> ProjectFiles<'a> {
             root: self.root,
             overlay: self.overlay,
             probe: self.probe.or(Some(probe)),
+            work_tree: self.work_tree,
         }
     }
 
@@ -225,6 +237,54 @@ impl<'a> ProjectFiles<'a> {
     /// that measure git rather than files.
     pub fn root(&self) -> &'a Path {
         self.root
+    }
+
+    /// The project's directory in the operator's working tree: [`Self::root`]
+    /// unless these files are a checkout ([`Self::checked_out_from`]).
+    pub fn work_tree(&self) -> &'a Path {
+        self.work_tree
+    }
+
+    /// The text each of `nodes` was graphed from in this evaluation, read the
+    /// way the build read it — the proposal's where one names the document
+    /// under any of its spellings, the tree's otherwise — and canonicalized as
+    /// the parser reads it. Bytes that are no longer the ones a node was built
+    /// from refuse as a stale graph rather than pass as a revision the graph
+    /// never read.
+    pub(crate) fn graphed_texts(
+        &self,
+        nodes: &[&crate::model::Node],
+        follow_symlinks: bool,
+    ) -> crate::error::Result<Vec<String>> {
+        let by_entry = overlay_by_entry(self.root, self.overlay, follow_symlinks);
+        nodes
+            .iter()
+            .map(|node| {
+                let text = match proposed_document_content(
+                    self.root,
+                    self.overlay,
+                    by_entry.as_ref(),
+                    &node.path,
+                ) {
+                    Some(proposed) => proposed.to_string(),
+                    None => {
+                        let path = self.root.join(&node.path);
+                        std::fs::read_to_string(&path)
+                            .map_err(|source| crate::error::Error::Io { path, source })?
+                    }
+                };
+                if !node.matches_content(&text) {
+                    return Err(crate::error::Error::StaleGraph {
+                        asked: crate::error::Lookup::Path(node.path.clone()),
+                        divergence: format!(
+                            "{} changed since the graph was built",
+                            crate::path_guard::forward_string(&node.path)
+                        ),
+                    });
+                }
+                Ok(crate::parser::frontmatter::canonicalize(&text).into_owned())
+            })
+            .collect()
     }
 
     /// Whether the project holds readable content at `rel`, a normalised

@@ -2269,7 +2269,8 @@ mod tests {
             crate::rules::Since::None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert!(
             report
                 .violations
@@ -2353,7 +2354,8 @@ mod tests {
             crate::rules::Since::None,
             None,
             crate::test_today(),
-        );
+        )
+        .unwrap();
         assert!(
             report.violations.iter().any(|v| {
                 v.rule_id == "parse_failure"

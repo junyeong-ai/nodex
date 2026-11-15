@@ -492,6 +492,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
 
         let violations = rule.check(&ctx).violations;
@@ -545,6 +546,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
         rule.check(&ctx).violations
     }
@@ -599,6 +601,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
 
         let violations = rule.check(&ctx).violations;
@@ -634,6 +637,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
 
         let violations = rule.check(&ctx).violations;
@@ -684,6 +688,7 @@ mod tests {
             history: &crate::rules::UNMEASURED,
             since: None,
             steps: None,
+            external: &crate::rules::UNASKED,
         };
 
         let violations = rule.check(&ctx).violations;

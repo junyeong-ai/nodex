@@ -524,6 +524,12 @@ trigger = "creation"   # 기록이 따를 생명주기는 첫 커밋에서 정�
 # kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
+# 프로젝트가 둔 프로그램이 ADR을 판정하고, 그 finding으로 check와 쓰기를 막음:
+# [[rules.external]]
+# name = "adr-outline"
+# command = ["python3", "tools/adr-outline.py"]
+# kinds = ["adr"]
+
 # `nodex query annotations`가 보여 주는 본문 마커:
 # [[annotations]]
 # name = "promotes"
@@ -562,7 +568,7 @@ dir = "_index"
 | `[identity]` / `[scaffold.paths]` | 경로가 kind와 id를 추론하는 방식, `scaffold`가 kind마다 만드는 위치 |
 | `[parser]` | 선언한 frontmatter 관계, 본문 `link_patterns`, `extensions`, `wikilink_enabled` |
 | `[schema]` | `required`, `types`, `enums`, `cross_field`, kind별 `overrides`, `mode`, `require_explicit` |
-| `[rules]` | 규칙 severity (`default_severity`, `severity`), 잠금 baseline, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line`, `acyclic_relations` |
+| `[rules]` | 규칙 severity (`default_severity`, `severity`), 잠금 baseline, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line`, `external`, `acyclic_relations` |
 | `[detection]` | stale, orphan, superseded 참조, `git_drift`, `unresolved_policy` 표 |
 | `[[annotations]]` / `[output]` / `[report]` / `[similarity]` / `[search]` | 본문 마커, 산출물 위치, 보고서 한도, 순위 가중치 |
 | `[meta]` | `nodex_version`: 프로젝트를 쓸 수 있는 바이너리 |

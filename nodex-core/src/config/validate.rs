@@ -490,6 +490,15 @@ impl Config {
             }
             if registered
                 .iter()
+                .any(|rule| rule.id() == id && rule.declares_severity())
+            {
+                return Err(Error::Config(format!(
+                    "rules.severity[{id:?}] duplicates the severity its own block declares; \
+                     set it there"
+                )));
+            }
+            if registered
+                .iter()
                 .any(|rule| rule.id() == id && rule.severity() == crate::rules::Severity::Error)
                 && self.rules.severity[id] != crate::rules::Severity::Error
             {
@@ -1898,6 +1907,39 @@ impl Config {
             self.validate_kinds(
                 &format!("rules.body_line[{idx}] ({name:?})", name = bl.name),
                 &bl.kinds,
+            )?;
+        }
+
+        // External rules: a name per block, unique, and a program to run.
+        let mut external_names: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        for (idx, block) in self.rules.external.iter().enumerate() {
+            if block.name.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "rules.external[{idx}].name must be a non-empty string"
+                )));
+            }
+            if !external_names.insert(block.name.as_str()) {
+                return Err(Error::Config(format!(
+                    "rules.external[{idx}].name {:?} is declared more than once; \
+                     names must be unique so violation rule_ids stay distinguishable",
+                    block.name
+                )));
+            }
+            if block
+                .command
+                .first()
+                .is_none_or(|program| program.is_empty())
+            {
+                return Err(Error::Config(format!(
+                    "rules.external[{idx}] ({name:?}).command must name a program as its \
+                     first entry",
+                    name = block.name
+                )));
+            }
+            self.validate_kinds(
+                &format!("rules.external[{idx}] ({name:?})", name = block.name),
+                &block.kinds,
             )?;
         }
 

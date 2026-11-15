@@ -145,7 +145,7 @@ Scalar predicates (`=`, `in`) are rejected on collection fields (`tags`, `covers
 - `unresolved_reference` — always registered: unmatched references, warning unless promoted.
 - `acyclic_relation` — always on. The relation set is config-driven via `rules.acyclic_relations`, default `["implements"]`, and its reach counts those relations' edges; a `supersedes` cycle never reaches it, because `build` refuses one with `CYCLE_DETECTED`.
 
-Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>`.
+Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter_immutable/<name>` · `unresolved_reference/<name>` · [`external/<name>`](#external-rules).
 
 ## Vocabulary rules
 
@@ -153,7 +153,29 @@ Config-driven ids: `body_line/<name>` · `body_immutable/<name>` · `frontmatter
 
 `[[rules.naming]]` — filename patterns, path-scoped: it carries `glob`, not `kinds`.
 
-The content-scoped per-block families — `body_immutable`, `frontmatter_immutable`, `body_line` — and `[[annotations]]` accept an optional `kinds` list. Empty means no restriction; otherwise the rule fires only on nodes whose `kind` appears in it. `[[schema.overrides]]` `kinds` is different: it names the kinds the override applies to, so an empty list is refused at load.
+The content-scoped per-block families — `body_immutable`, `frontmatter_immutable`, `body_line`, `external` — and `[[annotations]]` accept an optional `kinds` list. Empty means no restriction; otherwise the rule fires only on nodes whose `kind` appears in it. `[[schema.overrides]]` `kinds` is different: it names the kinds the override applies to, so an empty list is refused at load.
+
+## External rules
+
+`[[rules.external]]` judges documents with a program the project declares. `name` makes the rule id `external/<name>`. `command` is the program and its arguments: a program named with a path separator resolves against the project root, a bare name is looked up on `PATH`. `kinds` selects the documents it judges (empty = every kind). `severity` is `error` unless the block says `warning`; the block owns it, so `rules.severity` cannot name the rule. `nodex export rules` lists each block's `command`, `kinds` and `protocol`.
+
+`check` in every mode, `query issues` and, for an `error` block, every write gate (`migrate --apply` included) run the program; `build`, `export` and the other `query` leaves never do. nodex runs whatever the block declares, so read `[[rules.external]]` before running nodex in a repository you do not trust. A pass runs the program once, in the project root even when the bytes it judges are the index's (`check --staged`), with one JSON request on stdin, and reads one JSON answer from stdout:
+
+```json
+{"protocol": 1, "rule": "external/adr-outline", "tree": "/abs/project",
+ "documents": [{"id": "adr-0001", "path": "docs/adr/0001.md", "kind": "adr",
+                "status": "active", "title": "…", "content": "…"}]}
+```
+
+```json
+{"protocol": 1, "unjudged": 0,
+ "findings": [{"id": "adr-0001", "message": "no Decision section", "line": 12,
+               "data": {"section": "Decision"}}]}
+```
+
+`content` is the text the pass judges, a proposal's bytes under `check --content` and the write gates, so a program reads documents from the request rather than from disk. `tree` is where the documents a proposal leaves alone are read from: the index's checkout under `check --staged`, and otherwise the project as it stands, which does not yet hold what a proposal changes. A document whose bytes no longer match the graph refuses with `GRAPH_OUTDATED`, as one does under `query issues --allow-stale` once the tree has moved past the snapshot. A finding names a document it was given by `id`, or omits `id` for a finding about the project; `line` is a one-based file line and needs an `id`. `data` is what a finding is: proposals and writes pair findings by rule, document and `data`, so the subject goes there, never its location, and `message` and `line` describe it and may move without the write introducing anything; a path in `data` would make every rename of the document a new finding. `subjects` in `rule_coverage` counts the documents the program judged, and `unjudged` the ones it was given and could not judge. A block whose kinds select no document is not run and reports `subjects: 0`. `check --since` keeps every finding an external rule reports, because nodex cannot tell which documents or files decided it.
+
+A program that does not start, exits non-zero, or answers outside the protocol (an unknown key, another `protocol`, an `id` it was not given, an empty `message`, findings while it counts every document unjudged) refuses the command with `CONFIG_ERROR`, naming the rule and quoting the end of whatever it wrote to stderr. A write gate runs the program over the project before and after the proposal, so an `error` block's cost rides every write.
 
 ## Diff-aware rules
 
@@ -314,9 +336,9 @@ So: move a locked document with `nodex rename`, and give it an id that is not de
 
 ## Rule severity
 
-`[rules] severity = { orphan = "error", unresolved_reference = "error" }` places registered warning rules consistently across checks, exports and the write gate. Structural errors cannot be weakened, and unresolved-policy rows own their severity. `init` makes unmatched unresolved references errors.
+`[rules] severity = { orphan = "error", unresolved_reference = "error" }` places registered warning rules consistently across checks, exports and the write gate. Structural errors cannot be weakened, and unresolved-policy rows and external blocks own their severity. `init` makes unmatched unresolved references errors.
 
-`[rules] default_severity = "error"` gives every warning rule `severity` does not name that severity, unmatched unresolved references included and policy rows excepted. A rule a nodex upgrade adds then fails `check` until the project places it, and `severity = { orphan = "warning" }` keeps one advisory. Writes are gated on the same severities, so a write introducing such a finding is refused: `lifecycle supersede` of a record a live document cites, for one, where `retarget --supersede` repoints the citation in the same write. A `scaffold` from config defaults alone still writes, reporting its new document's own findings as `violations_introduced`. The default, `"warning"`, keeps each rule's own.
+`[rules] default_severity = "error"` gives every warning rule `severity` does not name that severity, unmatched unresolved references included and policy rows and external blocks excepted. A rule a nodex upgrade adds then fails `check` until the project places it, and `severity = { orphan = "warning" }` keeps one advisory. Writes are gated on the same severities, so a write introducing such a finding is refused: `lifecycle supersede` of a record a live document cites, for one, where `retarget --supersede` repoints the citation in the same write. A `scaffold` from config defaults alone still writes, reporting its new document's own findings as `violations_introduced`. The default, `"warning"`, keeps each rule's own.
 
 ## Unresolved-reference policy
 

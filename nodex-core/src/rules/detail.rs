@@ -347,6 +347,18 @@ pub enum ViolationDetails {
         value: Evidence<String>,
         allowed: Vec<String>,
     },
+    /// A finding an external rule's program reported. `data` is what the
+    /// program says the finding is, the whole of its identity beside the
+    /// rule and the document; `message` and `line` only describe it, so a
+    /// finding whose wording or position moved is the same finding.
+    External {
+        message: Evidence<String>,
+        /// One-based file line in the document the finding names.
+        #[serde(default, skip_serializing_if = "Evidence::is_none")]
+        line: Evidence<Option<usize>>,
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        data: serde_json::Map<String, serde_json::Value>,
+    },
     /// A locked frontmatter field changed while the block's lock was armed.
     FrontmatterFieldImmutable {
         /// The commit that violated the lock; absent for an uncommitted change.
@@ -549,6 +561,7 @@ impl ViolationDetails {
             | Self::SequentialNumbering { .. }
             | Self::UniqueNumbering { .. }
             | Self::BodyLine { .. }
+            | Self::External { .. }
             | Self::Cycle { .. }
             | Self::UnresolvedReference { .. }
             | Self::SupersededReference { .. } => None,
@@ -661,6 +674,10 @@ impl ViolationDetails {
                 "line {line}: capture {capture:?} value {value:?} is not in declared enum \
                  {allowed:?}"
             ),
+            Self::External { message, line, .. } => match line.0 {
+                Some(line) => format!("line {line}: {message}"),
+                None => message.0.clone(),
+            },
             Self::FrontmatterFieldImmutable {
                 field,
                 trigger,

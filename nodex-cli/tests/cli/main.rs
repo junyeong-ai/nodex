@@ -26,6 +26,8 @@ mod diff;
 mod docs;
 mod envelope;
 mod export;
+#[cfg(unix)]
+mod external_rules;
 mod history;
 mod init;
 mod lifecycle;

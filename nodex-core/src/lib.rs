@@ -41,8 +41,9 @@ pub use command_result::{
 };
 pub use config::{
     AnnotationConfig, BUILTIN_FRONTMATTER_FIELDS, BodyImmutableMode, BodyImmutableRuleConfig,
-    BodyLineRuleConfig, Config, FrontmatterImmutableRuleConfig, FrontmatterRelation, MetaConfig,
-    RetargetPolicy, SchemaMode, UnresolvedPolicyRuleConfig, UnresolvedSeverity,
+    BodyLineRuleConfig, Config, ExternalRuleConfig, FrontmatterImmutableRuleConfig,
+    FrontmatterRelation, MetaConfig, RetargetPolicy, SchemaMode, UnresolvedPolicyRuleConfig,
+    UnresolvedSeverity,
 };
 pub use diff::{
     BodyChange, EdgeRef, FieldChange, GraphDiff, PathChange, StatusTransition, Touched,
