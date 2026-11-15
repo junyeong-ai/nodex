@@ -156,7 +156,7 @@ before retrying. Rename can leave a surviving move with `id_stability: anchor_fa
 ```bash
 nodex check --staged             # pre-commit: exit 1 blocks the commit
 nodex check --since origin/main  # CI: check out full history (fetch-depth: 0)
-nodex check --since origin/main --introduced  # CI: fail only on what the branch adds
+nodex check --since "$(git merge-base origin/main HEAD)" --introduced  # CI: fail only on what the branch adds
 nodex diff origin/main HEAD
 nodex query dependents <id> --depth 3 --relations implements,supersedes
 nodex impact origin/main HEAD

@@ -65,11 +65,10 @@ pub struct CheckArgs {
     /// rules (e.g. `frontmatter_immutable`).
     #[arg(long, value_name = "REF")]
     pub since: Option<String>,
-    /// Report only what the project did not carry at the `--since` ref, the
-    /// ref judged as a check of that commit judged it under this project's
-    /// config, so a stricter rule holds a change to what it adds without
-    /// failing it on what came before. Lock and step findings, which are
-    /// about the range, are always reported.
+    /// Report only what the project did not carry at the `--since` ref,
+    /// judged under this project's config with the history that commit had,
+    /// so a stricter rule holds a change to what it adds without failing it
+    /// on what came before. Lock and step findings are always reported.
     #[arg(long, requires = "since")]
     pub introduced: bool,
     /// Judge the project as the next commit records it — the index git is
@@ -687,28 +686,24 @@ fn resolve_diff(
     current: Current<'_>,
     today: NaiveDate,
 ) -> Result<DiffResolution> {
-    let mut carried = None;
-    let (mut prior, changes, since) = match args.since.as_deref() {
+    let named = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
             let since = super::git_checkout::ResolvedRef::resolve(&repository, git_ref)?;
-            if args.introduced {
-                carried = Some(super::git_checkout::violations_at(
-                    &repository,
-                    &since,
-                    config,
-                    root,
-                    today,
-                )?);
-            }
+            Some((repository, since))
+        }
+        None => None,
+    };
+    let (mut prior, changes, since) = match &named {
+        Some((repository, since)) => {
             let report_steps = if config.rules.immutable_baseline.is_some() {
                 super::git_checkout::Steps::None
             } else {
                 super::git_checkout::Steps::Range(since.object())
             };
             let mut prior = super::git_checkout::diff_against_ref(
-                &repository,
-                &since,
+                repository,
+                since,
                 config,
                 current,
                 report_steps,
@@ -782,6 +777,17 @@ fn resolve_diff(
             None
         }
         BaselineResolution::NotApplicable => None,
+    };
+    let carried = match &named {
+        Some((repository, since)) if args.introduced => Some(super::git_checkout::violations_at(
+            repository,
+            since,
+            config,
+            diff.is_some(),
+            root,
+            today,
+        )?),
+        _ => None,
     };
     Ok((diff, steps, narrowed, carried, unread))
 }
