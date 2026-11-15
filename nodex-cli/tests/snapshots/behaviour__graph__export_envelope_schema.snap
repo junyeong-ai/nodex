@@ -2034,13 +2034,18 @@ exit: 0
               "name": {
                 "type": "string"
               },
+              "repeatable": {
+                "description": "Whether it takes more than one value.",
+                "type": "boolean"
+              },
               "required": {
                 "type": "boolean"
               }
             },
             "required": [
               "name",
-              "required"
+              "required",
+              "repeatable"
             ],
             "type": "object"
           }
