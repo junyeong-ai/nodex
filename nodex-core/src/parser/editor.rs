@@ -40,18 +40,23 @@ impl FrontmatterEditor {
     /// delimiters). Rejects duplicate top-level keys — they make
     /// "update one scalar" semantics undefined.
     pub fn parse(yaml: &str, path: &Path) -> Result<Self> {
+        Self::of_block(yaml).map_err(|source| Error::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// [`Self::parse`] for a caller that names the document itself.
+    pub(crate) fn of_block(yaml: &str) -> std::result::Result<Self, ParseError> {
         let lines: Vec<String> = yaml.lines().map(String::from).collect();
         let mut key_index = BTreeMap::new();
         for (i, line) in lines.iter().enumerate() {
             if let Some(key) = yaml_text::parse_scalar_key(line)
                 && key_index.insert(key.to_string(), i).is_some()
             {
-                return Err(Error::Parse {
-                    path: path.to_path_buf(),
-                    source: ParseError::InvalidField {
-                        field: key.to_string(),
-                        expected: "exactly one declaration".into(),
-                    },
+                return Err(ParseError::InvalidField {
+                    field: key.to_string(),
+                    expected: "exactly one declaration".into(),
                 });
             }
         }

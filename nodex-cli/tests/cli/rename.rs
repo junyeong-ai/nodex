@@ -245,6 +245,42 @@ fn rename_and_retarget_previews_report_the_write_and_make_none() {
     }
 }
 
+/// `covers` names documents by path, so a move repoints it as it repoints a
+/// link: the rename leaves the project with no reference naming nothing, and
+/// the code path beside it as it was.
+#[test]
+fn rename_repoints_the_covers_that_named_the_moved_document() {
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n[detection]\norphan_ok_kinds = [\"generic\"]\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/req.md",
+        "---\nid: generic-req\ntitle: R\nkind: generic\nstatus: active\n---\n# R\n",
+    );
+    write_doc(
+        root,
+        "docs/plan.md",
+        "---\nid: generic-plan\ntitle: P\nkind: generic\nstatus: active\n\
+         covers:\n  - docs/req.md\n  - src/a.rs\n---\n# P\n",
+    );
+    write_doc(root, "src/a.rs", "// a\n");
+    nodex(root).arg("build").assert().success();
+
+    run_json(nodex(root).args(["rename", "docs/req.md", "docs/moved/req.md"]));
+    assert_eq!(
+        fs::read_to_string(root.join("docs/plan.md")).unwrap(),
+        "---\nid: generic-plan\ntitle: P\nkind: generic\nstatus: active\n\
+         covers:\n  - \"docs/moved/req.md\"\n  - \"src/a.rs\"\n---\n# P\n"
+    );
+    let check = run_json(nodex(root).arg("check"));
+    assert_eq!(check["violations"], serde_json::json!([]), "{check}");
+}
+
 #[test]
 fn rename_refuses_a_directory_source() {
     // rename moves a single document; a directory source would slide a

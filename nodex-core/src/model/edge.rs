@@ -203,9 +203,9 @@ pub(crate) const ID_RESOLVED_RELATIONS: &[&str] = &[
 ];
 
 /// The relation a body reference is resolved as when the asker has no
-/// relation of its own to offer. Every reference the rewriter surfaces is
-/// a body reference — the id-resolved and path-only relations are
-/// producible only by their frontmatter fields, which it never reads —
+/// relation of its own to offer. Every reference the rewriter's body reader
+/// surfaces is a body reference — the id-resolved and path-only relations
+/// are producible only by their frontmatter fields, which it never reads —
 /// and `references` resolves in document-reference mode exactly as all of
 /// them do, so asking the ladder under this name shifts no semantics.
 pub(crate) const BODY_REFERENCE_RELATION: &str = "references";
