@@ -1354,6 +1354,79 @@ fn gate_suppression_counts_what_the_envelope_stops_carrying() {
     );
 }
 
+/// A shallow clone, `actions/checkout`'s default, holds too little history to
+/// count drift, and an undercount would read as no drift: the rule says so
+/// once, at its own severity, and judges none of the documents it could not
+/// count.
+#[test]
+fn a_shallow_clone_does_not_count_drift() {
+    let tmp = scratch();
+    let origin = tmp.path().join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    let git = git_runner(&origin);
+    assert!(git(&["init", "-q"]).status.success());
+    fs::write(
+        origin.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [detection]\ngit_drift_threshold = 1\norphan_ok_kinds = [\"generic\"]\n\
+         [rules]\nseverity = { git_drift = \"error\" }\n",
+    )
+    .unwrap();
+    write_doc(
+        &origin,
+        "docs/d.md",
+        "---\nid: generic-d\ntitle: D\nkind: generic\nstatus: active\n\
+         reviewed: 2020-01-01\ncovers:\n  - \"src/a.rs\"\n---\n# D\n",
+    );
+    for n in 0..3 {
+        write_doc(&origin, "src/a.rs", &format!("// {n}\n"));
+        assert!(git(&["add", "-A"]).status.success());
+        assert!(git(&["commit", "-q", "-m", "covered"]).status.success());
+    }
+    let url = format!("file://{}", origin.display());
+    assert!(
+        git_runner(tmp.path())(&["clone", "-q", "--depth", "1", &url, "shallow"])
+            .status
+            .success()
+    );
+
+    let output = nodex(&tmp.path().join("shallow"))
+        .arg("check")
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let data = &envelope["data"];
+    let found: Vec<(&str, &Value, &str)> = data["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .map(|v| {
+            (
+                v["rule_id"].as_str().expect("rule id"),
+                &v["node_id"],
+                v["details"]["type"].as_str().expect("type"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [("git_drift", &Value::Null, "git_drift_history_incomplete")],
+        "{envelope}"
+    );
+    let coverage = data["rule_coverage"]
+        .as_array()
+        .expect("coverage")
+        .iter()
+        .find(|c| c["rule_id"] == "git_drift")
+        .expect("git_drift ran");
+    assert_eq!(
+        (&coverage["subjects"], &coverage["unjudged"]),
+        (&json!(0), &json!(1))
+    );
+    assert_eq!(output.status.code(), Some(1));
+}
+
 #[test]
 fn only_a_working_tree_check_keeps_the_drift_history() {
     // `check --content` is the read-only gate: it counts drift from the

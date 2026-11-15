@@ -296,8 +296,12 @@ evidence.
   time of day. Its recorded bindings are read at construction, so a failure refuses
   the command instead of moving a verdict. Both keep a `KeptFile` (history.json
   keys HEAD, binary and project prefix; recorded.json also the graph config hash)
-  and extend a reachable kept reading only by new commits. Shallow/graft/replace
-  history bypasses drift persistence and refuses recorded bindings.
+  and extend a reachable kept reading only by new commits. A clone that cannot
+  answer for its whole history (`history::incomplete_history`, the one question
+  every reader asks) is refused for recorded bindings and left uncounted for
+  drift (`DriftHistory::incomplete`: its documents unjudged, one node-less
+  finding at the rule's severity), since drift has a typed unknown and a policy
+  row has none.
   recorded.json is the one ledger of what history recorded: `find_history`
   lists from it too. Only working-tree/index check refreshes and reports cache
   IO, and `nodex history` for recorded.json; proposal gates and other readers consult without writing.

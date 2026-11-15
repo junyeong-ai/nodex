@@ -279,7 +279,7 @@ sequenceDiagram
   exec nodex check --staged
   ```
 
-- `check --since <ref>` narrows the report to what a range changed and judges status moves commit by commit; check out with `fetch-depth: 0` in CI. `--introduced` reports only what `<ref>` did not carry, so a stricter rule can gate new work while old findings remain.
+- `check --since <ref>` narrows the report to what a range changed and judges status moves commit by commit; check out with `fetch-depth: 0` in CI, which `git_drift` needs as well. `--introduced` reports only what `<ref>` did not carry, so a stricter rule can gate new work while old findings remain.
 
 ### Lock what a record has settled
 

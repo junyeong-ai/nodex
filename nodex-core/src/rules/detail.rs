@@ -314,6 +314,14 @@ pub enum ViolationDetails {
         targets: Vec<String>,
         reviewed: String,
     },
+    /// The clone's history cannot be counted, so no document offering a path
+    /// to count is judged. About the clone, not a document: the cause and how
+    /// many documents it leaves unjudged are evidence of its state, and the
+    /// remedy is the same whatever they are.
+    GitDriftHistoryIncomplete {
+        reason: Evidence<String>,
+        documents: Evidence<usize>,
+    },
     /// A filename does not match its configured pattern.
     FilenamePattern {
         /// Evidence: the document is the subject and carries the node id;
@@ -557,6 +565,7 @@ impl ViolationDetails {
             | Self::StaleReview { .. }
             | Self::GitDrift { .. }
             | Self::GitDriftUnmeasurable { .. }
+            | Self::GitDriftHistoryIncomplete { .. }
             | Self::FilenamePattern { .. }
             | Self::SequentialNumbering { .. }
             | Self::UniqueNumbering { .. }
@@ -655,6 +664,10 @@ impl ViolationDetails {
                 "drift is unmeasurable for every target this document offers ({}), so nothing \
                  gates it against reviewed={reviewed}; point them at paths the repository tracks",
                 targets.join(", ")
+            ),
+            Self::GitDriftHistoryIncomplete { reason, documents } => format!(
+                "drift is not counted for {documents} document(s): {reason}; fetch the whole \
+                 history (`git fetch --unshallow`, or `fetch-depth: 0` in CI) to count it"
             ),
             Self::FilenamePattern { filename, pattern } => {
                 format!("filename {filename:?} does not match pattern {pattern:?}")

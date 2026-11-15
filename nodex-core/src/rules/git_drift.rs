@@ -121,6 +121,11 @@ impl Rule for GitDriftRule {
         let mut violations = Vec::new();
         let mut subjects = 0;
         let mut unjudged = 0;
+        // A clone that cannot count drift leaves every document offering a
+        // path to count unjudged, and the cause is the clone's, so it is said
+        // once rather than as each document's.
+        let incomplete = ctx.history.drift().incomplete();
+        let mut uncounted = 0;
 
         for node in ctx.graph.nodes().values() {
             if ctx.config.is_terminal(node.status.as_str()) {
@@ -129,6 +134,7 @@ impl Rule for GitDriftRule {
             let Some(reviewed) = node.reviewed else {
                 continue;
             };
+            let mut countable = false;
             let mut total_commits: u32 = 0;
             let mut hottest: Option<(String, u32)> = None;
             // What the node offered to measure, and what could be. A node
@@ -153,6 +159,10 @@ impl Rule for GitDriftRule {
                         continue;
                     }
                 };
+                if incomplete.is_some() {
+                    countable = true;
+                    continue;
+                }
                 // The environment is already verified, so a residual
                 // `None` is git having gone unread — skip the edge rather
                 // than count it as zero drift.
@@ -167,6 +177,11 @@ impl Rule for GitDriftRule {
                 }
             }
 
+            if countable {
+                unjudged += 1;
+                uncounted += 1;
+                continue;
+            }
             if offered > 0 && measured == 0 {
                 unjudged += 1;
                 unmeasured.sort();
@@ -200,6 +215,21 @@ impl Rule for GitDriftRule {
                     },
                 ));
             }
+        }
+
+        if let Some(reason) = incomplete
+            && uncounted > 0
+        {
+            violations.push(Violation::new(
+                self.id(),
+                self.severity(),
+                None,
+                None,
+                ViolationDetails::GitDriftHistoryIncomplete {
+                    reason: Evidence(reason.to_string()),
+                    documents: Evidence(uncounted),
+                },
+            ));
         }
 
         RuleRun::new(subjects, violations).unjudged(unjudged)
@@ -311,6 +341,8 @@ pub struct DriftHistory {
     /// otherwise.
     at: Option<String>,
     repository: OnceLock<Option<Repository>>,
+    /// Why this clone's history cannot be counted, asked once.
+    incomplete: OnceLock<Option<String>>,
     /// The reading at the commit read, taken once however many passes ask
     /// for it.
     head: OnceLock<Option<Arc<History>>>,
@@ -344,6 +376,7 @@ impl DriftHistory {
             kept: None,
             at: None,
             repository: OnceLock::new(),
+            incomplete: OnceLock::new(),
             head: OnceLock::new(),
             readings: RwLock::new(BTreeMap::new()),
         }
@@ -406,6 +439,16 @@ impl DriftHistory {
             .as_ref()
     }
 
+    /// Why drift cannot be counted in this clone, where it cannot
+    /// (`history::incomplete_history`): a commit the clone does not
+    /// reach is one no count includes, so no reading is taken there, and
+    /// [`Self::commits_since`] answers nothing rather than an undercount.
+    pub fn incomplete(&self) -> Option<&str> {
+        self.incomplete
+            .get_or_init(|| crate::history::incomplete_history(self.repository()?))
+            .as_deref()
+    }
+
     /// What a refreshing reading could not do with the kept file: read one
     /// that was there, or store the one it took. Always empty for a reading
     /// that only consults the file.
@@ -447,19 +490,15 @@ impl DriftHistory {
     }
 
     fn walk_head(&self) -> Option<History> {
+        if self.incomplete().is_some() {
+            return None;
+        }
         let repository = self.repository()?;
         let head = match &self.at {
             Some(commit) => commit.clone(),
             None => repository.head().ok()??,
         };
-        // A history git can reshape in place has no reading its head
-        // commit names, so there is nothing to consult or keep for it; an
-        // unanswered question about it is read the same way.
-        let kept = self
-            .kept
-            .as_ref()
-            .filter(|_| matches!(repository.reshapes_history(), Ok(false)));
-        let Some(kept) = kept else {
+        let Some(kept) = &self.kept else {
             return History::read(repository, &head).ok();
         };
         let prefix = repository.prefix().to_str();
@@ -506,6 +545,9 @@ impl DriftHistory {
     /// reading exists to remove, and a repository that cannot be walked
     /// does not become walkable mid-pass.
     fn reading(&self, revisions: &str) -> Option<Arc<History>> {
+        if self.incomplete().is_some() {
+            return None;
+        }
         if let Some(reading) = self
             .readings
             .read()
@@ -1174,10 +1216,11 @@ mod tests {
             }
         }
 
-        /// A history git can reshape in place has no reading its head names:
-        /// the kept file is neither consulted nor written.
+        /// A history git can reshape in place is not counted: an undercount
+        /// would read as no drift, and the kept file is neither consulted nor
+        /// written.
         #[test]
-        fn a_history_git_can_reshape_is_neither_consulted_nor_kept() {
+        fn a_history_git_can_reshape_is_not_counted() {
             let dir = history_repo();
             let root = dir.path();
             commit_on(root, day(2), 9, &[("src/a.rs", "1\n")]);
@@ -1188,7 +1231,8 @@ mod tests {
             let planted = std::fs::read(kept_file(root)).unwrap();
             run_git(root, &["replace", &first, &head_of(root)]);
             let reshaped = DriftHistory::refreshing(&measured(), root);
-            assert_eq!(ghost(&reshaped), Some(0));
+            assert!(reshaped.incomplete().is_some());
+            assert_eq!(ghost(&reshaped), None);
             assert_eq!(
                 std::fs::read(kept_file(root)).unwrap(),
                 planted,

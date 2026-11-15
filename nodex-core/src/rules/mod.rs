@@ -998,11 +998,12 @@ pub(crate) fn run_rules(
             // findings over an empty population has read the project in two
             // frames — the failure the census exists to expose, arriving in
             // the census itself. Cheap, and it holds for every rule: a
-            // finding is always *about* a member of the guarded population,
-            // however many findings one member draws.
+            // finding is always *about* a member of the population the scope
+            // selected — one the rule judged, or one it reports it could not
+            // — however many findings one member draws.
             debug_assert!(
-                run.violations.is_empty() || run.subjects > 0,
-                "{} reported {} violation(s) over an empty subject set",
+                run.violations.is_empty() || run.subjects + run.unjudged > 0,
+                "{} reported {} violation(s) over an empty population",
                 rule.id(),
                 run.violations.len()
             );
