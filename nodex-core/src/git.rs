@@ -1273,7 +1273,7 @@ fn file_events(stream: &[u8]) -> io::Result<Vec<(Vec<u8>, FileEvent)>> {
         // first entry.
         while let Some(entry) = fields
             .get(at)
-            .map(|field| field.strip_prefix(b"\n").unwrap_or(field))
+            .map(|field| field.trim_prefix(b"\n"))
             .and_then(|field| field.strip_prefix(b":"))
         {
             let path = fields

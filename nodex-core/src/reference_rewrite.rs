@@ -786,7 +786,7 @@ fn moved_target(
     // The ladder is asked about the reference as it is written, `./` and
     // all: the marker names the frame, and taking it off first is asking
     // about a reference the document does not hold.
-    let normalized = forward.strip_prefix("./").unwrap_or(&forward);
+    let normalized = forward.trim_prefix("./");
     let PathBinding::Bound(named) = path_binding(
         form.syntax(),
         &forward,
