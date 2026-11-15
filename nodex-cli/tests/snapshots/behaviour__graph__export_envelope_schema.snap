@@ -428,24 +428,44 @@ exit: 0
               }
             ]
           },
+          "ProposalChange": {
+            "description": "What one `check` proposal does to its path.",
+            "oneOf": [
+              {
+                "const": "content",
+                "description": "`--content PATH=SOURCE`: the path would hold these bytes.",
+                "type": "string"
+              },
+              {
+                "const": "removal",
+                "description": "`--remove PATH`: the file at the path would be gone.",
+                "type": "string"
+              }
+            ]
+          },
           "ProposalEntry": {
-            "description": "One proposed document's verdict in a `check --content` run. Each\n`--content PATH=SOURCE` pair yields one entry, in invocation order,\nso a clean or out-of-scope proposal is reported as checked rather\nthan vanishing into an empty violation list (no silent green). The\nproposal's introduced violations are not re-nested here — they live\nonce in [`CheckResult::violations`], each carrying its `path`, so a\nconsumer groups by `path` without the data being duplicated. An\nitems-list element nested in [`CheckResult::proposals`], hence the\n`*Entry` name.",
+            "description": "One proposal's verdict in a `check --content` / `--remove` run. Each\n`--content PATH=SOURCE` pair yields one entry, then each `--remove\nPATH`, in invocation order, so a clean or out-of-scope proposal is\nreported as checked rather than vanishing into an empty violation list\n(no silent green). The proposal's introduced violations are not\nre-nested here — they live once in [`CheckResult::violations`], each\ncarrying its `path`, so a consumer groups by `path` without the data\nbeing duplicated. An items-list element nested in\n[`CheckResult::proposals`], hence the `*Entry` name.",
             "properties": {
+              "change": {
+                "$ref": "#/$defs/ProposalChange",
+                "description": "What the proposal does to the path."
+              },
               "has_path_errors": {
                 "description": "`true` when an introduced Error-severity violation is *attributed to\nthis proposal's own path* (a violation whose `path` equals this\none). The name says the scope: a finding keyed to somebody else's\npath flips no entry's flag here — a `unique_numbering` collision is\nkeyed to the first colliding path, which may be a pre-existing doc\nrather than this proposal. A `cycle` finding names the document it\ncaught, so it flips that document's entry and only that one. Read from\nthe judged set for the reason [`CheckResult::has_errors`] is, so under\n`--severity` this can be `true` while [`CheckResult::violations`]\nshows nothing for the path: the list is what is displayed, this is\nwhat the gate decided. The run-wide verdict is `has_errors`.",
                 "type": "boolean"
               },
               "in_scope": {
-                "description": "Whether the path is in scan scope. A `false` here explains a\nclean verdict that validated nothing (nodex governs no document\nthere) — the same fact the out-of-scope warning surfaces.",
+                "description": "Whether the path is in scan scope: for proposed content, as the\nproposal leaves it, and for a removal, as the working tree holds it.\nA `false` for proposed content explains a clean verdict that\nvalidated nothing (nodex governs no document there) — the same fact\nthe out-of-scope warning surfaces. A removal of a file nodex governs\nno document at is still judged: what cited it is.",
                 "type": "boolean"
               },
               "path": {
-                "description": "Normalized, forward-slash document path the proposed bytes target.",
+                "description": "Normalized, forward-slash path the proposal changes.",
                 "type": "string"
               }
             },
             "required": [
               "path",
+              "change",
               "in_scope",
               "has_path_errors"
             ],
@@ -1523,14 +1543,14 @@ exit: 0
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "`check [--severity --since | --content]` result. The CLI envelope is\nricher than the core [`crate::rules::CheckReport`] because it also\nexposes the post-filter violation count and the typed pass/fail flag\nthe runner uses to decide the exit code (1 vs 0). Keeping it a\ndedicated `*Result` type means the envelope-schema entry for `check`\nis derived from this struct — no hand-rolled JSON shape can drift\nfrom what the command actually emits.",
+        "description": "`check [--severity --since | --content --remove]` result. The CLI envelope is\nricher than the core [`crate::rules::CheckReport`] because it also\nexposes the post-filter violation count and the typed pass/fail flag\nthe runner uses to decide the exit code (1 vs 0). Keeping it a\ndedicated `*Result` type means the envelope-schema entry for `check`\nis derived from this struct — no hand-rolled JSON shape can drift\nfrom what the command actually emits.",
         "properties": {
           "has_errors": {
             "description": "`true` when any violation the rules judged has severity `Error` —\ndrives the CLI exit-code-1 contract. Read from the judged set, not\nfrom `violations`: `--severity` narrows what is listed, and a verdict\nthat followed the listing would report a project holding errors as\ngreen to whoever filtered them out of view. A finding the response\nstops reporting at all ([`Self::reported_beside_the_list`]) is\ndisclosed as `gate_suppression`, so `has_errors` disagreeing with the\nlist on screen always has a stated reason — either that warning, or\n`standing` still holding the finding the list dropped.",
             "type": "boolean"
           },
           "proposals": {
-            "description": "Per-proposal verdicts, present only for `check --content` (one\nentry per `PATH=SOURCE` pair, in invocation order). `None` for\nproject-wide and `--since` checks, which have no proposals.",
+            "description": "Per-proposal verdicts, present only for `check --content` /\n`--remove` (one entry per proposal, as [`ProposalEntry`] orders\nthem). `None` for project-wide and `--since` checks, which have no\nproposals.",
             "items": {
               "$ref": "#/$defs/ProposalEntry"
             },

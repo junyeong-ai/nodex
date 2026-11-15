@@ -236,22 +236,27 @@ pub struct BuildResult {
     pub parse_failures: Vec<crate::model::ParseFailure>,
 }
 
-/// One proposed document's verdict in a `check --content` run. Each
-/// `--content PATH=SOURCE` pair yields one entry, in invocation order,
-/// so a clean or out-of-scope proposal is reported as checked rather
-/// than vanishing into an empty violation list (no silent green). The
-/// proposal's introduced violations are not re-nested here — they live
-/// once in [`CheckResult::violations`], each carrying its `path`, so a
-/// consumer groups by `path` without the data being duplicated. An
-/// items-list element nested in [`CheckResult::proposals`], hence the
-/// `*Entry` name.
+/// One proposal's verdict in a `check --content` / `--remove` run. Each
+/// `--content PATH=SOURCE` pair yields one entry, then each `--remove
+/// PATH`, in invocation order, so a clean or out-of-scope proposal is
+/// reported as checked rather than vanishing into an empty violation list
+/// (no silent green). The proposal's introduced violations are not
+/// re-nested here — they live once in [`CheckResult::violations`], each
+/// carrying its `path`, so a consumer groups by `path` without the data
+/// being duplicated. An items-list element nested in
+/// [`CheckResult::proposals`], hence the `*Entry` name.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProposalEntry {
-    /// Normalized, forward-slash document path the proposed bytes target.
+    /// Normalized, forward-slash path the proposal changes.
     pub path: String,
-    /// Whether the path is in scan scope. A `false` here explains a
-    /// clean verdict that validated nothing (nodex governs no document
-    /// there) — the same fact the out-of-scope warning surfaces.
+    /// What the proposal does to the path.
+    pub change: ProposalChange,
+    /// Whether the path is in scan scope: for proposed content, as the
+    /// proposal leaves it, and for a removal, as the working tree holds it.
+    /// A `false` for proposed content explains a clean verdict that
+    /// validated nothing (nodex governs no document there) — the same fact
+    /// the out-of-scope warning surfaces. A removal of a file nodex governs
+    /// no document at is still judged: what cited it is.
     pub in_scope: bool,
     /// `true` when an introduced Error-severity violation is *attributed to
     /// this proposal's own path* (a violation whose `path` equals this
@@ -267,7 +272,17 @@ pub struct ProposalEntry {
     pub has_path_errors: bool,
 }
 
-/// `check [--severity --since | --content]` result. The CLI envelope is
+/// What one `check` proposal does to its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalChange {
+    /// `--content PATH=SOURCE`: the path would hold these bytes.
+    Content,
+    /// `--remove PATH`: the file at the path would be gone.
+    Removal,
+}
+
+/// `check [--severity --since | --content --remove]` result. The CLI envelope is
 /// richer than the core [`crate::rules::CheckReport`] because it also
 /// exposes the post-filter violation count and the typed pass/fail flag
 /// the runner uses to decide the exit code (1 vs 0). Keeping it a
@@ -302,9 +317,10 @@ pub struct CheckResult {
     /// list on screen always has a stated reason — either that warning, or
     /// `standing` still holding the finding the list dropped.
     pub has_errors: bool,
-    /// Per-proposal verdicts, present only for `check --content` (one
-    /// entry per `PATH=SOURCE` pair, in invocation order). `None` for
-    /// project-wide and `--since` checks, which have no proposals.
+    /// Per-proposal verdicts, present only for `check --content` /
+    /// `--remove` (one entry per proposal, as [`ProposalEntry`] orders
+    /// them). `None` for project-wide and `--since` checks, which have no
+    /// proposals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposals: Option<Vec<ProposalEntry>>,
     /// Warning-severity violations the proposed nodes carry in the

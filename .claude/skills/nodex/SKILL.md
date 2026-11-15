@@ -75,7 +75,9 @@ choosing a lifecycle change; orphan status or an old review date is not a verdic
 1. Hand edit: pipe the new bytes to `nodex check --content <path>=-`. Exit 0
    with every `data.proposals[].in_scope` true: write the file (an out-of-scope
    path validated nothing). Exit 1: fix the proposal and re-run. Exit 2: nothing
-   was judged; read `error`.
+   was judged; read `error`. Before deleting a file, ask
+   `nodex check --remove <path>` with a `--content` pair for each edit that
+   drops a citation of it; the exit codes read the same.
 2. Tool write: run `scaffold`, `rename` or `retarget` with `--dry-run` first. It
    runs the same gates and writes nothing (`scaffold` reports `written: false`,
    `rename` and `retarget` `completion: planned`); read its warnings
@@ -86,6 +88,7 @@ choosing a lifecycle change; orphan status or an old review date is not a verdic
 ```bash
 nodex check --content docs/a.md=- < proposal.md
 nodex check --content docs/a.md=- --content docs/b.md=b.md
+nodex check --remove docs/old.md --content docs/b.md=- < b-without-link.md
 nodex scaffold --kind <kind> --title "<title>" --path docs/new.md --dry-run
 nodex retarget <old-id> <new-id> --supersede --dry-run
 nodex check
@@ -96,7 +99,7 @@ Read the [write gate](reference/commands.md#check) and the relevant command befo
 mutating. `check --content` validates proposed bytes in one combined graph;
 `SOURCE` is stdin (`-`) or a file relative to the invoking directory. A clean
 verdict does not certify explicit metadata unless the schema requires it.
-`--content` excludes `--staged` and `--since`.
+`--content` and `--remove` exclude `--staged` and `--since`.
 
 For reference findings, inspect `details.sources` (`sources` on unresolved listings)
 before proposing an edit; protection constrains modification and does not prove

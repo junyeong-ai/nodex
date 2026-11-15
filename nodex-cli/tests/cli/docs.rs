@@ -370,6 +370,7 @@ cross_field = [{ when = "status=superseded", require = "superseded_by" }]
             "has_errors": true,
             "proposals": [{
                 "path": "docs/decisions/0003-grpc-api.md",
+                "change": "content",
                 "in_scope": true,
                 "has_path_errors": true
             }]

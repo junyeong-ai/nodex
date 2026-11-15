@@ -981,3 +981,93 @@ fn check_content_does_not_mutate_cache() {
     let after = fs::read(&cache_path).expect("cache.json still present");
     assert_eq!(before, after, "check --content must not mutate cache.json");
 }
+
+#[test]
+fn check_remove_judges_a_removal_with_the_edits_that_repoint_its_citations() {
+    // Asked before a document goes: the removal is judged by what cites it,
+    // and together with the edit that drops the citation it is one change.
+    let tmp = scratch();
+    let root = tmp.path();
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [[detection.unresolved_policy]]\nname = \"broken\"\ncause = \"missing\"\nseverity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: a\ntitle: A\nstatus: active\n---\n# A\n",
+    );
+    let citing =
+        "---\nid: b\ntitle: B\nstatus: active\norphan_ok: true\n---\n# B\n\nSee [a](a.md).\n";
+    write_doc(root, "docs/b.md", citing);
+
+    let out = nodex(root)
+        .args(["check", "--remove", "docs/a.md"])
+        .assert()
+        .failure()
+        .code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    assert_eq!(
+        env.pointer("/data/proposals"),
+        Some(&serde_json::json!([{
+            "path": "docs/a.md",
+            "change": "removal",
+            "in_scope": true,
+            "has_path_errors": false
+        }])),
+        "{env}"
+    );
+    let refused: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(refused, ["unresolved_reference/broken"], "{env}");
+
+    nodex(root)
+        .args(["check", "--remove", "docs/a.md", "--content", "docs/b.md=-"])
+        .write_stdin(citing.replace("\n\nSee [a](a.md).", ""))
+        .assert()
+        .success();
+
+    // The verdict is the one `check` reaches once the file is gone.
+    fs::remove_file(root.join("docs/a.md")).unwrap();
+    let out = nodex(root).arg("check").assert().failure().code(1);
+    let env: Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+    let after: Vec<&str> = env
+        .pointer("/data/violations")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.get("rule_id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(after, refused, "{env}");
+
+    // A path that holds no file, a directory, and a path proposed twice.
+    for args in [
+        &["--remove", "docs/gone.md"][..],
+        &["--remove", "docs"],
+        &["--content", "docs/b.md=-", "--remove", "docs/b.md"],
+    ] {
+        let out = nodex(root)
+            .arg("check")
+            .args(args)
+            .write_stdin(citing)
+            .assert()
+            .failure()
+            .code(2);
+        let env: Value =
+            serde_json::from_str(String::from_utf8_lossy(&out.get_output().stdout).trim()).unwrap();
+        assert_eq!(
+            env.pointer("/error/code").and_then(Value::as_str),
+            Some("INVALID_ARGUMENT"),
+            "{args:?}: {env}"
+        );
+    }
+}

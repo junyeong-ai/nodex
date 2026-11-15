@@ -241,7 +241,7 @@ $ nodex check --content docs/decisions/0003-grpc-api.md=draft.md --pretty
   "rule_coverage": [ ..., { "rule_id": "required_field", "unit": "nodes", "subjects": 4, "unjudged": 0 }, ... ],
   "total": 2,
   "has_errors": true,
-  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "in_scope": true, "has_path_errors": true } ],
+  "proposals": [ { "path": "docs/decisions/0003-grpc-api.md", "change": "content", "in_scope": true, "has_path_errors": true } ],
   "standing": [ { "rule_id": "orphan", "severity": "warning", "node_id": "adr-0003-grpc-api", ... } ]
 } }
 ```
@@ -269,7 +269,7 @@ sequenceDiagram
   N-->>G: exit 0 통과 · exit 1 차단
 ```
 
-- `check --content <path>=<source>`는 제안 바이트(`-`는 stdin)를 작업 트리에 겹쳐 놓고, 제안이 새로 만드는 위반에서 실패합니다. `--content` 쌍을 여러 개 주면 하나의 변경으로 판정합니다.
+- `check --content <path>=<source>`는 제안 바이트(`-`는 stdin)를 작업 트리에 겹쳐 놓고, 제안이 새로 만드는 위반에서 실패합니다. `--content` 쌍을 여러 개 주면 하나의 변경으로 판정하고, `--remove <path>`는 그 변경에 파일 삭제를 더하므로 문서를 지우는 일과 그 문서를 인용하는 곳을 고치는 일을 함께 판정합니다.
 - 쓰기 명령도 쓰기 전에 같은 질문을 합니다. `scaffold`, `rename`, `retarget`은 `--dry-run`을 받아, 모든 게이트를 실행하고 아무것도 쓰지 않습니다.
 - `check --staged`는 다음 커밋이 기록할 내용을, index에 담긴 `nodex.toml`로 판정합니다.
 
@@ -339,7 +339,7 @@ severity = "error"
 | `nodex build [--full]` | 그래프 스냅샷 빌드, `--full`은 캐시 무시 |
 | `nodex status` | 스냅샷이 작업 트리와 일치하는지 |
 | `nodex classify <path>...` | 그래프 없이 경로별 scope 판정과 추론 kind, id, status |
-| `nodex check` | 등록된 모든 룰, `--content`, `--staged`, `--since <ref>`, `--baseline <ref>` |
+| `nodex check` | 등록된 모든 룰, `--content`, `--remove`, `--staged`, `--since <ref>`, `--baseline <ref>` |
 | `nodex report` | 읽기 쉬운 요약 `GRAPH.md` 작성 |
 | `nodex diff <a> <b>` | 두 git ref 사이에 바뀐 node, edge, status, field, 경로 |
 | `nodex impact <a> <b>` | diff에 더해 각 변경의 dependent와 끊어진 참조 |
