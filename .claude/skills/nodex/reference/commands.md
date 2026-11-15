@@ -282,6 +282,8 @@ No prior `nodex build` is needed: the graph a scaffold is judged against is buil
 
 `--force` preserves the existing identity unless `--id` explicitly replaces it. It still refuses an id collision, and a document frozen at `rules.immutable_baseline` refuses with the lock id.
 
+Under a `history` policy row, a new document at a path or under an id history records for a removed one takes over the references to that one: each is reported as `history_rebound`, since the graph it leaves is valid and no rule reports it. If the new document is a different one, give it an id and a path history does not record; if it is the removed one coming back, restore it from git.
+
 Every scaffold refuses a target the scan would never admit: a written-then-ignored file is a document the graph can never see.
 
 `scaffold` returns ranked comparison candidates in `data.candidates`, with scores and components. Candidates do not establish duplication or supersession. `written` says whether the file was written (`false` under `--dry-run`).

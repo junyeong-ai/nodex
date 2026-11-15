@@ -418,6 +418,13 @@ pub fn scaffold(
     let mut warnings = before.warnings.clone();
     let candidates = similar_candidates(&id, &proposed.graph, config)?;
     warnings.extend(introduced.advisories());
+    warnings.extend(history_rebound(
+        root,
+        config,
+        &before.graph,
+        &proposed.graph,
+        &id,
+    )?);
 
     // 7. Write atomically (or skip in dry-run).
     let written = if write {
@@ -796,6 +803,60 @@ fn detect_id_collision(id: &str, rel_path: &Path, graph: &Graph) -> Result<()> {
 
 // ─── advisories ─────────────────────────────────────────────────────
 
+/// The references the new document `id` takes over from documents the
+/// project removed: each unresolved before the write with `history:
+/// recorded`, and resolved to `id` after it. The write leaves a valid graph
+/// in which no rule has anything to say about them, so this is where the
+/// rebinding is reported.
+fn history_rebound(
+    root: &Path,
+    config: &Config,
+    before: &Graph,
+    after: &Graph,
+    id: &str,
+) -> Result<Vec<Warning>> {
+    let history = crate::history::ProjectHistory::of(config, root)?;
+    if history.recorded().is_none() {
+        return Ok(Vec::new());
+    }
+    let taken: std::collections::HashSet<&crate::model::edge::Reference> = after
+        .incoming_edges(id)
+        .into_iter()
+        .flat_map(|edge| &edge.references)
+        .collect();
+    let unresolved = crate::query::issues::find_unresolved_edges(
+        before,
+        config,
+        crate::builder::scanner::ProjectFiles::working_tree(root),
+        &history,
+        None,
+        None,
+    );
+    Ok(unresolved
+        .iter()
+        .filter_map(|edge| match &edge.history {
+            Some(crate::model::TargetRecord::Recorded { id: recorded }) => edge
+                .sources
+                .iter()
+                .any(|source| taken.contains(&source.reference))
+                .then_some((edge, recorded)),
+            _ => None,
+        })
+        .map(|(edge, recorded)| {
+            Warning::new(
+                crate::warning::WarningCode::HistoryRebound,
+                format!(
+                    "{} {}: reference \"{}\" named {recorded:?}, which history records and the \
+                     project no longer holds, and now names the new document {id:?}; if they \
+                     are different documents, give this one an id and a path history does not \
+                     record",
+                    edge.source_path, edge.location, edge.raw_target
+                ),
+            )
+        })
+        .collect())
+}
+
 fn similar_candidates(
     id: &str,
     graph: &Graph,
@@ -1083,6 +1144,75 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::DuplicateId { .. }));
+    }
+
+    /// Where a `history` policy row reads history, the references a new
+    /// document takes over from a removed one are reported, a path link by
+    /// the path and a relation by the id; none are where the new document
+    /// takes neither, or where no row reads history.
+    #[test]
+    fn reports_the_references_a_new_document_takes_from_a_removed_one() {
+        use crate::git::fixture::{commit_on, history_repo};
+        let repo = history_repo();
+        let root = repo.path();
+        let day = |n| NaiveDate::from_ymd_opt(2026, 1, n).expect("a valid day");
+        commit_on(
+            root,
+            day(1),
+            9,
+            &[
+                ("docs/ship-it.md", "---\ntitle: Ship it\n---\n"),
+                (
+                    "docs/guide.md",
+                    "---\ntitle: Guide\nrelated: [generic-docs-ship-it]\n---\n[plan](ship-it.md)\n",
+                ),
+            ],
+        );
+        std::fs::remove_file(root.join("docs/ship-it.md")).unwrap();
+        commit_on(root, day(2), 9, &[]);
+
+        let mut config = Config::default();
+        config.scope.include = vec!["docs/**/*.md".into()];
+        let unread = config.clone();
+        config.detection.unresolved_policy = vec![crate::config::UnresolvedPolicyRuleConfig {
+            name: "departed".into(),
+            cause: crate::model::UnresolvedCause::Missing,
+            relations: Vec::new(),
+            glob: None,
+            source_protection: None,
+            source_kinds: Vec::new(),
+            source_statuses: Vec::new(),
+            history: Some(crate::model::TargetHistory::Recorded),
+            severity: crate::config::UnresolvedSeverity::Info,
+        }];
+        let rebound = |config: &Config, id: Option<&str>, path: &str| {
+            let (_, warnings) = scaffold(
+                root,
+                spec("generic", "Ship it", id, Some(path)),
+                config,
+                &inert_probe(root, config),
+                false,
+                false,
+                crate::test_today(),
+            )
+            .expect("a scaffold the gate admits");
+            warnings
+                .iter()
+                .filter(|warning| warning.code == crate::warning::WarningCode::HistoryRebound)
+                .count()
+        };
+
+        assert_eq!(rebound(&config, None, "docs/ship-it.md"), 2);
+        assert_eq!(
+            rebound(&config, Some("generic-docs-new"), "docs/ship-it.md"),
+            1
+        );
+        assert_eq!(
+            rebound(&config, Some("generic-docs-ship-it"), "docs/new.md"),
+            1
+        );
+        assert_eq!(rebound(&config, Some("generic-docs-new"), "docs/new.md"), 0);
+        assert_eq!(rebound(&unread, None, "docs/ship-it.md"), 0);
     }
 
     #[test]

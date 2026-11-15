@@ -167,6 +167,15 @@ pub enum WarningCode {
     /// Raised where the question is asked rather than on every run, because
     /// a project that omits a threshold has opted out of what it measures.
     ThresholdUndeclared,
+    /// A write created a document that references history recorded to a
+    /// removed one now bind to: unresolved before it, with
+    /// `history: recorded`, and resolved to the new document after it.
+    ///
+    /// Its own code because nothing else reports it. The graph the write
+    /// leaves is valid and every reference resolves, so no rule has a finding
+    /// to make, and a `history` policy row that classified those references
+    /// no longer sees them.
+    HistoryRebound,
 }
 
 impl WarningCode {
@@ -190,6 +199,7 @@ impl WarningCode {
         Self::DocumentEvicted,
         Self::HistoryUnread,
         Self::ThresholdUndeclared,
+        Self::HistoryRebound,
     ];
 }
 
@@ -263,7 +273,8 @@ mod tests {
                 | WarningCode::ReferenceKept
                 | WarningCode::DocumentEvicted
                 | WarningCode::HistoryUnread
-                | WarningCode::ThresholdUndeclared => {}
+                | WarningCode::ThresholdUndeclared
+                | WarningCode::HistoryRebound => {}
             }
         }
         for (i, a) in WarningCode::ALL.iter().enumerate() {
@@ -271,7 +282,7 @@ mod tests {
                 assert_ne!(a, b, "WarningCode::ALL has a duplicate entry");
             }
         }
-        assert_eq!(WarningCode::ALL.len(), 14);
+        assert_eq!(WarningCode::ALL.len(), 15);
     }
 
     #[test]
