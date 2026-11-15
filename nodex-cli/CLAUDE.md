@@ -85,7 +85,8 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
   uncommitted judges in, so finding identity agrees. HEAD's history would
   hide a drift the range made; no diff would read every citation a lock
   protects at the ref as of unknown protection and move it to another policy
-  row.
+  row. A finding about the clone (`ViolationDetails::about_the_clone`) is never
+  carried: the ref, judged in the same clone, meets it too.
 - `check --staged` holds the index tree's checkout through judgment; baseline and
   history use a second checkout. `staged_tree` alone reads GIT_INDEX_FILE.
   `Checkout::tree_of_index` copies the operator's index before `write-tree`, which

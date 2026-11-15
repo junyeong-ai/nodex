@@ -1425,6 +1425,17 @@ fn a_shallow_clone_does_not_count_drift() {
         (&json!(0), &json!(1))
     );
     assert_eq!(output.status.code(), Some(1));
+
+    let ratchet = nodex(&tmp.path().join("shallow"))
+        .args(["check", "--since", "HEAD", "--introduced"])
+        .output()
+        .expect("ran");
+    assert_eq!(
+        ratchet.status.code(),
+        Some(1),
+        "a ref judged in the same clone carried no finding about it: {}",
+        String::from_utf8_lossy(&ratchet.stdout)
+    );
 }
 
 #[test]
