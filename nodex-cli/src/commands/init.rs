@@ -133,6 +133,9 @@ cross_field = [
 
 [rules]
 severity = { unresolved_reference = "error" }
+# Uncomment to make every warning rule `severity` does not name an error,
+# so `check` fails on a rule a nodex upgrade adds until it is placed here.
+# default_severity = "error"
 # Ref that `nodex check` diffs against when `--since` is omitted, so the
 # diff-aware immutability rules below are enforced by default (against
 # the last commit) instead of only when a ref is passed. Set to a branch

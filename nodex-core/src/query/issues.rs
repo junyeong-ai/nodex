@@ -54,8 +54,9 @@ pub struct UnresolvedEdge {
     /// row reads history and the project holds the target nowhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<TargetRecord>,
-    /// Effective severity assigned by the matching policy row or the
-    /// unmatched `unresolved_reference` rule, including configured promotion.
+    /// Effective severity: the matching policy row's, else the unmatched
+    /// `unresolved_reference` rule's as `rules.severity` and
+    /// `rules.default_severity` place it.
     pub severity: UnresolvedSeverity,
     /// Name of the matching policy row; absent for the unmatched rule.
     /// Informational severity always names a policy row.
@@ -302,10 +303,8 @@ fn unresolved_from(
         history.as_ref().map(TargetRecord::history),
         policy,
     );
-    if policy_name.is_none()
-        && let Some(level) = config.rules.severity.get("unresolved_reference")
-    {
-        severity = match level {
+    if policy_name.is_none() {
+        severity = match crate::rules::unresolved_reference::unmatched_severity(config) {
             crate::rules::Severity::Error => UnresolvedSeverity::Error,
             crate::rules::Severity::Warning => UnresolvedSeverity::Warning,
         };
@@ -1198,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn fallthrough_is_warning_and_unattributed() {
+    fn fallthrough_takes_the_unmatched_rules_severity_unattributed() {
         // Default policy has only the excluded_target row; a Missing
         // edge matches no row → warning, no policy_name, counted in
         // `summary.total` through `violation_unresolved_reference`.
@@ -1228,6 +1227,22 @@ mod tests {
             1
         );
         assert_eq!(report.summary.total, 1);
+
+        let mut placed = Config::default();
+        placed.rules.default_severity = crate::rules::Severity::Error;
+        let report = find_issues(
+            &graph,
+            &placed,
+            root.path(),
+            &crate::rules::UNMEASURED,
+            None,
+            None,
+            crate::test_today(),
+        );
+        assert_eq!(
+            report.unresolved_edges[0].severity,
+            UnresolvedSeverity::Error
+        );
     }
 
     #[test]
