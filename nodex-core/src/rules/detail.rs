@@ -330,9 +330,17 @@ pub enum ViolationDetails {
         filename: Evidence<String>,
         pattern: String,
     },
-    /// A gap in a directory's sequential file numbering. The number width
-    /// matches `scaffold`'s `u64` sequence so write and check agree.
-    SequentialNumbering { previous: u64, current: u64 },
+    /// A gap in the numbering of one sequential `[[rules.naming]]` block,
+    /// the sequence its `glob` and `pattern` select: they are what makes the
+    /// gap this one, since two blocks can open a gap between the same
+    /// numbers. The number width matches `scaffold`'s `u64` sequence so write
+    /// and check agree.
+    SequentialNumbering {
+        glob: String,
+        pattern: String,
+        previous: u64,
+        current: u64,
+    },
     /// Two files in a directory share the same number.
     UniqueNumbering {
         number: u64,
@@ -672,9 +680,12 @@ impl ViolationDetails {
             Self::FilenamePattern { filename, pattern } => {
                 format!("filename {filename:?} does not match pattern {pattern:?}")
             }
-            Self::SequentialNumbering { previous, current } => {
-                format!("gap in numbering: {previous} → {current}")
-            }
+            Self::SequentialNumbering {
+                glob,
+                previous,
+                current,
+                ..
+            } => format!("gap in numbering under {glob}: {previous} → {current}"),
             Self::UniqueNumbering { number, paths, .. } => {
                 format!("duplicate number {number} in files: {}", paths.join(", "))
             }
@@ -1021,6 +1032,8 @@ mod tests {
                 pattern: "^[a-z-]+\\.md$".to_string(),
             },
             ViolationDetails::SequentialNumbering {
+                glob: "docs/adr/*.md".to_string(),
+                pattern: "^\\d{4}-".to_string(),
                 previous: 3,
                 current: 7,
             },

@@ -1122,12 +1122,18 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A gap in a directory's sequential file numbering. The number width\nmatches `scaffold`'s `u64` sequence so write and check agree.",
+                "description": "A gap in the numbering of one sequential `[[rules.naming]]` block,\nthe sequence its `glob` and `pattern` select: they are what makes the\ngap this one, since two blocks can open a gap between the same\nnumbers. The number width matches `scaffold`'s `u64` sequence so write\nand check agree.",
                 "properties": {
                   "current": {
                     "format": "uint64",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "glob": {
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
                   },
                   "previous": {
                     "format": "uint64",
@@ -1141,6 +1147,8 @@ exit: 0
                 },
                 "required": [
                   "type",
+                  "glob",
+                  "pattern",
                   "previous",
                   "current"
                 ],
@@ -4989,12 +4997,18 @@ exit: 0
                 "type": "object"
               },
               {
-                "description": "A gap in a directory's sequential file numbering. The number width\nmatches `scaffold`'s `u64` sequence so write and check agree.",
+                "description": "A gap in the numbering of one sequential `[[rules.naming]]` block,\nthe sequence its `glob` and `pattern` select: they are what makes the\ngap this one, since two blocks can open a gap between the same\nnumbers. The number width matches `scaffold`'s `u64` sequence so write\nand check agree.",
                 "properties": {
                   "current": {
                     "format": "uint64",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "glob": {
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
                   },
                   "previous": {
                     "format": "uint64",
@@ -5008,6 +5022,8 @@ exit: 0
                 },
                 "required": [
                   "type",
+                  "glob",
+                  "pattern",
                   "previous",
                   "current"
                 ],

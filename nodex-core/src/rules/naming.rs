@@ -152,7 +152,7 @@ impl Rule for FilenamePatternRule {
     }
 }
 
-/// Check that numbered files in a directory are sequential (no gaps).
+/// Check that the numbered files each sequential naming block selects have no gaps.
 pub struct SequentialNumberingRule;
 
 impl Rule for SequentialNumberingRule {
@@ -165,7 +165,7 @@ impl Rule for SequentialNumberingRule {
     }
 
     fn description(&self) -> &str {
-        "Numbered files in a directory must form a contiguous sequence"
+        "The numbered files a `[[rules.naming]]` block selects must form a contiguous sequence"
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
@@ -229,6 +229,8 @@ impl Rule for SequentialNumberingRule {
                         None,
                         Some(path.clone()),
                         ViolationDetails::SequentialNumbering {
+                            glob: rule.glob.clone(),
+                            pattern: rule.pattern.clone(),
                             previous: *prev,
                             current: *curr,
                         },
@@ -254,7 +256,7 @@ impl Rule for UniqueNumberingRule {
     }
 
     fn description(&self) -> &str {
-        "Numbered files in a directory must have unique numbers"
+        "The numbered files a `[[rules.naming]]` block selects must have unique numbers"
     }
 
     fn params(&self, config: &crate::config::Config) -> Map<String, Value> {
@@ -475,8 +477,38 @@ mod tests {
             v[0].details,
             ViolationDetails::SequentialNumbering {
                 previous: 1,
-                current: 3
+                current: 3,
+                ..
             }
+        ));
+    }
+
+    #[test]
+    fn a_gap_opened_in_one_sequence_is_not_the_one_closed_in_another() {
+        let mut config = config_with_naming(adr_rule(true, false));
+        config.rules.naming.push(NamingRuleConfig {
+            glob: "docs/rfcs/**".into(),
+            ..adr_rule(true, false)
+        });
+        let gaps = |paths: &[&str]| run(&SequentialNumberingRule, &config, &graph(paths));
+        let before = gaps(&[
+            "docs/decisions/0001-a.md",
+            "docs/decisions/0003-c.md",
+            "docs/rfcs/0001-a.md",
+            "docs/rfcs/0002-b.md",
+        ]);
+        let after = gaps(&[
+            "docs/decisions/0001-a.md",
+            "docs/decisions/0002-b.md",
+            "docs/decisions/0003-c.md",
+            "docs/rfcs/0001-a.md",
+            "docs/rfcs/0003-c.md",
+        ]);
+        let introduced = crate::rules::introduced_violations(after, &before);
+        assert_eq!(introduced.len(), 1, "{introduced:?}");
+        assert!(matches!(
+            &introduced[0].details,
+            ViolationDetails::SequentialNumbering { glob, .. } if glob == "docs/rfcs/**"
         ));
     }
 
