@@ -78,6 +78,11 @@ reads and their rustdoc. Keep these invariants when extending that substrate:
   (status flows), while diff-aware locks skip. Snapshot locks read no steps.
   Explicit `--since` alone reads `Steps::Range`; plain check, issues and write
   gates read HEAD/MERGE_HEAD through `Steps::Uncommitted`. Read judgment receives Prior plus Current (graph + files).
+- `check --since --introduced` subtracts `violations_at`: the ref graphed in a
+  checkout under the checked config and judged with `ProjectHistory::at` its
+  commit, without baseline or steps, so the delta pairs what a check of that
+  commit reported. HEAD's history would judge the ref's documents by commits
+  the ref does not have and hide a drift the range made.
 - `check --staged` holds the index tree's checkout through judgment; baseline and
   history use a second checkout. `staged_tree` alone reads GIT_INDEX_FILE.
   `Checkout::tree_of_index` copies the operator's index before `write-tree`, which

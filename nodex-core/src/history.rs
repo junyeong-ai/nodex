@@ -110,7 +110,7 @@ pub fn find_history(
     require_whole_history(repository, "nodex history")?;
     let built = crate::builder::build_with_overlay(root, config, &[])?;
     let kept = KeptFile::new(root, config, LEDGER_FILE, true);
-    let ledger = ledger(repository, config, &kept)?;
+    let ledger = ledger(repository, config, &kept, None)?;
     let deleted: BTreeSet<String> = if ledger.head.is_empty() {
         BTreeSet::new()
     } else {
@@ -281,7 +281,7 @@ impl ProjectHistory {
     /// The reading a project's own config asks for. It consults the kept
     /// readings and stores none.
     pub fn of(config: &Config, root: &Path) -> Result<Self> {
-        Self::reading(config, root, false)
+        Self::reading(config, root, false, None)
     }
 
     /// [`Self::of`] for a command that owns the kept readings, a `check` of
@@ -289,21 +289,28 @@ impl ProjectHistory {
     /// kept reading did not already answer, and reports on [`Self::warnings`]
     /// what kept it from doing so.
     pub fn refreshing(config: &Config, root: &Path) -> Result<Self> {
-        Self::reading(config, root, true)
+        Self::reading(config, root, true, None)
     }
 
-    fn reading(config: &Config, root: &Path, refresh: bool) -> Result<Self> {
-        let drift = if refresh {
-            DriftHistory::refreshing(config, root)
-        } else {
-            DriftHistory::of(config, root)
+    /// [`Self::of`] read at `commit` instead of `HEAD`: what a `check` of
+    /// that commit reads, for a command judging the project a ref carried
+    /// as it was judged there.
+    pub fn at(config: &Config, root: &Path, commit: &str) -> Result<Self> {
+        Self::reading(config, root, false, Some(commit))
+    }
+
+    fn reading(config: &Config, root: &Path, refresh: bool, at: Option<&str>) -> Result<Self> {
+        let drift = match at {
+            Some(commit) => DriftHistory::at(config, root, commit),
+            None if refresh => DriftHistory::refreshing(config, root),
+            None => DriftHistory::of(config, root),
         };
         let (recorded, warnings) = match config.history_policy_row() {
             Some(row) => {
                 let repository = row_repository(root, row)?;
                 let kept = KeptFile::new(root, config, LEDGER_FILE, refresh);
                 (
-                    Some(ledger(&repository, config, &kept)?.bindings()),
+                    Some(ledger(&repository, config, &kept, at)?.bindings()),
                     kept.warnings(),
                 )
             }
@@ -320,8 +327,8 @@ impl ProjectHistory {
         &self.drift
     }
 
-    /// Every binding a revision of a document `HEAD` reaches offered, `None`
-    /// where the project reads no history.
+    /// Every binding a revision of a document the commit read reaches
+    /// offered, `None` where the project reads no history.
     pub(crate) fn recorded(&self) -> Option<&Bindings> {
         self.recorded.as_ref()
     }
@@ -433,19 +440,29 @@ fn chronological(commit: &CommitStamp) -> (chrono::DateTime<chrono::Utc>, &str) 
     (commit.committed, commit.id.as_str())
 }
 
-/// The ledger of `HEAD`, read as a build would read each revision now: at each
-/// commit adding or removing a document, and at `HEAD`. An id a document
-/// carried only between those revisions, changed in place, is not in it.
+/// The ledger of `at`, or of `HEAD` where no commit is named, read as a build
+/// would read each revision now: at each commit adding or removing a document,
+/// and at the commit read. An id a document carried only between those
+/// revisions, changed in place, is not in it.
 ///
-/// A kept ledger the current `HEAD` reaches is completed by the commits since;
-/// `HEAD`'s documents are listed again, and only a revision the kept ledger
-/// did not hold is parsed.
-fn ledger(repository: &Repository, config: &Config, kept: &KeptFile) -> Result<Ledger> {
-    let Some(head) = repository
-        .head()
-        .map_err(|e| git_error("resolving HEAD", e))?
-    else {
-        return Ok(Ledger::default());
+/// A kept ledger the commit read reaches is completed by the commits since;
+/// that commit's documents are listed again, and only a revision the kept
+/// ledger did not hold is parsed.
+fn ledger(
+    repository: &Repository,
+    config: &Config,
+    kept: &KeptFile,
+    at: Option<&str>,
+) -> Result<Ledger> {
+    let head = match at {
+        Some(commit) => commit.to_owned(),
+        None => match repository
+            .head()
+            .map_err(|e| git_error("resolving HEAD", e))?
+        {
+            Some(head) => head,
+            None => return Ok(Ledger::default()),
+        },
     };
     let key = crate::builder::graph_config_hash(config);
     let prefix = repository.prefix().to_str();
@@ -480,7 +497,7 @@ fn ledger(repository: &Repository, config: &Config, kept: &KeptFile) -> Result<L
         .collect();
     let listed: Vec<(String, String)> = repository
         .held_files(&head, &roots)
-        .map_err(|e| git_error("listing the documents HEAD holds", e))?
+        .map_err(|e| git_error(&format!("listing the documents {head} holds"), e))?
         .into_iter()
         .filter(|(path, _)| spelling.admits(path))
         .map(|(path, blob)| (crate::path_guard::forward_string(&path), blob))
@@ -819,7 +836,7 @@ mod tests {
     ) -> (Option<NaiveDate>, Option<NaiveDate>, String) {
         let repository = Repository::discover(root).unwrap().unwrap();
         let kept = KeptFile::new(root, config, LEDGER_FILE, false);
-        let ledger = ledger(&repository, config, &kept).unwrap();
+        let ledger = ledger(&repository, config, &kept, None).unwrap();
         let day =
             |commit: &CommitStamp| commit.committed.with_timezone(&chrono::Local).date_naive();
         let carried = &ledger.paths[path].ids[id];
@@ -911,5 +928,26 @@ mod tests {
             assert!(binds(&walked, id), "{id}");
         }
         assert_eq!(recorded(root), expected);
+    }
+
+    /// A reading at a commit binds what history had recorded by then, and
+    /// leaves the ledger kept at `HEAD` as it was.
+    #[test]
+    fn a_reading_at_a_commit_binds_only_what_history_had_recorded_by_then() {
+        let dir = history_repo();
+        let root = dir.path();
+        let config = reading();
+        commit_on(root, day(1), 9, &[("docs/a.md", &doc("earlier"))]);
+        let repository = Repository::discover(root).unwrap().unwrap();
+        let first = repository.head().unwrap().unwrap();
+        commit_on(root, day(2), 9, &[("docs/b.md", &doc("later"))]);
+        ProjectHistory::refreshing(&config, root).unwrap();
+        let kept = root.join(&config.output.dir).join(LEDGER_FILE);
+        let before = std::fs::read(&kept).unwrap();
+
+        let at = ProjectHistory::at(&config, root, &first).unwrap();
+        assert!(binds(&at, "earlier"));
+        assert!(!binds(&at, "later"), "recorded after the commit read");
+        assert_eq!(std::fs::read(&kept).unwrap(), before);
     }
 }

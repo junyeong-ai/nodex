@@ -947,6 +947,153 @@ fn since_keeps_the_filename_finding_a_move_created() {
     );
 }
 
+/// `--introduced` reports what the project did not carry at the ref. A
+/// standing error the change moves — a renamed file, a shifted line — is
+/// the one the ref carried, so it neither fails the change nor is listed,
+/// while a bare `--since` keeps it because the diff touched its document.
+#[test]
+fn introduced_reports_only_what_the_ref_did_not_carry() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [detection]\norphan_ok_kinds = [\"generic\"]\n\
+         [[detection.unresolved_policy]]\nname = \"broken\"\ncause = \"missing\"\n\
+         severity = \"error\"\n",
+    )
+    .unwrap();
+    write_doc(
+        root,
+        "docs/a.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n[gone](missing.md)\n",
+    );
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n# B\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+
+    git(&["mv", "docs/a.md", "docs/moved.md"]);
+    write_doc(
+        root,
+        "docs/moved.md",
+        "---\nid: generic-a\ntitle: A\nkind: generic\nstatus: active\n---\n\
+         Intro.\n\n[gone](missing.md)\n",
+    );
+    nodex(root).arg("build").assert().success();
+
+    let gate = |args: &[&str]| {
+        let output = nodex(root).args(args).output().expect("ran");
+        let envelope: Value =
+            serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+        assert_eq!(envelope["ok"], true, "{envelope}");
+        let found: Vec<(String, String)> = envelope["data"]["violations"]
+            .as_array()
+            .expect("violations")
+            .iter()
+            .map(|v| {
+                (
+                    v["rule_id"].as_str().expect("rule id").to_owned(),
+                    v["node_id"].as_str().expect("attributed").to_owned(),
+                )
+            })
+            .collect();
+        (output.status.code(), found)
+    };
+    let standing = (
+        "unresolved_reference/broken".to_owned(),
+        "generic-a".to_owned(),
+    );
+    assert_eq!(
+        gate(&["check", "--since", "HEAD"]),
+        (Some(1), vec![standing.clone()]),
+        "the diff touched the document holding the standing error"
+    );
+    assert_eq!(
+        gate(&["check", "--since", "HEAD", "--introduced"]),
+        (Some(0), vec![]),
+        "the ref carried that error, moved or not"
+    );
+
+    write_doc(
+        root,
+        "docs/b.md",
+        "---\nid: generic-b\ntitle: B\nkind: generic\nstatus: active\n---\n[new](absent.md)\n",
+    );
+    assert_eq!(
+        gate(&["check", "--since", "HEAD", "--introduced"]),
+        (
+            Some(1),
+            vec![(
+                "unresolved_reference/broken".to_owned(),
+                "generic-b".to_owned()
+            )]
+        ),
+        "only the error the change added"
+    );
+}
+
+/// The ref is judged as a `check` of that commit judged it, over the history
+/// git had recorded by then: a drift the range's commits made is introduced,
+/// one the ref already stood in is not.
+#[test]
+fn introduced_reports_the_drift_the_range_made() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [detection]\ngit_drift_threshold = 1\norphan_ok_kinds = [\"generic\"]\n\
+         [rules]\nseverity = { git_drift = \"error\" }\n",
+    )
+    .unwrap();
+    for (doc, code) in [("one", "a"), ("two", "b")] {
+        write_doc(
+            root,
+            &format!("docs/{doc}.md"),
+            &format!(
+                "---\nid: generic-{doc}\ntitle: T\nkind: generic\nstatus: active\n\
+                 reviewed: 2020-01-01\ncovers:\n  - \"src/{code}.rs\"\n---\n# T\n"
+            ),
+        );
+        write_doc(root, &format!("src/{code}.rs"), "// 0\n");
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    write_doc(root, "src/b.rs", "// 1\n");
+    git(&["commit", "-qam", "drifts two"]);
+    write_doc(root, "src/a.rs", "// 1\n");
+    git(&["commit", "-qam", "drifts one"]);
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD~1", "--introduced"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let drifted: Vec<&str> = envelope["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .filter(|v| v["rule_id"] == "git_drift")
+        .map(|v| v["node_id"].as_str().expect("attributed"))
+        .collect();
+    assert_eq!(drifted, ["generic-one"], "{envelope}");
+    assert_eq!(output.status.code(), Some(1));
+}
+
 #[test]
 fn check_envelope_lists_skipped_rules_for_registered_but_inapplicable_rules() {
     // The "no silent rule skips" doctrine: a rule whose `is_applicable`

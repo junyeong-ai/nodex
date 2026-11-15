@@ -300,7 +300,9 @@ evidence.
   history bypasses drift persistence and refuses recorded bindings.
   recorded.json is the one ledger of what history recorded: `find_history`
   lists from it too. Only working-tree/index check refreshes and reports cache
-  IO, and `nodex history` for recorded.json; proposal gates and other readers consult without writing. Source: `src/history.rs`,
+  IO, and `nodex history` for recorded.json; proposal gates and other readers consult without writing.
+  `ProjectHistory::at` reads both at a named commit, for a judgment of the
+  project that commit carried. Source: `src/history.rs`,
   `src/rules/git_drift.rs` and `src/git.rs` rustdoc.
 
 ## References and cycles
