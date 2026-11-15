@@ -36,9 +36,9 @@ jobs:
           persist-credentials: false
       - uses: $/.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
-          tool: cargo-nextest@0.9.151
+          tool: cargo-nextest@0.9.152
       - run: cargo nextest run --all-features --workspace
 
   build:
@@ -65,9 +65,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: $/.github/actions/rust-toolchain
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
-          tool: cargo-audit@0.22.2
+          tool: cargo-audit@0.23.0
       - run: cargo audit
 
   msrv:
