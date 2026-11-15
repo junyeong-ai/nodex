@@ -576,7 +576,7 @@ dir = "_index"
 | `[[annotations]]` / `[output]` / `[report]` / `[similarity]` / `[search]` | 본문 마커, 산출물 위치, 보고서 한도, 순위 가중치 |
 | `[meta]` | `nodex_version`: 프로젝트를 쓸 수 있는 바이너리 |
 
-`[meta] nodex_version = ">=0.67, <0.68"`은 프로젝트를 **쓸** 수 있는 바이너리를 고정합니다. 범위 밖이면 읽기는 `binary_compat` 경고와 함께 실행되고, 쓰기는 `VERSION_MISMATCH`로 거부됩니다. `--check-version <req>`는 범위 밖이면 읽기까지 모든 명령을 거부합니다.
+`[meta] nodex_version = ">=0.68, <0.69"`은 프로젝트를 **쓸** 수 있는 바이너리를 고정합니다. 범위 밖이면 읽기는 `binary_compat` 경고와 함께 실행되고, 쓰기는 `VERSION_MISMATCH`로 거부됩니다. `--check-version <req>`는 범위 밖이면 읽기까지 모든 명령을 거부합니다.
 
 ---
 
@@ -594,7 +594,7 @@ iwr -useb https://raw.githubusercontent.com/junyeong-ai/nodex/main/scripts/insta
 
 설치 스크립트는 검증된 prebuilt 바이너리를 `~/.local/bin`(Windows는 `%USERPROFILE%\.local\bin`)에 내려받고 Claude Code skill도 설치합니다. 위치는 `--skill user|project|none`(Windows는 `-Skill`) 또는 `NODEX_SKILL_LEVEL`로 정합니다. `scripts/uninstall.sh`(`uninstall.ps1`)가 둘 다 지웁니다. Prebuilt 대상: Linux x86_64 / arm64(정적 musl), macOS universal, Windows x86_64 / arm64.
 
-소스에서: `./scripts/install.sh --from-source` 또는 `cargo install --path nodex-cli`. CI에서는 `nodex --check-version ">=0.67, <0.68" build`로 바이너리를 고정합니다.
+소스에서: `./scripts/install.sh --from-source` 또는 `cargo install --path nodex-cli`. CI에서는 `nodex --check-version ">=0.68, <0.69" build`로 바이너리를 고정합니다.
 
 ---
 
