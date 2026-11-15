@@ -4284,6 +4284,22 @@ fn the_schema_publishes_the_keys_the_visitor_accepts() {
     }
 }
 
+/// An empty target list declares a status a record keeps until the project
+/// removes the document, which is no terminal status: a flow ending there
+/// loads with no terminal status at all.
+#[test]
+fn an_empty_transition_list_declares_a_status_kept_until_removal() {
+    let config = toml::from_str::<Config>(
+        "[statuses]\nallowed = [\"proposed\", \"active\"]\nterminal = []\ninitial = \"proposed\"\n\
+         [[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\"]\nactive = []\n",
+    )
+    .expect("parses");
+    config
+        .validate()
+        .expect("a flow ending at a declared sink loads");
+    assert!(!config.is_terminal("active"));
+}
+
 /// A project declaring the status flow of the ADR practices nodex is
 /// shaped for: authored at `proposed`, accepted into `active`, ended by
 /// one of three terminal states.
@@ -4359,11 +4375,6 @@ fn status_flow_refuses_every_disagreement_with_the_rest_of_the_config() {
              active = [\"superseded\", \"archived\"]\n\
              superseded = [\"active\"]\n",
             "statuses.terminal",
-        ),
-        // An empty target list is `terminal` said in a second place.
-        (
-            "[[statuses.flow]]\n[statuses.flow.transitions]\nproposed = [\"active\"]\nactive = []\n",
-            "is empty",
         ),
         // A status that does not change is not a transition.
         (

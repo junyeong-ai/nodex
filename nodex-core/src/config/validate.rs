@@ -640,12 +640,6 @@ impl Config {
                      {from:?} from statuses.terminal"
                 )));
             }
-            if targets.is_empty() {
-                return Err(Error::Config(format!(
-                    "statuses.flow.transitions[{from:?}] is empty; a status a document cannot leave \
-                     is what statuses.terminal declares — add {from:?} there and drop the entry"
-                )));
-            }
             for (idx, to) in targets.iter().enumerate() {
                 if !allowed(to) {
                     return Err(Error::Config(format!(
@@ -692,8 +686,9 @@ impl Config {
                 return Err(Error::Config(format!(
                     "statuses.flow names {status:?} and declares no transition out of it, and \
                      statuses.terminal does not name it either; a document reaching it could \
-                     never leave, which is exactly what statuses.terminal declares. Declare its \
-                     transitions, or add it to statuses.terminal"
+                     never leave. Declare its transitions; declare them empty ({status} = []) \
+                     to keep a record there until the project removes it; or add it to \
+                     statuses.terminal, which also retires it from maintenance"
                 )));
             }
             // Asked of each governed kind rather than of their union: one
