@@ -323,7 +323,9 @@ history = "recorded"
 severity = "error"
 ```
 
-A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `check`, `query issues` and every write but `migrate` are refused with `CONFIG_ERROR`, and other commands still run. [Policy rows](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
+Before deleting one, `nodex check --remove <path>`, with a `--content` pair for each document whose citation you repoint, judges the deletion and those edits as one change.
+
+A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `check`, `query issues` and every write, `migrate --apply` included, are refused with `CONFIG_ERROR`, and other commands still run. [Policy rows](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
 
 ### Answer without a graph
 
@@ -408,14 +410,14 @@ Global flags: `-C <dir>`, `--pretty`, `--jobs <n>`, `--check-version <semver-req
 | `INVALID_TRANSITION` | `lifecycle` action attempted from a status that doesn't allow it |
 | `NOT_FOUND` | Referenced node id doesn't exist in the graph |
 | `GRAPH_MISSING` | A `query` ran with no `graph.json` snapshot — run `nodex build` |
-| `GRAPH_OUTDATED` | A query found the snapshot drifted from the configuration, the scope's membership or (by default) document content, a requested body does not match the indexed revision, or the snapshot schema is incompatible — rebuild with `nodex build` (`--full` for schema mismatch) |
+| `GRAPH_OUTDATED` | A query found the snapshot drifted from the configuration, the scope's membership or (by default) document content, a requested body or a document an external rule judges does not match the indexed revision, or the snapshot schema is incompatible — rebuild with `nodex build` (`--full` for schema mismatch) |
 | `WRITE_CONFLICT` | A document changed after the mutation read it; reread and retry against its current revision |
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` target path already occupies a real file |
 | `PATH_ESCAPES_ROOT` | A path traversal (`..`) or symlink would escape the project root |
 | `SYMLINK_TARGET` | A write was refused because its target's final component is a symlink: nodex never writes through one |
 | `CONTENT_VIOLATIONS` | The write gate refused the write: what it would write introduces Error-severity `check` violations (each listed as `path: rule_id: message`) |
 | `LOCKED` | A write would change what an armed immutability lock holds, or the document already differs from its baseline where one does. The message names the lock and the part, and says which remedy applies: revert a drift `nodex check` reports, or leave the frozen part unmade and supersede the record |
-| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, or declares what this run cannot honour: `rules.immutable_baseline` names a ref git cannot resolve while a lock reads it, `detection.git_drift_threshold` is set without git, an `unresolved_policy` row reads history a shallow clone does not hold, or `lifecycle supersede` writes `superseded` where the kind does not allow it |
+| `CONFIG_ERROR` | `nodex.toml` failed validation at load time, or declares what this run cannot honour: `rules.immutable_baseline` names a ref git cannot resolve while a lock reads it, `detection.git_drift_threshold` is set without git, an `unresolved_policy` row reads history a shallow clone does not hold, `lifecycle supersede` writes `superseded` where the kind does not allow it, or a `[[rules.external]]` program does not start, exits non-zero or answers outside its protocol (the message names the rule and quotes its stderr) |
 | `IO_ERROR` | Filesystem read/write failure |
 | `VERSION_MISMATCH` | The running binary fell outside a version requirement — either the `--check-version <req>` flag (every command) or a document-writing command under a `[meta] nodex_version` pin |
 | `GIT_ERROR` | `git` failed or refused (e.g., not a work tree, missing ref, an index with unmerged entries, a shallow clone `nodex history` cannot read) — most often from `diff`, `impact`, `history`, `check --since` and `check --staged` |
@@ -524,7 +526,8 @@ trigger = "creation"   # which lifecycle a record answers to, settled by its fir
 # kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
-# A program of the project's own judges ADRs; its findings gate checks and writes:
+# A program of the project's own judges ADRs; its findings gate checks and writes.
+# nodex runs it, so read it before running nodex in a repository you do not trust:
 # [[rules.external]]
 # name = "adr-outline"
 # command = ["python3", "tools/adr-outline.py"]

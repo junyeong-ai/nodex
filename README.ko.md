@@ -31,7 +31,7 @@ nodex는 Markdown 파일의 frontmatter와 링크를 읽어 문서 그래프를 
 
 - **코드가 아니라 설정** — kind, status, id, 스키마, 링크, 잠금을 `nodex.toml`에 선언합니다.
 - **타입화된 JSON 계약** — `{ok, data, warnings}` 또는 `{ok, error: {code, message}}`이고, 명령마다 JSON Schema를 발행합니다.
-- **조언이 아니라 게이트** — 쓰기, 커밋, CI 범위를 `check`와 같은 규칙으로 판정합니다.
+- **조언이 아니라 게이트** — 쓰기, 커밋, CI 범위를 `check`와 같은 룰로 판정합니다.
 - **정직한 결과** — 모든 검사가 각 룰이 무엇을 얼마나 검사했는지 함께 알려 주므로, 빈 결과가 공허한 통과로 보이지 않습니다.
 - **로컬에서 빠르게** — 바이너리 하나, 데몬이나 네트워크 없음, 증분·병렬 파싱.
 
@@ -323,7 +323,9 @@ history = "recorded"
 severity = "error"
 ```
 
-`history` 행은 전체 이력이 필요합니다(`fetch-depth: 0`). shallow clone에서는 `check`, `query issues`, 그리고 쓰기 명령(`migrate` 제외)이 `CONFIG_ERROR`로 거부되고, 나머지 명령은 그대로 실행됩니다. [정책 행](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
+문서를 지우기 전에 `nodex check --remove <path>`에, 인용을 고치는 문서마다 `--content` 쌍을 함께 주면 삭제와 그 편집을 하나의 변경으로 판정합니다.
+
+`history` 행은 전체 이력이 필요합니다(`fetch-depth: 0`). shallow clone에서는 `check`, `query issues`, 그리고 `migrate --apply`를 포함한 모든 쓰기 명령이 `CONFIG_ERROR`로 거부되고, 나머지 명령은 그대로 실행됩니다. [정책 행](.claude/skills/nodex/reference/config.md#unresolved-reference-policy).
 
 ### 그래프 없이 답하기
 
@@ -352,7 +354,7 @@ severity = "error"
 | `nodex query dependents <id>` | `--depth` 안에서 그 문서에 닿는 것 |
 | `nodex query neighborhood <id>` | 양방향 N hop 안의 모든 것 |
 | `nodex query components` | 연결 요소, 큰 순서 |
-| `nodex query orphans` | 아무것도 참조하지 않는 살아 있는 문서 |
+| `nodex query orphans` | 참조하는 문서가 없는 살아 있는 문서 |
 | `nodex query stale` | 검토 기한이 지난 살아 있는 문서 |
 | `nodex query recent` | 날짜 필드가 구간 안에 드는 문서 |
 | `nodex query similar` | 문서나 초안 제목의 비교 후보 |
@@ -402,21 +404,21 @@ nodex export diagnostics       # 오류, 경고, 종료 코드
 
 | 코드 | 원인 |
 |---|---|
-| `CYCLE_DETECTED` | `supersedes` cycle |
-| `DUPLICATE_ID` | 동일 node id가 두 문서에 |
+| `CYCLE_DETECTED` | `supersedes` edge에 순환이 있음 |
+| `DUPLICATE_ID` | 두 문서가 같은 node id로 해석됨 |
 | `PARSE_ERROR` | 쓰기 명령이 frontmatter가 파싱되지 않는 문서(`lifecycle`은 frontmatter가 없는 문서도: `nodex migrate --apply`가 만들어 줌)를 만났거나, `graph.json`이 손상됨(`nodex build --full`) — build는 깨진 문서를 `parse_failure` 위반으로 기록 |
 | `INVALID_TRANSITION` | `lifecycle` 액션이 허용 안 되는 status에서 시도됨 |
 | `NOT_FOUND` | 참조한 node id가 그래프에 없음 |
 | `GRAPH_MISSING` | `graph.json` 스냅샷 없이 `query` 실행 — `nodex build` 먼저 |
-| `GRAPH_OUTDATED` | 조회가 스냅샷이 설정, scope 멤버십, (기본 모드에서는) 문서 내용과 어긋났음을 확인했거나, 요청한 본문이 색인된 리비전과 다르거나, 스냅샷 스키마가 호환되지 않음 — `nodex build`로 재생성(스키마 불일치는 `--full`) |
+| `GRAPH_OUTDATED` | 조회가 스냅샷이 설정, scope 멤버십, (기본 모드에서는) 문서 내용과 어긋났음을 확인했거나, 요청한 본문이나 external 룰이 판정할 문서가 색인된 리비전과 다르거나, 스냅샷 스키마가 호환되지 않음 — `nodex build`로 재생성(스키마 불일치는 `--full`) |
 | `WRITE_CONFLICT` | 변경 명령이 문서를 읽은 뒤 그 문서가 바뀜. 현재 리비전을 다시 읽고 재시도 |
 | `ALREADY_EXISTS` | `init` / `scaffold` / `rename` 대상 경로에 실제 파일이 이미 존재 |
 | `PATH_ESCAPES_ROOT` | `..` / 심볼릭 링크가 프로젝트 루트를 벗어남 |
 | `SYMLINK_TARGET` | 쓰려는 대상의 마지막 경로 구성요소가 심볼릭 링크여서 거부됨. nodex는 링크를 따라가며 쓰지 않음 |
 | `CONTENT_VIOLATIONS` | 쓰기 게이트가 쓰기를 거부: 쓰려는 내용이 Error-severity `check` 위반을 새로 만듦 (각각 `path: rule_id: message`로 나열) |
-| `LOCKED` | 쓰기가 활성화된 불변 잠금이 고정한 부분을 바꾸려 하거나, 잠금이 고정한 부분에서 문서가 이미 baseline과 달라져 있음. 메시지가 잠금과 그 부분을 밝히고 해결 방법을 알려 줌: `nodex check`가 보고하는 drift는 되돌리고, 고정된 부분은 바꾸지 않고 기록을 supersede함 |
-| `CONFIG_ERROR` | `nodex.toml`이 로드 시점 검증에 실패했거나, 이번 실행이 따를 수 없는 것을 선언함: 잠금이 읽는 `rules.immutable_baseline`이 git이 해석하지 못하는 ref를 가리킴, git 없이 `detection.git_drift_threshold`를 설정함, `unresolved_policy` 행이 shallow clone에 없는 이력을 읽음, kind가 `superseded`를 허용하지 않는데 `lifecycle supersede`를 실행함 |
-| `IO_ERROR` | filesystem read/write 실패 |
+| `LOCKED` | 쓰기가 활성화된 불변 잠금이 고정한 부분을 바꾸려 하거나, 잠금이 고정한 부분에서 문서가 이미 baseline과 달라져 있음. 메시지가 잠금과 그 부분을 밝히고 어느 해결 방법이 맞는지 알려 줌: `nodex check`가 보고하는 drift를 되돌리거나, 고정된 부분은 바꾸지 않은 채 기록을 supersede함 |
+| `CONFIG_ERROR` | `nodex.toml`이 로드 시점 검증에 실패했거나, 이번 실행이 따를 수 없는 것을 선언함: 잠금이 읽는 `rules.immutable_baseline`이 git이 해석하지 못하는 ref를 가리킴, git 없이 `detection.git_drift_threshold`를 설정함, `unresolved_policy` 행이 shallow clone에 없는 이력을 읽음, kind가 `superseded`를 허용하지 않는데 `lifecycle supersede`를 실행함, `[[rules.external]]` 프로그램이 시작하지 못하거나 0이 아닌 상태로 끝나거나 프로토콜 밖의 답을 냄(메시지가 룰을 밝히고 stderr를 인용함) |
+| `IO_ERROR` | 파일시스템 읽기/쓰기 실패 |
 | `VERSION_MISMATCH` | 실행 바이너리가 버전 요구사항을 벗어남 — `--check-version <req>` 플래그(모든 명령) 또는 `[meta] nodex_version` pin 아래의 쓰기 명령 |
 | `GIT_ERROR` | `git` 호출 실패 또는 거부 (work tree 없음, ref 부재, 충돌이 남은 index, `nodex history`가 읽을 수 없는 shallow clone 등) — 주로 `diff` / `impact` / `history` / `check --since` / `check --staged`에서 발생 |
 | `INVALID_ARGUMENT` | 명령이 인자를 처리할 수 없음: clap 파싱 실패, config에 선언되지 않은 값(`--fields`, `--where`, `--name`, `--kind`, `--relations`, kind가 허용하지 않는 `lifecycle set --status`), 형식이 틀리거나 0인 값(`=` 없는 `--content`, `--depth 0`, `--limit 0`, SemVer가 아닌 `--check-version`), scope가 그래프에 넣지 않을 경로나 파일시스템과 표기가 다른 경로, 잠금이 읽는 `--baseline` 중 git이 해석하지 못하거나 `HEAD`와 merge base가 하나로 정해지지 않는 ref, 디렉터리 `rename`, `retarget X X`. 메시지가 무엇을 받는지 알려 주므로 인자나 메시지가 가리키는 선언을 고침 |
@@ -447,7 +449,7 @@ nodex export diagnostics       # 오류, 경고, 종료 코드
 | `reference_kept` | 선언된 retarget 정책 또는 자기 참조 방지를 위해 참조를 보존함 |
 | `document_evicted` | 쓰기가 `conditional_exclude` 부모를 terminal로 만들어 그 sub-artifact를 프로젝트에서 뺌 |
 | `history_unread` | step 룰이 판정에 필요한 이력을 읽지 못함 — 빌드가 트리를 거부하는 커밋, 또는 shallow clone이 가져오지 않은 이력; 그 기록은 `unjudged`로 셈 |
-| `history_rebound` | `scaffold`가 history가 제거 문서로 기록한 참조를 새 문서로 넘겨받음: 그 참조는 제거된 문서를 가리켰고 이제 새 문서를 가리킴 |
+| `history_rebound` | `scaffold`로 만든 새 문서가, 이력이 제거된 문서에 묶였다고 기록한 참조를 넘겨받음: 그 참조는 제거된 문서를 가리켰고 이제 새 문서를 가리킴 |
 | `threshold_undeclared` | `[detection].stale_days` 없이 `query stale`을 실행한 경우처럼, 프로젝트가 선언하지 않은 탐지 기준을 묻는 목록은 아무것도 측정하지 않음. 그래서 빈 답이 깨끗한 결과라는 뜻이 아님 |
 | `cache` | 캐시를 읽거나 저장하지 못함; 다음 실행이 그 작업을 다시 함 |
 
@@ -524,7 +526,8 @@ trigger = "creation"   # 기록이 따를 생명주기는 첫 커밋에서 정�
 # kinds = ["spec"]
 # enums.gate = ["scope", "design", "rollout", "ship"]
 
-# 프로젝트가 둔 프로그램이 ADR을 판정하고, 그 finding으로 check와 쓰기를 막음:
+# 프로젝트가 둔 프로그램이 ADR을 판정하고, 그 판정 결과로 check와 쓰기를 막음.
+# nodex가 이 프로그램을 실행하므로, 신뢰하지 않는 저장소에서는 nodex를 실행하기 전에 읽어 볼 것:
 # [[rules.external]]
 # name = "adr-outline"
 # command = ["python3", "tools/adr-outline.py"]
@@ -568,12 +571,12 @@ dir = "_index"
 | `[identity]` / `[scaffold.paths]` | 경로가 kind와 id를 추론하는 방식, `scaffold`가 kind마다 만드는 위치 |
 | `[parser]` | 선언한 frontmatter 관계, 본문 `link_patterns`, `extensions`, `wikilink_enabled` |
 | `[schema]` | `required`, `types`, `enums`, `cross_field`, kind별 `overrides`, `mode`, `require_explicit` |
-| `[rules]` | 규칙 severity (`default_severity`, `severity`), 잠금 baseline, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line`, `external`, `acyclic_relations` |
+| `[rules]` | 룰 severity (`default_severity`, `severity`), 잠금 baseline, `naming`, `frontmatter_immutable`, `body_immutable`, `body_line`, `external`, `acyclic_relations` |
 | `[detection]` | stale, orphan, superseded 참조, `git_drift`, `unresolved_policy` 표 |
 | `[[annotations]]` / `[output]` / `[report]` / `[similarity]` / `[search]` | 본문 마커, 산출물 위치, 보고서 한도, 순위 가중치 |
 | `[meta]` | `nodex_version`: 프로젝트를 쓸 수 있는 바이너리 |
 
-`[meta] nodex_version = ">=0.66, <0.67"`은 프로젝트를 **쓸** 수 있는 바이너리를 고정합니다. 범위 밖이면 읽기는 `binary_compat` 경고와 함께 실행되고, 쓰기는 `VERSION_MISMATCH`로 거부됩니다. `--check-version <req>`는 모든 명령을 거부합니다.
+`[meta] nodex_version = ">=0.66, <0.67"`은 프로젝트를 **쓸** 수 있는 바이너리를 고정합니다. 범위 밖이면 읽기는 `binary_compat` 경고와 함께 실행되고, 쓰기는 `VERSION_MISMATCH`로 거부됩니다. `--check-version <req>`는 범위 밖이면 읽기까지 모든 명령을 거부합니다.
 
 ---
 

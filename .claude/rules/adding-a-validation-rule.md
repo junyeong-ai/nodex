@@ -26,8 +26,13 @@ paths:
    them. A diff-aware rule subtracts `GraphDiff::added_ids` (its rustdoc says
    why) and reports them, with any other selected unit it has nothing to
    judge against, as `RuleRun::unjudged`.
-   `Rule::severity` declares the default; `Rule::evaluate` applies configured warning
-   promotion consistently. Consumers must not bypass it with direct `check` calls.
+   `Rule::severity` declares the default; `Rule::configured_severity` places
+   it — `rules.severity`, then `rules.default_severity` for a warning rule —
+   and `Rule::evaluate` applies that placement. A rule whose own config block
+   states its severity, as a policy row or an external block does, overrides
+   `Rule::declares_severity` to `true`, so no project-wide default replaces
+   it and load refuses `rules.severity` naming it. Consumers must not bypass
+   `evaluate` with direct `check` calls.
    `severity` is the closed `Error | Warning` enum — there is no Info
    check severity (the per-edge `info` plane belongs to
    `detection.unresolved_policy`, a different type:
@@ -69,7 +74,10 @@ paths:
    its prerequisites in `rules::preflight` (fail fast as
    `CONFIG_ERROR`), or, where only some commands read the environment,
    where it is read (`ProjectHistory` for a `history` policy row), and
-   measures inside `check`; stay inside `root`.
+   measures inside `check` — except a reading that can fail the command,
+   which `run_rules` asks before any rule runs and hands over on
+   `RuleContext` (`external::ExternalAnswers::ask` for an external rule's
+   program); stay inside `root`.
    Consume merged config views (`required_for`, `types_for`, …) —
    never raw `schema_override_for`.
 4. Diff-aware rule: override `diff_aware` to `true`, and have
@@ -111,7 +119,8 @@ paths:
    the lock judged against, so the default would drop drift the range did
    not touch. A rule judging steps keeps every finding: each is
    about a step inside the range, a move the range went on to undo
-   included.
+   included. An external rule keeps every finding as well: nodex cannot
+   tell which documents or files decided what its program found.
 5. Per-block kind filter: carry `kinds: Vec<String>`, gate with
    `node.matches_kinds(...)`; `Config::validate_kinds` rejects typos at
    load, immutability families also route `validate_immutable_blocks`.

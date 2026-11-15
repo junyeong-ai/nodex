@@ -1,14 +1,14 @@
 # nodex — `nodex.toml` reference
 
-Read this when authoring or debugging a config. `nodex init` writes an annotated starter, which documents `[similarity]` and `[search]` key by key and lists `[report]`'s defaults; `reference/minimal-config.toml` beside this file is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
+Read this when authoring or debugging a config. `nodex init` writes an annotated starter, which documents `[similarity]` and `[search]` key by key and lists `[report]`'s defaults; [minimal-config.toml](minimal-config.toml), beside this file, is a worked minimal example. `nodex export config` and `nodex export rules` show what the project actually resolved to.
 
 ## Contents
 
-- [Load-time validation](#load-time-rejections)
+- [Load-time rejections](#load-time-rejections)
 - [Identity](#identity) and [scope](#scope)
 - [Frontmatter relations](#frontmatter-relations) and [body links](#body-links)
-- [Schema rules](#schema-rules), [built-in rules](#built-in-rule-ids) and [vocabulary](#vocabulary-rules)
-- [Diff-aware rules and locks](#diff-aware-rules), and [naming the baseline for one run](#naming-the-baseline-for-one-run)
+- [Schema rules](#schema-rules), [built-in rules](#built-in-rule-ids), [vocabulary](#vocabulary-rules) and [external rules](#external-rules)
+- [Diff-aware rules and locks](#diff-aware-rules): [triggers](#triggers), [naming the baseline for one run](#naming-the-baseline-for-one-run) and [identity scoping](#locks-are-identity-scoped)
 - [Status flow](#status-flow)
 - [Rule severity](#rule-severity) and [unresolved references](#unresolved-reference-policy)
 - [Detection thresholds](#detection-thresholds) and [git measurement](#git-measurement)
@@ -28,6 +28,7 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
 - `[[statuses.flow]]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other unless its transitions are declared empty, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
+- A `[[rules.external]]` block needs a unique `name` and a program as `command`'s first entry; `rules.severity` cannot name an external rule, whose block owns its severity.
 - `kinds.allowed` must include `generic`, the kind of a document that neither authors `kind:` nor matches an `identity.kind_rules` glob.
 - `rules.acyclic_relations` must name known relations and cannot be empty; `[[annotations]]` names must be unique; two `parser.link_patterns` blocks with the same `pattern` and `relation` are refused.
 - `statuses.initial` must be one of `statuses.allowed`; `meta.nodex_version` must parse as a SemVer requirement.
@@ -159,7 +160,7 @@ The content-scoped per-block families — `body_immutable`, `frontmatter_immutab
 
 `[[rules.external]]` judges documents with a program the project declares. `name` makes the rule id `external/<name>`. `command` is the program and its arguments: a program named with a path separator resolves against the project root, a bare name is looked up on `PATH`. `kinds` selects the documents it judges (empty = every kind). `severity` is `error` unless the block says `warning`; the block owns it, so `rules.severity` cannot name the rule. `nodex export rules` lists each block's `command`, `kinds` and `protocol`.
 
-`check` in every mode, `query issues` and, for an `error` block, every write gate (`migrate --apply` included) run the program; `build`, `export` and the other `query` leaves never do. nodex runs whatever the block declares, so read `[[rules.external]]` before running nodex in a repository you do not trust. A pass runs the program once, in the project root even when the bytes it judges are the index's (`check --staged`), with one JSON request on stdin, and reads one JSON answer from stdout:
+`check` in every mode, `query issues` and, for an `error` block, every write gate (`migrate --apply` included) run the program; no other command does: `build`, `status`, `classify`, `diff`, `impact`, `history`, `report`, `export`, the other `query` leaves and plan-only `migrate` never run it. nodex runs whatever the block declares, so read `[[rules.external]]` before running nodex in a repository you do not trust. A pass runs the program once, in the project root even when the bytes it judges are the index's (`check --staged`), with one JSON request on stdin, and reads one JSON answer from stdout:
 
 ```json
 {"protocol": 1, "rule": "external/adr-outline", "tree": "/abs/project",
@@ -279,6 +280,18 @@ The clone must hold the named commit, which `actions/checkout`'s default `fetch-
 
 Local runs keep the configured ref. `--baseline` states what an event is measured from: never use it to clear a `LOCKED` refusal, since a later commit only hides the drift from that run, and a gate measuring from the event's base still refuses it.
 
+### Locks are identity-scoped
+
+With `immutable_history = "steps"`, locks judge every commit in an explicit `--since` range and its uncommitted step. Reverting an illegal edit does not erase its finding; `details.commit` names the offending commit. Merges compare protected state: unrelated edits and moves do not select a different locked revision. A frozen merge step permits either independently armed revision, while the result must also satisfy any armed baseline used for the endpoint comparison. Append-only locks preserve every applicable armed parent as a prefix. An unarmed parent cannot release an armed lock.
+
+The baseline is paired with the working tree **by node id**, so a lock guards a body for as long as the document keeps its id, and `check` and the writing commands agree because they pair the same way. Replacing an armed record at the same path with a new id is refused on both planes when the old id has no counterpart. Removing one is not a replacement: deleting a locked document or excluding its path from scope is no lock finding, and what still cites it is judged by `detection.unresolved_policy`. A new record elsewhere has no baseline to compare against. What preserves a lock across a move is preserving the id:
+
+- an explicit `id:` in frontmatter survives any move (`id_stability: already_anchored`);
+- an id derived from `identity.id_rules` survives `nodex rename`, which writes the derived id in explicitly before moving the file (`anchored`) — but not `mv` / `git mv`, which change the path and therefore the id;
+- a **bare-markdown** document cannot be anchored — `rename` will not invent a frontmatter block for a path operation — so its id does change and `id_stability: changed` says so.
+
+So: move a locked document with `nodex rename`, and give it an id that is not derived from its path.
+
 ## Status flow
 
 Each `[[statuses.flow]]` owns disjoint kinds; an empty kind list governs every kind and therefore must stand alone.
@@ -322,18 +335,6 @@ A document a commit could not parse holds the record it held before the change t
 
 The history judged is the one the repository keeps: a squash merge enters a record authored and accepted on the branch at its accepted status, so a squash-merging repository accepts in a PR of its own; a `--since` range a shallow clone cuts is refused (`GIT_ERROR`) rather than read as every record arriving — fetch it (`fetch-depth: 0`); and an amended commit records its step from `HEAD^`, while a `check` run before `git commit --amend` judged it from `HEAD`.
 
-### Locks are identity-scoped
-
-With `immutable_history = "steps"`, locks judge every commit in an explicit `--since` range and its uncommitted step. Reverting an illegal edit does not erase its finding; `details.commit` names the offending commit. Merges compare protected state: unrelated edits and moves do not select a different locked revision. A frozen merge step permits either independently armed revision, while the result must also satisfy any armed baseline used for the endpoint comparison. Append-only locks preserve every applicable armed parent as a prefix. An unarmed parent cannot release an armed lock.
-
-The baseline is paired with the working tree **by node id**, so a lock guards a body for as long as the document keeps its id, and `check` and the writing commands agree because they pair the same way. Replacing an armed record at the same path with a new id is refused on both planes when the old id has no counterpart. Removing one is not a replacement: deleting a locked document or excluding its path from scope is no lock finding, and what still cites it is judged by `detection.unresolved_policy`. A new record elsewhere has no baseline to compare against. What preserves a lock across a move is preserving the id:
-
-- an explicit `id:` in frontmatter survives any move (`id_stability: already_anchored`);
-- an id derived from `identity.id_rules` survives `nodex rename`, which writes the derived id in explicitly before moving the file (`anchored`) — but not `mv` / `git mv`, which change the path and therefore the id;
-- a **bare-markdown** document cannot be anchored — `rename` will not invent a frontmatter block for a path operation — so its id does change and `id_stability: changed` says so.
-
-So: move a locked document with `nodex rename`, and give it an id that is not derived from its path.
-
 ## Rule severity
 
 `[rules] severity = { orphan = "error", unresolved_reference = "error" }` places registered warning rules consistently across checks, exports and the write gate. Structural errors cannot be weakened, and unresolved-policy rows and external blocks own their severity. `init` makes unmatched unresolved references errors.
@@ -354,7 +355,7 @@ Further axes narrow a row, and only `cause` is required:
 - `glob` — the names the resolution *sought*: the node id for an id relation, the normalized root-relative resolution candidates for a document reference. Never the raw authored target, so `../docs/x.md` written from `designs/a.md` matches `docs/**`. Rejected at load on `escapes_source` / `absolute`, which are refused before anything is looked up.
 - `source_kinds` — the kinds of the document holding the reference; omitted matches every kind, and each entry must be in `kinds.allowed`. This is the axis that separates a record citing what stood on its day from a living document citing what no longer stands: `source_kinds = ["adr"]` at `info` above an unfiltered `error` row keeps a decision record's dead citation as history and refuses the same citation in a guide.
 - `source_statuses` — the statuses of the document holding the reference; omitted matches every status, and each entry must be in `statuses.allowed`. A document that has settled keeps a citation one still being written may not: `source_statuses = ["superseded", "archived"]` at `info` above an unfiltered `error` row. It reads the status alone; `source_protection` asks instead whether a lock still lets the citation be edited.
-- `history` — `recorded` where the build's own lookup, run against every document a commit `HEAD` reaches held, would have bound the reference; `unrecorded` where it would not. A removed document, or one whose removal is only staged, is `recorded`; a typo or a word that only looks like an id is `unrecorded`. Each document is read as the current configuration reads it, at the commits that added and removed it and at `HEAD`, so an id it carried only between those revisions is not recorded. Legal only on `missing` and `id_not_found`, the causes whose target the project holds nowhere. A row declaring it requires a git work tree holding the whole history: in a shallow, grafted or replaced clone every command that classifies unresolved references — `check`, `query issues` and every write but `migrate`, which classifies nothing — is refused with `CONFIG_ERROR` naming the row, since a document such a clone does not hold is one it cannot say was never there, while the rest run; in CI, check out with `fetch-depth: 0`. The reading is kept in `<output.dir>/recorded.json`, refreshed as `history.json` is and by `nodex history`, which lists from the same reading, so a command reads only the commits since the kept one. Once a row declares it, every unresolved edge and finding whose target the project holds nowhere carries `history`: `{"type": "recorded", "id": …}` names the document history records the reference bound to — at a path several documents held, the one recorded there last — which `nodex history <id>` lists, and `{"type": "unrecorded"}` a name none carried. A `scaffold` whose new document takes over such references reports each as `history_rebound`.
+- `history` — `recorded` where the build's own lookup, run against every document a commit `HEAD` reaches held, would have bound the reference; `unrecorded` where it would not. A removed document, or one whose removal is only staged, is `recorded`; a typo or a word that only looks like an id is `unrecorded`. Each document is read as the current configuration reads it, at the commits that added and removed it and at `HEAD`, so an id it carried only between those revisions is not recorded. Legal only on `missing` and `id_not_found`, the causes whose target the project holds nowhere. A row declaring it requires a git work tree holding the whole history: in a shallow, grafted or replaced clone every command that classifies unresolved references — `check`, `query issues` and every write, `migrate --apply` included once it has a file to write — is refused with `CONFIG_ERROR` naming the row, since a document such a clone does not hold is one it cannot say was never there, while the rest run; in CI, check out with `fetch-depth: 0`. The reading is kept in `<output.dir>/recorded.json`, refreshed as `history.json` is and by `nodex history`, which lists from the same reading, so a command reads only the commits since the kept one. Once a row declares it, every unresolved edge and finding whose target the project holds nowhere carries `history`: `{"type": "recorded", "id": …}` names the document history records the reference bound to — at a path several documents held, the one recorded there last — which `nodex history <id>` lists, and `{"type": "unrecorded"}` a name none carried. A `scaffold` whose new document takes over such references reports each as `history_rebound`.
 
 `source_protection` optionally matches `protected`, `unprotected` or `unknown` under the evaluated locks. An edge is protected only when every authored source is protected; one unprotected source keeps it unprotected. Missing baseline evidence stays unknown. Appended citations, including a link completed by an appended definition, do not inherit the prefix's protection. This is a modification constraint, not evidence of historical target validity. Omit the selector to preserve existing severity policy. `protected` and `unknown` require a configured lock covering at least one selected source: a body lock for body relations or a frontmatter lock selecting the authored relation field.
 
