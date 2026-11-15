@@ -1,0 +1,9 @@
+# A crate version is resolved only once it has been public for a day, the
+# window in which a yanked or compromised release is usually caught. This is
+# the cooldown `.github/dependabot.yml` gives its updates, applied to every
+# `cargo update` and `cargo add` run here; a version already in Cargo.lock is
+# kept, so builds against the lockfile are unaffected. A fix that cannot wait
+# a day is taken with
+# `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate> --precise <version>`.
+[registry]
+global-min-publish-age = "1 day"

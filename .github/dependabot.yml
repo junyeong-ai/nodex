@@ -9,7 +9,7 @@ updates:
     schedule:
       interval: weekly
     cooldown:
-      default-days: 7
+      default-days: 1
     groups:
       actions:
         patterns: ["*"]
@@ -18,15 +18,17 @@ updates:
       include: scope
 
   # Cargo workspace dependencies. Grouped so routine compatible updates
-  # land in one PR rather than dozens. A release waits out the cooldown
-  # before a PR proposes it, so one yanked or compromised within days never
-  # lands; security updates ignore the cooldown and still fire immediately.
+  # land in one PR rather than dozens. A release waits out the one-day
+  # cooldown before a PR proposes it, so one yanked or compromised in its
+  # first day never lands. Security updates ignore this cooldown, but a
+  # cargo that reads `.cargo/config.toml` holds a version younger than a
+  # day there too; that file names the override for a fix that cannot wait.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     cooldown:
-      default-days: 7
+      default-days: 1
     groups:
       cargo:
         patterns: ["*"]
