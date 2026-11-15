@@ -797,6 +797,44 @@ pub enum BaselineResolution {
     Resolved(Box<BaselineDiff>),
 }
 
+/// The findings the project carried at `at`, as a `check` of that commit
+/// judged them under `config` — every registered rule, over what git had
+/// recorded by then: what `check --since <ref> --introduced` does not report
+/// again. The ref is judged with no baseline and no steps, so a lock or a
+/// step rule finds nothing there and every one of their findings, which are
+/// about the range, stays reported. A ref that does not carry the project
+/// carried nothing.
+pub fn violations_at(
+    repository: &Repository,
+    at: &ResolvedRef<'_>,
+    config: &nodex_core::Config,
+    work_tree: &Path,
+    today: chrono::NaiveDate,
+) -> Result<Vec<nodex_core::Violation>> {
+    let tree = match at.recorded(repository)? {
+        Recorded::Tree(tree) => tree,
+        Recorded::Absent(_) => return Ok(Vec::new()),
+    };
+    let history = nodex_core::ProjectHistory::at(config, work_tree, at.object())?;
+    let checkout = Checkout::acquire(repository)?;
+    let outcome = checkout
+        .graph(&tree, config)
+        .with_context(|| format!("the project at {} could not be graphed", at.name))?;
+    let files = repository.locate(checkout.dir());
+    let report = nodex_core::rules::check(
+        &outcome.graph,
+        config,
+        nodex_core::builder::scanner::ProjectFiles::working_tree(&files)
+            .checked_out_from(work_tree),
+        &history,
+        nodex_core::rules::Since::None,
+        None,
+        today,
+    )
+    .with_context(|| format!("the project at {} could not be judged", at.name))?;
+    Ok(report.violations)
+}
+
 /// Resolve `rules.immutable_baseline` and take the snapshot the write seams
 /// judge against — the one place a mutating command obtains a probe, so
 /// every one of them locks against the same baseline `check` reports on.

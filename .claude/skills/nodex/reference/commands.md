@@ -227,6 +227,8 @@ Which findings those are is each rule's to say:
 
 `rule_coverage` is never narrowed — a rule guards what it guards whatever slice is shown. A `<ref>` git cannot resolve is refused (`GIT_ERROR`); one that does not carry the project — a subdirectory project added after it — widens back to the whole project and says so (`baseline_inert`, `gate_suppression`).
 
+`--introduced` reports instead what the project did not carry at `<ref>`. `<ref>` is judged as a `check` of that commit judged it — every registered rule under the checked project's config, over the history git had recorded by that commit — and a finding is reported only where `<ref>` held no identical one: the same rule, severity, document and `details`. A path or a line is not part of that, so a rename or an edit above a standing finding does not introduce it, while one more instance of a standing finding does. `has_errors` and the exit code answer for the reported set, so a stricter rule or an error policy row can gate new work in a corpus that still carries old findings. A drift the range's commits pushed past the threshold is introduced; one `<ref>` already stood in is not. Lock and step findings are about the range and are always reported, and a `<ref>` that does not carry the project carried nothing.
+
 A CI job needs the history the range names, and `actions/checkout` fetches one commit by default: a clone that lacks `<ref>` is refused with `GIT_ERROR`, and so is a range its shallow cut crosses wherever a rule judges the range's steps: a status flow, or a lock under the default `immutable_history = "steps"`. Check out with `fetch-depth: 0` ([baseline](config.md#diff-aware-rules), [status flow](config.md#status-flow)).
 
 ## check --staged

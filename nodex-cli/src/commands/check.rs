@@ -65,6 +65,13 @@ pub struct CheckArgs {
     /// rules (e.g. `frontmatter_immutable`).
     #[arg(long, value_name = "REF")]
     pub since: Option<String>,
+    /// Report only what the project did not carry at the `--since` ref, the
+    /// ref judged as a check of that commit judged it under this project's
+    /// config, so a stricter rule holds a change to what it adds without
+    /// failing it on what came before. Lock and step findings, which are
+    /// about the range, are always reported.
+    #[arg(long, requires = "since")]
+    pub introduced: bool,
     /// Judge the project as the next commit records it — the index git is
     /// committing — instead of the working tree, so an unstaged edit or a
     /// file never added is not judged, as it is not committed. Under the hook
@@ -137,15 +144,15 @@ pub fn run(root: &Path, args: CheckArgs, pretty: bool, today: NaiveDate) -> Resu
             .collect::<Vec<_>>()
     });
 
-    // Scoping is per-mode. `--content` uses the before/after delta
-    // (`rules::introduced_violations` — the count-aware multiset
-    // difference shared with scaffold's gate): a violation also present
-    // in the pre-overlay report is pre-existing and never refuses the
-    // proposal; one the overlay introduces — whatever node it lands on,
-    // including a node-less parse_failure for a proposal that destroys
-    // its own node — does. `--since` was narrowed inside the pass
-    // (`Since::Narrowed`), rule by rule, because which of its findings a
-    // diff answers for is each rule's to say.
+    // Scoping is per-mode. `--content` and `--introduced` use the
+    // before/after delta (`rules::introduced_violations` — the count-aware
+    // multiset difference shared with scaffold's gate): a violation also
+    // present before is pre-existing and never fails the change; one the
+    // change introduces — whatever node it lands on, including a node-less
+    // parse_failure for a proposal that destroys its own node — does. A bare
+    // `--since` was narrowed inside the pass (`Since::Narrowed`), rule by
+    // rule, because which of its findings a diff answers for is each rule's
+    // to say.
     let violations_filtered: Vec<_> = if let Some(before) = &target.baseline_violations {
         nodex_core::rules::introduced_violations(check_report.violations, before)
     } else {
@@ -248,11 +255,12 @@ struct CheckTarget {
     /// with a proposed-content overlay (`--content`), or the index
     /// (`--staged`).
     graph: nodex_core::Graph,
-    /// Violations of the pre-overlay working tree (`--content` only).
-    /// The reported set is the count-aware multiset difference
-    /// (`rules::introduced_violations`): each occurrence here cancels
-    /// at most one identical occurrence in the overlay report, so
-    /// every violation the proposal introduces gates it — including a
+    /// Violations the report is the delta from: the working tree before the
+    /// overlay (`--content`), or the project at the `--since` ref
+    /// (`--introduced`). The reported set is the count-aware multiset
+    /// difference (`rules::introduced_violations`): each occurrence here
+    /// cancels at most one identical occurrence in the judged report, so
+    /// every violation the change introduces gates it — including a
     /// duplicate of a pre-existing one.
     baseline_violations: Option<Vec<nodex_core::Violation>>,
     /// Diff that activates diff-aware rules, when one is available.
@@ -318,7 +326,7 @@ fn resolve_target(
     today: NaiveDate,
 ) -> Result<(nodex_core::Config, CheckTarget)> {
     if args.staged {
-        return resolve_staged_target(root, args);
+        return resolve_staged_target(root, args, today);
     }
     let mut config = nodex_core::load_project(root)?;
     args.baseline.apply_to(&mut config);
@@ -329,7 +337,7 @@ fn resolve_target(
 
     let outcome = nodex_core::builder::build(root, &config, false).context("graph build failed")?;
     let current = outcome.graph;
-    let (diff, steps, narrowed, baseline_warnings) = resolve_diff(
+    let (diff, steps, narrowed, carried, baseline_warnings) = resolve_diff(
         root,
         args,
         &config,
@@ -337,6 +345,7 @@ fn resolve_target(
             graph: &current,
             files: root,
         },
+        today,
     )?;
     // Surface the build's non-fatal advisories (scope coverage gaps,
     // cache problems); the diff-baseline advisory follows. Dropped
@@ -350,7 +359,7 @@ fn resolve_target(
         config,
         CheckTarget {
             graph: current,
-            baseline_violations: None,
+            baseline_violations: carried,
             diff,
             steps,
             narrowed,
@@ -378,6 +387,7 @@ fn resolve_target(
 fn resolve_staged_target(
     root: &Path,
     args: &CheckArgs,
+    today: NaiveDate,
 ) -> Result<(nodex_core::Config, CheckTarget)> {
     let repository = ensure_repository(root, "nodex check --staged")?;
     let checkout = Checkout::acquire(&repository)?;
@@ -389,7 +399,7 @@ fn resolve_staged_target(
     let outcome = nodex_core::builder::build_of_ref(&files, checkout.dir(), &config)
         .context("graph build failed")?;
     let current = outcome.graph;
-    let (diff, steps, narrowed, baseline_warnings) = resolve_diff(
+    let (diff, steps, narrowed, carried, baseline_warnings) = resolve_diff(
         root,
         args,
         &config,
@@ -397,6 +407,7 @@ fn resolve_staged_target(
             graph: &current,
             files: &files,
         },
+        today,
     )?;
     let mut warnings = outcome.warnings;
     warnings.extend(outcome.escaping_paths.iter().map(|path| {
@@ -414,7 +425,7 @@ fn resolve_staged_target(
         config,
         CheckTarget {
             graph: current,
-            baseline_violations: None,
+            baseline_violations: carried,
             diff,
             steps,
             narrowed,
@@ -665,6 +676,7 @@ type DiffResolution = (
     Option<nodex_core::diff::GraphDiff>,
     Option<Vec<nodex_core::Step>>,
     Option<(nodex_core::diff::GraphDiff, String)>,
+    Option<Vec<nodex_core::Violation>>,
     Vec<nodex_core::Warning>,
 );
 
@@ -673,11 +685,22 @@ fn resolve_diff(
     args: &CheckArgs,
     config: &nodex_core::Config,
     current: Current<'_>,
+    today: NaiveDate,
 ) -> Result<DiffResolution> {
+    let mut carried = None;
     let (mut prior, changes, since) = match args.since.as_deref() {
         Some(git_ref) => {
             let repository = ensure_repository(root, "nodex check --since")?;
             let since = super::git_checkout::ResolvedRef::resolve(&repository, git_ref)?;
+            if args.introduced {
+                carried = Some(super::git_checkout::violations_at(
+                    &repository,
+                    &since,
+                    config,
+                    root,
+                    today,
+                )?);
+            }
             let report_steps = if config.rules.immutable_baseline.is_some() {
                 super::git_checkout::Steps::None
             } else {
@@ -717,10 +740,12 @@ fn resolve_diff(
             None,
         ),
     };
+    // Under `--introduced` the report is the delta from what the ref carried,
+    // which already answers for every finding a diff could narrow to.
     let narrowed = match changes {
         Some((BaselineResolution::Resolved(baseline), source)) => {
             prior.unread.extend(baseline.warnings);
-            Some((baseline.diff, source))
+            (!args.introduced).then_some((baseline.diff, source))
         }
         Some((BaselineResolution::Inert { warning }, _)) => {
             prior.unread.push(warning);
@@ -731,7 +756,7 @@ fn resolve_diff(
         Some((BaselineResolution::NotApplicable, _)) => None,
         None => match (&prior.baseline, since) {
             (BaselineResolution::Resolved(baseline), Some(source)) => {
-                Some((baseline.diff.clone(), source))
+                (!args.introduced).then(|| (baseline.diff.clone(), source))
             }
             (BaselineResolution::Inert { .. }, Some(_)) => {
                 prior.unread.push(nodex_core::Warning::new(nodex_core::WarningCode::GateSuppression,
@@ -758,5 +783,5 @@ fn resolve_diff(
         }
         BaselineResolution::NotApplicable => None,
     };
-    Ok((diff, steps, narrowed, unread))
+    Ok((diff, steps, narrowed, carried, unread))
 }

@@ -279,7 +279,7 @@ sequenceDiagram
   exec nodex check --staged
   ```
 
-- `check --since <ref>` narrows the report to what a range changed and judges status moves commit by commit; check out with `fetch-depth: 0` in CI.
+- `check --since <ref>` narrows the report to what a range changed and judges status moves commit by commit; check out with `fetch-depth: 0` in CI. `--introduced` reports only what `<ref>` did not carry, so a stricter rule can gate new work while old findings remain.
 
 ### Lock what a record has settled
 
@@ -341,7 +341,7 @@ A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `
 | `nodex build [--full]` | Builds the graph snapshot; `--full` ignores the cache |
 | `nodex status` | Whether the snapshot matches the working tree |
 | `nodex classify <path>...` | Scope verdict and inferred kind, id and status per path, without a graph |
-| `nodex check` | Every registered rule; `--content`, `--remove`, `--staged`, `--since <ref>`, `--baseline <ref>` |
+| `nodex check` | Every registered rule; `--content`, `--remove`, `--staged`, `--since <ref> [--introduced]`, `--baseline <ref>` |
 | `nodex report` | Writes `GRAPH.md`, a readable summary |
 | `nodex diff <a> <b>` | Nodes, edges, statuses, fields and paths changed between two git refs |
 | `nodex impact <a> <b>` | The diff plus each change's dependents and dangling references |

@@ -279,7 +279,7 @@ sequenceDiagram
   exec nodex check --staged
   ```
 
-- `check --since <ref>`는 보고를 범위가 바꾼 것으로 좁히고, status 이동은 커밋마다 판정합니다. CI에서는 `fetch-depth: 0`으로 checkout합니다.
+- `check --since <ref>`는 보고를 범위가 바꾼 것으로 좁히고, status 이동은 커밋마다 판정합니다. CI에서는 `fetch-depth: 0`으로 checkout합니다. `--introduced`를 붙이면 `<ref>`에 없던 finding만 보고하므로, 기존 finding이 남아 있어도 더 엄격한 룰로 새 작업을 막을 수 있습니다.
 
 ### 정착된 기록을 잠그기
 
@@ -341,7 +341,7 @@ severity = "error"
 | `nodex build [--full]` | 그래프 스냅샷 빌드, `--full`은 캐시 무시 |
 | `nodex status` | 스냅샷이 작업 트리와 일치하는지 |
 | `nodex classify <path>...` | 그래프 없이 경로별 scope 판정과 추론 kind, id, status |
-| `nodex check` | 등록된 모든 룰, `--content`, `--remove`, `--staged`, `--since <ref>`, `--baseline <ref>` |
+| `nodex check` | 등록된 모든 룰, `--content`, `--remove`, `--staged`, `--since <ref> [--introduced]`, `--baseline <ref>` |
 | `nodex report` | 읽기 쉬운 요약 `GRAPH.md` 작성 |
 | `nodex diff <a> <b>` | 두 git ref 사이에 바뀐 node, edge, status, field, 경로 |
 | `nodex impact <a> <b>` | diff에 더해 각 변경의 dependent와 끊어진 참조 |

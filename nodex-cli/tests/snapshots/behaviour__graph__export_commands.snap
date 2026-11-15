@@ -651,6 +651,12 @@ exit: 0
             "takes_value": true
           },
           {
+            "long": "introduced",
+            "repeatable": false,
+            "required": false,
+            "takes_value": false
+          },
+          {
             "long": "staged",
             "repeatable": false,
             "required": false,

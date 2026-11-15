@@ -156,6 +156,7 @@ before retrying. Rename can leave a surviving move with `id_stability: anchor_fa
 ```bash
 nodex check --staged             # pre-commit: exit 1 blocks the commit
 nodex check --since origin/main  # CI: check out full history (fetch-depth: 0)
+nodex check --since origin/main --introduced  # CI: fail only on what the branch adds
 nodex diff origin/main HEAD
 nodex query dependents <id> --depth 3 --relations implements,supersedes
 nodex impact origin/main HEAD
@@ -165,6 +166,8 @@ nodex history                    # every document the project retired, e.g. to s
 
 `--staged` judges the index git commits. `--since` narrows findings and selects
 history; a configured `rules.immutable_baseline` still supplies the lock baseline.
+`--introduced` reports only what the ref did not carry, so a stricter rule can
+gate new work before old findings are fixed.
 CI names the commit its event is measured from with `--baseline <ref>`
 ([per-run baseline](reference/config.md#naming-the-baseline-for-one-run)); never
 use it to clear a `LOCKED` refusal.

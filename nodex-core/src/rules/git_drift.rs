@@ -307,8 +307,12 @@ pub struct DriftHistory {
     measured: Option<PathBuf>,
     /// Where the reading at `HEAD` is kept.
     kept: Option<KeptFile>,
+    /// The commit read, where a command named one ([`Self::at`]); `HEAD`'s
+    /// otherwise.
+    at: Option<String>,
     repository: OnceLock<Option<Repository>>,
-    /// The reading at `HEAD`, taken once however many passes ask for it.
+    /// The reading at the commit read, taken once however many passes ask
+    /// for it.
     head: OnceLock<Option<Arc<History>>>,
     /// One reading per revision range, kept because a pass asks the same
     /// range once per document and a command asks it once per pass.
@@ -338,6 +342,7 @@ impl DriftHistory {
         Self {
             measured: None,
             kept: None,
+            at: None,
             repository: OnceLock::new(),
             head: OnceLock::new(),
             readings: RwLock::new(BTreeMap::new()),
@@ -348,17 +353,28 @@ impl DriftHistory {
     /// is the gate, and everything past it happens on demand. It consults
     /// the kept reading and never stores one.
     pub fn of(config: &crate::config::Config, root: &Path) -> Self {
-        Self::keeping(config, root, false)
+        Self::keeping(config, root, false, None)
     }
 
     /// [`Self::of`] for the command that owns the kept reading: it stores
     /// the reading it takes whenever the kept one did not already answer,
     /// and reports on [`Self::warnings`] what kept it from doing so.
     pub fn refreshing(config: &crate::config::Config, root: &Path) -> Self {
-        Self::keeping(config, root, true)
+        Self::keeping(config, root, true, None)
     }
 
-    fn keeping(config: &crate::config::Config, root: &Path, refresh: bool) -> Self {
+    /// [`Self::of`] read at `commit` instead of `HEAD`: what a `check` of
+    /// that commit measures.
+    pub fn at(config: &crate::config::Config, root: &Path, commit: &str) -> Self {
+        Self::keeping(config, root, false, Some(commit.to_owned()))
+    }
+
+    fn keeping(
+        config: &crate::config::Config,
+        root: &Path,
+        refresh: bool,
+        at: Option<String>,
+    ) -> Self {
         let measured = config
             .detection
             .git_drift_threshold
@@ -369,6 +385,7 @@ impl DriftHistory {
         Self {
             measured,
             kept,
+            at,
             ..Self::unmeasured()
         }
     }
@@ -411,20 +428,18 @@ impl DriftHistory {
     }
 
     /// The part of [`Self::commits_since`]'s count that arrived in
-    /// `since..HEAD`, so a narrowed report can tell a drift the range
-    /// moved from one that stood before it. The range travels with the
+    /// `since..HEAD` (`since..` the commit read), so a narrowed report can
+    /// tell a drift the range moved from one that stood before it. The range travels with the
     /// diff it came from ([`crate::diff::Touched::since`]), so the
     /// reading and the narrowing can never be taken against different
     /// refs.
     pub fn commits_added(&self, since: &str, path: &Path, reviewed: NaiveDate) -> Option<u32> {
-        Some(
-            self.reading(&format!("{since}..HEAD"))?
-                .commits_since(path, reviewed),
-        )
+        let range = format!("{since}..{}", self.at.as_deref().unwrap_or("HEAD"));
+        Some(self.reading(&range)?.commits_since(path, reviewed))
     }
 
-    /// The walk of the commit `HEAD` names, taken once. A failed walk is
-    /// remembered as a failure, as [`Self::reading`] remembers one.
+    /// The walk of the commit read, taken once. A failed walk is remembered
+    /// as a failure, as [`Self::reading`] remembers one.
     fn at_head(&self) -> Option<Arc<History>> {
         self.head
             .get_or_init(|| self.walk_head().map(Arc::new))
@@ -433,7 +448,10 @@ impl DriftHistory {
 
     fn walk_head(&self) -> Option<History> {
         let repository = self.repository()?;
-        let head = repository.head().ok()??;
+        let head = match &self.at {
+            Some(commit) => commit.clone(),
+            None => repository.head().ok()??,
+        };
         // A history git can reshape in place has no reading its head
         // commit names, so there is nothing to consult or keep for it; an
         // unanswered question about it is read the same way.
