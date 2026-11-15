@@ -26,7 +26,7 @@ Each of these is a real `CONFIG_ERROR` at load, not a silent no-op:
 - `parser.extensions` entries carry the leading dot.
 - `[[annotations]]` patterns need a named capture matching `key`.
 - Narrowing `statuses.allowed` means declaring `statuses.terminal` too — every terminal status must stay allowed.
-- `[[statuses.flow]]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
+- `[[statuses.flow]]`, when declared, answers for the statuses it **names** — its entry point, its keys, its targets: no way out of a terminal one, a way out of every other unless its transitions are declared empty, all reachable from the entry point, and each admitted by every kind the flow governs. Separately, a status no flow names and no ungoverned kind may hold is refused as vocabulary nothing could carry.
 - A `kinds` entry on any per-block rule must be in `kinds.allowed`, so a typo can never become a silent never-fire.
 - `kinds.allowed` must include `generic`, the kind of a document that neither authors `kind:` nor matches an `identity.kind_rules` glob.
 - `rules.acyclic_relations` must name known relations and cannot be empty; `[[annotations]]` names must be unique; two `parser.link_patterns` blocks with the same `pattern` and `relation` are refused.
@@ -277,6 +277,8 @@ kinds = ["adr"]          # empty = every kind
 initial = "proposed"     # where a governed kind starts; omitted = statuses.initial, whose own default is the first allowed status
 transitions = { proposed = ["active", "archived"], active = ["superseded", "archived"] }
 ```
+
+A status whose transitions are declared empty (`active = []`) is one a record keeps until the project removes the document. No move leaves it, as none leaves a terminal status, but it is no terminal status: `orphan`, `stale_review`, `git_drift` and `superseded_reference` keep asking about it. A project that retires a document by deleting it, and reads what it removed through `nodex history` and `history` policy rows, ends its flow there.
 
 `status_transition` refuses a move the flow does not name, including any move out of a terminal status — the refusal `lifecycle` already gives, now reaching an edit that did not go through it. `status_entry` refuses a document authored into anything but the flow's entry status, which is the one way around a transition check: a record born accepted never transitioned. A flow judges whether a move is declared, not whether anyone approved it; acceptance stays a review decision.
 
