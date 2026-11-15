@@ -110,14 +110,134 @@ pub fn rewrite_for_move(
         .collect();
     let names = |text: &str, syntax| binding(syntax, text, to_dir, worlds.after, parser);
     let was = |text: &str, syntax| binding(syntax, text, from_dir, worlds.before, parser);
-    Ok(apply_proposals(
-        &content,
-        frontmatter,
-        proposals,
-        parser,
-        &names,
-        &was,
-    ))
+    let rewritten = apply_proposals(&content, frontmatter, proposals, parser, &names, &was);
+    move_covers(&content, rewritten, &moving, worlds)
+}
+
+/// `rewritten` with the document's `covers` moved too. The field is the one
+/// frontmatter relation that names documents by path, so it is the one a move
+/// can leave naming nothing, and the body reader never sees it.
+///
+/// Each value is read on the ladder the build binds `covers` with — a path,
+/// with no extension and no id to fall back on — and answered for as a body
+/// reference is: one that named a document is written in a spelling that,
+/// read from where the file stands after the move, names that document, or
+/// is left and named in [`Rewritten::refused`]; one the move leaves naming a
+/// different document is named in [`Rewritten::rebound`]. A value naming no
+/// document, a code path, is left as a body link to one is.
+fn move_covers(
+    original: &str,
+    mut rewritten: Rewritten,
+    moving: &Moving<'_>,
+    worlds: Worlds<'_>,
+) -> std::result::Result<Rewritten, crate::error::ParseError> {
+    let working = rewritten
+        .content
+        .clone()
+        .unwrap_or_else(|| original.to_string());
+    let (Some(yaml), body) = crate::parser::frontmatter::split_frontmatter(&working)? else {
+        return Ok(rewritten);
+    };
+    let Some(values) = crate::parser::frontmatter::authored_covers(yaml) else {
+        return Ok(rewritten);
+    };
+    let names = |value: &str, dir: &Path, world: &Bindings| {
+        crate::builder::resolver::resolve_target(
+            ReferenceSyntax::Frontmatter,
+            value,
+            crate::model::edge::PATH_ONLY_RELATION,
+            dir,
+            world,
+            &[],
+        )
+        .id()
+        .map(str::to_string)
+    };
+    let mut written = Vec::with_capacity(values.len());
+    for value in &values {
+        let repoint = moved_cover(value, moving, worlds);
+        if let Some(spelling) = repoint.as_ref().and_then(|repoint| {
+            repoint.spellings.iter().find(|spelling| {
+                names(spelling, moving.to_dir, worlds.after).as_deref()
+                    == Some(repoint.intends.as_str())
+            })
+        }) {
+            written.push(spelling.clone());
+            continue;
+        }
+        written.push(value.clone());
+        let was = names(value, moving.from_dir, worlds.before);
+        match names(value, moving.to_dir, worlds.after) {
+            Some(now) if was.as_deref() != Some(now.as_str()) => {
+                rewritten.rebound.push(Rebound {
+                    reference: value.clone(),
+                    was,
+                    now,
+                });
+            }
+            None if repoint.is_some() => rewritten.refused.push(value.clone()),
+            _ => {}
+        }
+    }
+    if written == values {
+        return Ok(rewritten);
+    }
+    let mut editor = crate::parser::editor::FrontmatterEditor::of_block(yaml)?;
+    editor.set_list(
+        "covers",
+        &written.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    rewritten.content = Some(format!("---\n{}---\n{body}", editor.render()));
+    Ok(rewritten)
+}
+
+/// [`moved_target`] for a `covers` value: the spellings naming, from where the
+/// document stands after the move, the document the value named — on the
+/// path-only ladder, so a spelling keeps its extension and never falls back
+/// to an id. `None` where the value goes on naming it as written, or named
+/// no document.
+fn moved_cover(value: &str, moving: &Moving<'_>, worlds: Worlds<'_>) -> Option<Repoint> {
+    let forward = crate::path_guard::forward_str(value);
+    let bound = |dir: &Path, world: &Bindings| match path_binding(
+        ReferenceSyntax::Frontmatter,
+        &forward,
+        dir,
+        world,
+        &[],
+        false,
+    ) {
+        PathBinding::Bound(bound) => Some(bound),
+        _ => None,
+    };
+    let named = bound(moving.from_dir, worlds.before)?;
+    let itself = named.path == moving.old_norm;
+    let stands = if itself {
+        moving.new_norm
+    } else {
+        named.path.as_str()
+    };
+    let intends = match (moving.rewriting, itself) {
+        (Rewriting::Moved, true) => worlds.after.id_at(stands)?.to_string(),
+        _ => named.id.clone(),
+    };
+    if bound(moving.to_dir, worlds.after).is_some_and(|after| after.path == stands) {
+        return None;
+    }
+    let own = named.frame == Frame::Relative;
+    let rendered = render_target(
+        Path::new(stands),
+        own.then_some(moving.to_dir),
+        true,
+        forward.starts_with("./"),
+        &[],
+    );
+    let says_frame = (own && !rendered.starts_with('.')).then(|| format!("./{rendered}"));
+    let spellings: Vec<String> = [Some(rendered), says_frame]
+        .into_iter()
+        .flatten()
+        .filter(|spelling| spelling != value)
+        .collect();
+    (!spellings.is_empty()).then_some(Repoint { spellings, intends })
 }
 
 /// The move one document's references are read against: which of the two
@@ -2232,6 +2352,77 @@ mod tests {
             },
             p,
         )
+    }
+
+    #[test]
+    fn a_referrer_s_covers_follow_the_document_the_move_carries() {
+        let content =
+            "---\nid: plan\ncovers:\n  - docs/req.md\n  - src/a.rs\ntags: [x]\n---\n# Plan\n";
+        let moved = rewrite_for_move(
+            content,
+            Rewriting::Referrer(Path::new("docs")),
+            Path::new("docs/req.md"),
+            Path::new("notes/req.md"),
+            Worlds {
+                before: &bound_of(&scope(&["docs/req.md", "docs/plan.md"])),
+                after: &after_move(
+                    &scope(&["docs/req.md", "docs/plan.md"]),
+                    "docs/req.md",
+                    "notes/req.md",
+                ),
+            },
+            &parser(),
+        )
+        .unwrap();
+        assert_eq!(
+            moved.content.as_deref(),
+            Some(
+                "---\nid: plan\ncovers:\n  - \"notes/req.md\"\n  - \"src/a.rs\"\ntags: [x]\n---\n# Plan\n"
+            ),
+            "the code path is left as a body link to one is"
+        );
+        assert!(moved.refused.is_empty() && moved.rebound.is_empty());
+    }
+
+    #[test]
+    fn a_moved_document_s_own_covers_keep_naming_what_they_named() {
+        // `./` binds the document beside the file, not the root one of that
+        // name, and from `b/` it has to be spelled from there.
+        let paths = ["a/sibling.md", "sibling.md"];
+        let moved = rebase_moved(
+            "---\ncovers: [./sibling.md]\n---\n",
+            "a",
+            "b",
+            &paths,
+            &world(&["b/moved.md", "a/sibling.md", "sibling.md"]),
+            &parser(),
+        )
+        .unwrap();
+        assert_eq!(
+            moved.content.as_deref(),
+            Some("---\ncovers:\n  - \"../a/sibling.md\"\n---\n")
+        );
+    }
+
+    #[test]
+    fn a_move_says_which_covers_it_left_naming_another_document() {
+        let paths = ["b/x.md"];
+        let moved = rebase_moved(
+            "---\ncovers: [x.md]\n---\n",
+            "a",
+            "b",
+            &paths,
+            &world(&["b/x.md", "b/moved.md"]),
+            &parser(),
+        )
+        .unwrap();
+        assert!(moved.content.is_none());
+        let rebound = &moved.rebound;
+        assert_eq!(rebound.len(), 1, "{rebound:?}");
+        assert_eq!(
+            (rebound[0].was.as_deref(), rebound[0].now.as_str()),
+            (None, "b/x.md")
+        );
     }
 
     #[test]

@@ -337,7 +337,10 @@ evidence.
   read generated output as original input. Bind against graph nodes, not merely
   scanned filenames. `Rewritten::rebound` examines standing references in the
   finished document and names those now bound elsewhere; a valid graph alone
-  cannot reveal this change. CLI warns once per reference.
+  cannot reveal this change. CLI warns once per reference. `covers`, the one
+  frontmatter field naming documents by path, is moved by the same answers
+  (`move_covers`) on its own path-only ladder; a value naming no document is
+  left, as a body link to one is.
 - Destinations try original, escaped, pointy, then URI-encoded and Markdown-escaped
   spellings while retaining the query/fragment suffix; forms try their
   original frame then an explicit frame (`./` for destinations, root naming for

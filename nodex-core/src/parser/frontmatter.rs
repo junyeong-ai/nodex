@@ -403,6 +403,18 @@ fn coerce_bool(
 /// Accepts both `"single"` and `["a", "b"]` — the two authoring styles
 /// every list-valued built-in supports. A sequence with any non-string
 /// element fails the whole field (one issue), never a partial list.
+/// The `covers` values a frontmatter block authors, read as
+/// [`parse_frontmatter`] reads them — `None` where the block or the field does
+/// not parse, which the build reports as a finding of its own.
+pub(crate) fn authored_covers(yaml: &str) -> Option<Vec<String>> {
+    let yaml_serde::Value::Mapping(mut mapping) = yaml_serde::from_str(yaml).ok()? else {
+        return None;
+    };
+    let mut issues = Vec::new();
+    coerce_string_list("covers", mapping.remove("covers"), &mut issues)
+        .filter(|_| issues.is_empty())
+}
+
 fn coerce_string_list(
     field: &str,
     value: Option<yaml_serde::Value>,
