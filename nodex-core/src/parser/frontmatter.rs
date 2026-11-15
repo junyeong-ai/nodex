@@ -43,7 +43,7 @@ struct RawFrontmatter {
 /// pipeline (frontmatter delimiter detection, body fingerprinting,
 /// regex matching, line iteration) sees one canonical form.
 pub fn canonicalize(content: &str) -> std::borrow::Cow<'_, str> {
-    let stripped = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+    let stripped = content.trim_prefix('\u{FEFF}');
     if stripped.contains('\r') {
         std::borrow::Cow::Owned(stripped.replace("\r\n", "\n").replace('\r', "\n"))
     } else if stripped.len() != content.len() {

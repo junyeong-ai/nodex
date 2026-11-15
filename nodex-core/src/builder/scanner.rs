@@ -1277,9 +1277,7 @@ fn walk_dir(
             // name, and a seam told only that the path is "outside
             // scope.include" would send the operator looking at globs that are
             // not the cause.
-            found
-                .undescended
-                .push(dir.strip_prefix(base).unwrap_or(&dir).to_path_buf());
+            found.undescended.push(dir.trim_prefix(base).to_path_buf());
             continue;
         }
         if !reached.insert(identity.clone()) {
@@ -1290,7 +1288,7 @@ fn walk_dir(
                 .dir_names
                 .entry(identity.clone())
                 .or_default()
-                .push(dir.strip_prefix(base).unwrap_or(&dir).to_path_buf());
+                .push(dir.trim_prefix(base).to_path_buf());
         }
         if dir != root
             && policy
@@ -1302,9 +1300,7 @@ fn walk_dir(
             // and a directory is a location. Reached under another name,
             // nodex's own `GRAPH.md` would be a project document that
             // `migrate` writes frontmatter into.
-            found
-                .undescended
-                .push(dir.strip_prefix(base).unwrap_or(&dir).to_path_buf());
+            found.undescended.push(dir.trim_prefix(base).to_path_buf());
             continue;
         }
         let descended: Vec<PathBuf> = ancestors
@@ -1325,7 +1321,7 @@ fn walk_dir(
             })?;
             let path = entry.path();
 
-            let rel = path.strip_prefix(base).unwrap_or(&path);
+            let rel = path.trim_prefix(base);
             let rel_str = crate::path_guard::forward_string(rel);
             let segments: Vec<&str> = rel_str.split('/').collect();
             let entry_type = entry.file_type();

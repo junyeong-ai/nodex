@@ -563,7 +563,7 @@ fn reaches(covered: &str, needle: &str) -> bool {
 fn normalize_query_path(input: &str) -> String {
     use std::path::{Component, PathBuf};
     let forward = crate::path_guard::forward_str(input);
-    let stripped = forward.strip_prefix("./").unwrap_or(&forward);
+    let stripped = forward.trim_prefix("./");
     let mut parts: Vec<Component<'_>> = Vec::new();
     for component in std::path::Path::new(stripped).components() {
         match component {
