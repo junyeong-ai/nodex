@@ -112,9 +112,9 @@ nodex query chain <id>
 The full supersession lineage — the whole connected component, oldest → newest topological order. Anchor on **any** member, even the current doc; every branch is returned, never collapsed. `supersedes` is a DAG: a linear lineage has one tip (the live doc) as the last entry, while a fork or consolidation can have several. Read "what's current" from the non-terminal `status`, not from position alone.
 
 ```bash
-nodex query covered-by <path>
+nodex query covered-by <path>...
 ```
-Documents whose `covers:` names this path or a directory holding it — the reach git drift measures for the same entry. The declaring document's value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`. The `<path>` you pass is a needle with no frame of its own, so `./`, `..` and `\` in it normalise away.
+Documents whose `covers:` names one of these paths or a directory holding it — the reach git drift measures for the same entry. Each covering document is listed once, with `paths`: the asked paths it covers, normalised, in the order asked. The declaring document's value is read on the build's own ladder, so `covers: ["./src/a.rs"]` in `docs/x.md` names `docs/src/a.rs`. A `<path>` you pass is a needle with no frame of its own, so `./`, `..` and `\` in it normalise away.
 
 ```bash
 nodex query orphans [--limit N]        # live docs no record names (no incoming edge, no predecessor's superseded_by), past the exemptions

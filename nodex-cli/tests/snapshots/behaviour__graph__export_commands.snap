@@ -1,6 +1,5 @@
 ---
 source: nodex-cli/tests/behaviour.rs
-assertion_line: 289
 expression: observed
 ---
 exit: 0
@@ -357,7 +356,7 @@ exit: 0
         ],
         "positionals": [
           {
-            "name": "path",
+            "name": "paths",
             "required": true
           }
         ],

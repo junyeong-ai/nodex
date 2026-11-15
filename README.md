@@ -356,7 +356,7 @@ A `history` row needs the whole history (`fetch-depth: 0`): in a shallow clone `
 | `nodex query stale` | Live documents past their review threshold |
 | `nodex query recent` | Documents whose date field falls in a window |
 | `nodex query similar` | Comparison candidates for a document or a draft title |
-| `nodex query covered-by <path>` | Documents whose `covers:` claims a code path |
+| `nodex query covered-by <path>...` | Documents whose `covers:` claims any of these code paths, each with the paths it covers |
 | `nodex query annotations` | Declared body markers, grouped |
 | `nodex query issues` | Orphans, stale documents, unresolved references and rule findings |
 | `nodex scaffold` | A new document with valid frontmatter |

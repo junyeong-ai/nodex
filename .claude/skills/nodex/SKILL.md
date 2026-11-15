@@ -196,7 +196,7 @@ nodex history [<id>]
 nodex scaffold                  nodex rename <old> <new>        nodex retarget <old_id> <new_id>
 nodex lifecycle review <id>     nodex lifecycle set <id>        nodex lifecycle supersede <id>
 nodex query search <keyword>    nodex query nodes               nodex query node <id>
-nodex query backlinks <id>      nodex query chain <id>          nodex query covered-by <path>
+nodex query backlinks <id>      nodex query chain <id>          nodex query covered-by <path>...
 nodex query orphans             nodex query stale               nodex query issues
 nodex query similar             nodex query recent
 nodex query components          nodex query neighborhood <id>   nodex query dependents <id>
