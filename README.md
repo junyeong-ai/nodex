@@ -447,6 +447,7 @@ Warnings describe the result's scope, retention or other conditions; they do not
 | `reference_kept` | A mutation preserved a reference by its declared retarget policy or to avoid a self-reference |
 | `document_evicted` | A write made a `conditional_exclude` parent terminal and so dropped its sub-artifacts from the project |
 | `history_unread` | The step rules could not read history they needed — a commit whose tree the build refuses, or history a shallow clone cut off; its records are counted as `unjudged` |
+| `history_rebound` | A `scaffold` gave its new document references history recorded to a removed one: they named that document and now name this one |
 | `threshold_undeclared` | A listing asked by a detection threshold the project does not declare measured nothing — `query stale` without `[detection].stale_days` — so its empty answer is not a clean one |
 | `cache` | A cache could not be read or persisted; the next run redoes that work |
 

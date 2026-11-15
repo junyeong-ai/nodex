@@ -102,6 +102,7 @@ exit: 0
                       "document_evicted",
                       "file_skipped",
                       "gate_suppression",
+                      "history_rebound",
                       "history_unread",
                       "id_changed",
                       "ranking_unscored",

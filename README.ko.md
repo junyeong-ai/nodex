@@ -447,6 +447,7 @@ nodex export diagnostics       # 오류, 경고, 종료 코드
 | `reference_kept` | 선언된 retarget 정책 또는 자기 참조 방지를 위해 참조를 보존함 |
 | `document_evicted` | 쓰기가 `conditional_exclude` 부모를 terminal로 만들어 그 sub-artifact를 프로젝트에서 뺌 |
 | `history_unread` | step 룰이 판정에 필요한 이력을 읽지 못함 — 빌드가 트리를 거부하는 커밋, 또는 shallow clone이 가져오지 않은 이력; 그 기록은 `unjudged`로 셈 |
+| `history_rebound` | `scaffold`가 history가 제거 문서로 기록한 참조를 새 문서로 넘겨받음: 그 참조는 제거된 문서를 가리켰고 이제 새 문서를 가리킴 |
 | `threshold_undeclared` | `[detection].stale_days` 없이 `query stale`을 실행한 경우처럼, 프로젝트가 선언하지 않은 탐지 기준을 묻는 목록은 아무것도 측정하지 않음. 그래서 빈 답이 깨끗한 결과라는 뜻이 아님 |
 | `cache` | 캐시를 읽거나 저장하지 못함; 다음 실행이 그 작업을 다시 함 |
 

@@ -79,7 +79,8 @@ choosing a lifecycle change; orphan status or an old review date is not a verdic
 2. Tool write: run `scaffold`, `rename` or `retarget` with `--dry-run` first. It
    runs the same gates and writes nothing (`scaffold` reports `written: false`,
    `rename` and `retarget` `completion: planned`); read its warnings
-   (`file_skipped`, `reference_kept`, `document_evicted`), then run it without.
+   (`file_skipped`, `reference_kept`, `document_evicted`, `history_rebound`), then
+   run it without.
 3. After any write: `nodex check`, then `nodex build`.
 
 ```bash
@@ -235,6 +236,7 @@ was absent where the ref was asked; inspect what went ungated) ·
 `reference_kept` (retarget preserved a policy-held or successor reference) ·
 `document_evicted` (a write removed other documents from scope, not disk) ·
 `history_unread` (step history could not be read; counted unjudged) ·
+`history_rebound` (a scaffolded document took references history recorded to a removed one) ·
 `threshold_undeclared` (the listing's detection threshold is absent, so its empty
 answer measured nothing).
 <!-- /published:warning-codes -->
