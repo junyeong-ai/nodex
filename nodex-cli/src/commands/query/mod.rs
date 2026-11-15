@@ -84,8 +84,11 @@ pub enum QueryCommand {
         #[arg(long, requires = "with_body", value_name = "START:END")]
         body_lines: Option<String>,
     },
-    /// Reverse lookup: docs claiming authority over a source-code path
-    CoveredBy { path: String },
+    /// Reverse lookup: docs claiming authority over source-code paths
+    CoveredBy {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
     /// Unified report of every actionable problem (orphans, stale, unresolved edges, rule violations)
     Issues {
         #[command(flatten)]
@@ -348,7 +351,7 @@ pub fn run(root: &Path, args: QueryArgs, pretty: bool, today: NaiveDate) -> Resu
             body_lines.as_deref(),
             pretty,
         ),
-        QueryCommand::CoveredBy { path } => traverse::run_covered_by(root, &path, pretty),
+        QueryCommand::CoveredBy { paths } => traverse::run_covered_by(root, &paths, pretty),
         QueryCommand::Issues { baseline } => detect::run_issues(root, &baseline, pretty, today),
         QueryCommand::Similar(args) => score::run_similar(root, args, pretty),
         QueryCommand::Recent(args) => filter::run_recent(root, args, pretty, today),

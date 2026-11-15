@@ -130,15 +130,21 @@ pub(crate) fn run_node(
 
 pub(crate) fn run_covered_by(
     context: &super::QueryContext<'_>,
-    code_path: &str,
+    code_paths: &[String],
     pretty: bool,
 ) -> Result<()> {
     let config = nodex_core::load_project(context.root)?;
-    let normalised = nodex_core::path_guard::normalize_for_lookup(code_path, context.root)?;
+    let normalised = code_paths
+        .iter()
+        .map(|path| nodex_core::path_guard::normalize_for_lookup(path, context.root))
+        .collect::<nodex_core::Result<Vec<_>>>()?;
     let snapshot = context.load_graph(&config)?;
     let (graph, warnings) = (snapshot.graph(), snapshot.warnings());
-    let items =
-        nodex_core::query::traverse::find_covered_by(graph, &normalised, &config.parser.extensions);
+    let items = nodex_core::query::traverse::find_covered_by(
+        graph,
+        &normalised.iter().map(String::as_str).collect::<Vec<_>>(),
+        &config.parser.extensions,
+    );
     context.emit_read_with(ItemsEnvelope::new(items), warnings, &config, pretty);
     Ok(())
 }

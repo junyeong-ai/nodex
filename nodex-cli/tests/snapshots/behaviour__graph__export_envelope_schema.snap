@@ -3735,6 +3735,13 @@ exit: 0
               "path": {
                 "type": "string"
               },
+              "paths": {
+                "description": "The asked paths the document covers, normalized, in the order asked.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "relation": {
                 "type": "string"
               },
@@ -3751,7 +3758,8 @@ exit: 0
               "kind",
               "status",
               "path",
-              "relation"
+              "relation",
+              "paths"
             ],
             "type": "object"
           }

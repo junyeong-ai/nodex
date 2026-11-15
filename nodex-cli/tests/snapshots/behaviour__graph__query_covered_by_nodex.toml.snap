@@ -10,6 +10,9 @@ exit: 0
         "id": "guide-index",
         "kind": "guide",
         "path": "docs/index.md",
+        "paths": [
+          "nodex.toml"
+        ],
         "relation": "covers",
         "status": "active",
         "title": "Index"

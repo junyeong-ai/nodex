@@ -356,7 +356,7 @@ severity = "error"
 | `nodex query stale` | 검토 기한이 지난 살아 있는 문서 |
 | `nodex query recent` | 날짜 필드가 구간 안에 드는 문서 |
 | `nodex query similar` | 문서나 초안 제목의 비교 후보 |
-| `nodex query covered-by <path>` | `covers:`가 코드 경로를 주장하는 문서 |
+| `nodex query covered-by <path>...` | `covers:`가 이 코드 경로 중 하나를 주장하는 문서와 그 문서가 덮는 경로 |
 | `nodex query annotations` | 선언한 본문 마커, 묶어서 |
 | `nodex query issues` | orphan, stale 문서, 미해결 참조, 룰 위반 |
 | `nodex scaffold` | 유효한 frontmatter를 가진 새 문서 |

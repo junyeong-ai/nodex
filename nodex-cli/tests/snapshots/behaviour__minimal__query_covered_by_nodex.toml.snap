@@ -10,6 +10,9 @@ exit: 0
         "id": "guide-overview",
         "kind": "guide",
         "path": "docs/overview.md",
+        "paths": [
+          "nodex.toml"
+        ],
         "relation": "covers",
         "status": "active",
         "title": "Overview"
