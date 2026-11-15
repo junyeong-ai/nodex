@@ -1,0 +1,8 @@
+# The project gives Dependabot a one-day cooldown, the same day
+# `.cargo/config.toml` holds a local `cargo update` to. zizmor's default floor
+# is seven days; it is lowered to the cooldown the project declares, so a
+# missing cooldown, or one under a day, is still a finding.
+rules:
+  dependabot-cooldown:
+    config:
+      days: 1
