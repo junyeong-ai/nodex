@@ -123,7 +123,7 @@ nodex query issues                     # orphans + stale + unresolved + violatio
 ```
 `orphans` and `stale` also return `subjects` and `unjudged`. Missing review dates are unjudged; use `nodes --missing reviewed` to list them.
 
-`query issues` resolves `rules.immutable_baseline` exactly as a default `check` does, [`--baseline`](config.md#naming-the-baseline-for-one-run) included.
+`query issues` resolves `rules.immutable_baseline` exactly as a default `check` does, [`--baseline`](config.md#naming-the-baseline-for-one-run) included. It also runs every [`[[rules.external]]`](config.md#external-rules) program over the snapshot's documents, so under `--allow-stale` a document changed since the build refuses with `GRAPH_OUTDATED`, as `--body-contains` does.
 
 `query orphans` and `query stale` read the same predicates as the `orphan` and `stale_review` rules. In `query issues` a finding with a gate record is counted once, through the violation, so `summary.total` counts problems rather than mentions and `by_category` keys it `violation_<rule_id>`; unresolved warning and error findings count the same way, and info rows are reported under their own name outside `total`.
 
@@ -196,12 +196,12 @@ without one. `--baseline <ref>` names that baseline for one run, and every
 writing command takes it too, so a proposal and its write judge against one
 commit ([per-run baseline](config.md#naming-the-baseline-for-one-run)). Step rules judge the move the proposal would commit. Unrelated
 standing errors do not block a proposal. `proposals` reports `{path, change, in_scope,
-has_path_errors}`, `change` being `content` or `removal`, and `standing` reports the proposed nodes' warning findings;
+has_path_errors}`, `change` being `content` or `removal`; `in_scope` is the scope's verdict on the proposed content or, for a removal, on the file as the working tree holds it, and a removal of a file no document lives at is still judged for what cites it. `standing` reports the proposed nodes' warning findings;
 top-level `has_errors` gates the whole batch. A warning retained in `standing`
 is not suppressed by `--severity`.
 
-An in-project path outside scope validates nothing and warns; a path escaping the
-root is refused. Inferred id, title, kind and status do not prove those keys were
+A `--content` path in the project but outside scope validates nothing and warns; a
+path escaping the root is refused. Inferred id, title, kind and status do not prove those keys were
 authored: configure `schema.require_explicit` when explicit declarations matter.
 Restore lock drift before retrying a refused edit; replace a changed decision
 through supersession. A configured `append_section` permits
@@ -238,7 +238,7 @@ Writes the index git is committing as a tree — from a copy, so the index itsel
 
 The index is `GIT_INDEX_FILE` when git names one — the hooks of `git commit -a` and `git commit <path>` get the index those commits make; a relative one is read against the work tree's top level, as git reads it — and the working tree's otherwise. `GIT_ERROR` for an index with unmerged entries, one that does not record the project's directory, or a `GIT_INDEX_FILE` naming no file. The index is graphed as a ref is: a staged link resolving outside the repository is not read, and a `scope_coverage` warning names it.
 
-Two commits make a step the hook cannot see whole, and both are judged from `HEAD`: `git commit --amend` makes its step from `HEAD^`, and `git merge` runs `pre-merge-commit` before it records the merged head; gate merges in `pre-commit` or with `check --since`. Mutually exclusive with `--content`; combines with `--since`.
+Two commits make a step the hook cannot see whole, and both are judged from `HEAD`: `git commit --amend` makes its step from `HEAD^`, and `git merge` runs `pre-merge-commit` before it records the merged head; gate merges in `pre-commit` or with `check --since`. Mutually exclusive with `--content` and `--remove`; combines with `--since`.
 
 ## diff / impact
 

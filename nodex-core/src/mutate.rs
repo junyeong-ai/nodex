@@ -13,12 +13,13 @@
 //!
 //! [`introduced`] is what the whole batch answers for: the check
 //! violations the project would carry after the proposal that it does not
-//! carry now. Every write seam but `migrate` asks it, including the ones
-//! that write a single document, because the rules a mutation can break are
-//! the whole registry rather than the family a seam happened to think of — a
+//! carry now. Every write seam asks it, including the ones that write a
+//! single document, because the rules a mutation can break are the whole
+//! registry rather than the family a seam happened to think of — a
 //! reference this write leaves dangling, a cycle a repoint closes, a field
 //! a status change leaves unsatisfied. `migrate` writes only fields a
-//! document already inferred, so it introduces nothing by construction.
+//! document already inferred, so only a rule that reads the bytes, an
+//! external one, can find something it introduces.
 //! [`BaselineProbe`] is the module's
 //! third seam: every
 //! mutation entry point ([`BaselineProbe::refusals`],
@@ -1590,7 +1591,7 @@ impl Introduced {
 /// stands — the write plane's one answer to "would `check` say something
 /// after this mutation that it does not say now?".
 ///
-/// Every seam that writes documents but `migrate` asks before it writes and
+/// Every seam that writes documents asks before it writes and
 /// refuses on [`Introduced::refusal`], so a command cannot report success onto a
 /// project its own `check` then fails, and cannot refuse a mutation that
 /// `check` would pass. Attribution is

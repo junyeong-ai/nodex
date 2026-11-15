@@ -1,5 +1,5 @@
 # Minimal working nodex.toml — the worked example behind the load-time
-# rejections in reference/config.md. Verify any variant with
+# rejections in config.md beside this file. Verify any variant with
 # `nodex -C <dir> check`: `ok: false` with `CONFIG_ERROR` is the config
 # refusing, `ok: true` with violations is the corpus.
 

@@ -41,7 +41,8 @@ nodex check --severity error
 Build before querying and after edits. Queries read `graph.json` under
 `data.output.dir` from `export config` (`_index` by default), verify content and
 refuse drift. `query --allow-stale` explicitly permits membership-only snapshot
-reads; it does not establish content freshness. Body reads still verify revisions.
+reads; it does not establish content freshness. Body reads, and the documents
+`query issues` hands an external rule, still verify revisions.
 
 A missed lookup yields `NOT_FOUND` only after content verification. Rebuild for
 `GRAPH_MISSING` / `GRAPH_OUTDATED`; fix unreadable paths for `IO_ERROR`.
@@ -73,11 +74,13 @@ choosing a lifecycle change; orphan status or an old review date is not a verdic
 ## Write and verify
 
 1. Hand edit: pipe the new bytes to `nodex check --content <path>=-`. Exit 0
-   with every `data.proposals[].in_scope` true: write the file (an out-of-scope
-   path validated nothing). Exit 1: fix the proposal and re-run. Exit 2: nothing
-   was judged; read `error`. Before deleting a file, ask
+   with every `content` entry of `data.proposals[]` `in_scope`: write the file
+   (an out-of-scope path validated nothing). Exit 1: fix the proposal and
+   re-run. Exit 2: nothing was judged; read `error`. Before deleting a file, ask
    `nodex check --remove <path>` with a `--content` pair for each edit that
-   drops a citation of it; the exit codes read the same.
+   drops a citation of it; the exit codes read the same, and a `removal` entry
+   is judged for what cites the file even when its `in_scope` is false (a code
+   path a `covers:` names).
 2. Tool write: run `scaffold`, `rename` or `retarget` with `--dry-run` first. It
    runs the same gates and writes nothing (`scaffold` reports `written: false`,
    `rename` and `retarget` `completion: planned`); read its warnings
@@ -134,9 +137,13 @@ remain historical citations; body links are repointed unless a lock holds them
 
 A finding under `external/<name>` comes from a program the project declares
 (`params.command` in `export rules`; [external rules](reference/config.md#external-rules)):
-its `details.data` is what the finding is. A `CONFIG_ERROR` naming an external
-rule is that program failing to answer: read the stderr it quotes, then fix the
-program, its environment, or the document it failed on.
+its `details.data` is what the finding is. nodex runs that program for `check`,
+`query issues` and, for an `error` block, every write, so `Bash(nodex *)`
+approves whatever `nodex.toml` declares: in a repository you do not trust, read
+the `external/*` entries of `nodex export rules`, which runs nothing, first.
+A `CONFIG_ERROR` naming an external rule is that program failing to answer: read
+the stderr it quotes, then fix the program, its environment, or the document it
+failed on.
 
 Batch writes are not a filesystem transaction. Inspect `completion`, `failures`
 and warnings even on nonzero exits; successful earlier writes remain. Policy
