@@ -797,17 +797,22 @@ pub enum BaselineResolution {
     Resolved(Box<BaselineDiff>),
 }
 
-/// The findings the project carried at `at`, as a `check` of that commit
-/// judged them under `config` — every registered rule, over what git had
-/// recorded by then: what `check --since <ref> --introduced` does not report
-/// again. The ref is judged with no baseline and no steps, so a lock or a
-/// step rule finds nothing there and every one of their findings, which are
-/// about the range, stays reported. A ref that does not carry the project
-/// carried nothing.
+/// The findings the project carried at `at`, judged under `config` by every
+/// registered rule over what git had recorded by that commit: what `check
+/// --since <ref> --introduced` does not report again.
+///
+/// The ref is judged in the frame the checked project is. Where that one is
+/// judged against a baseline (`baselined`), the ref is judged against itself,
+/// as a check of that commit with nothing uncommitted is: what a lock arms
+/// there holds, so a citation it protects is read as protected, and the lock
+/// finds no drift. With no steps either, every lock and step finding the
+/// checked project carries stays reported. A ref that does not carry the
+/// project carried nothing.
 pub fn violations_at(
     repository: &Repository,
     at: &ResolvedRef<'_>,
     config: &nodex_core::Config,
+    baselined: bool,
     work_tree: &Path,
     today: chrono::NaiveDate,
 ) -> Result<Vec<nodex_core::Violation>> {
@@ -821,13 +826,18 @@ pub fn violations_at(
         .graph(&tree, config)
         .with_context(|| format!("the project at {} could not be graphed", at.name))?;
     let files = repository.locate(checkout.dir());
+    let unchanged =
+        baselined.then(|| nodex_core::diff::compute_diff(&outcome.graph, &outcome.graph));
     let report = nodex_core::rules::check(
         &outcome.graph,
         config,
         nodex_core::builder::scanner::ProjectFiles::working_tree(&files)
             .checked_out_from(work_tree),
         &history,
-        nodex_core::rules::Since::None,
+        unchanged.as_ref().map_or(
+            nodex_core::rules::Since::None,
+            nodex_core::rules::Since::Baseline,
+        ),
         None,
         today,
     )

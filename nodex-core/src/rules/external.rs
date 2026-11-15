@@ -14,8 +14,9 @@
 //! `check --content` or a write gate, the index's under `check --staged` —
 //! so the program reads documents from the request, never from disk. `tree`
 //! is the directory the documents a proposal leaves alone are read from:
-//! the index's checkout under `check --staged`, and otherwise the project
-//! as it stands, which does not hold what a proposal changes.
+//! the index's checkout under `check --staged`, the ref's checkout in the
+//! pass `check --since <ref> --introduced` judges the ref with, and otherwise
+//! the project as it stands, which does not hold what a proposal changes.
 //!
 //! ```json
 //! {"protocol": 1, "unjudged": 0,

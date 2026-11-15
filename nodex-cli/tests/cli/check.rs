@@ -1040,6 +1040,58 @@ fn introduced_reports_only_what_the_ref_did_not_carry() {
     );
 }
 
+/// The ref is judged in the frame the checked project is: against itself, so a
+/// citation its lock protected there reads as protected. A range that disarms
+/// the lock turns the standing warning into an error, and that error is new.
+#[test]
+fn introduced_reports_the_error_a_disarmed_lock_exposes() {
+    let tmp = scratch();
+    let root = tmp.path();
+    let git = git_runner(root);
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    fs::write(
+        root.join("nodex.toml"),
+        "[scope]\ninclude = [\"docs/**/*.md\"]\n\
+         [kinds]\nallowed = [\"generic\", \"adr\"]\n\
+         [statuses]\nallowed = [\"draft\", \"active\"]\nterminal = []\n\
+         [detection]\norphan_ok_kinds = [\"adr\"]\n\
+         [[detection.unresolved_policy]]\nname = \"frozen\"\ncause = \"missing\"\n\
+         source_protection = \"protected\"\nseverity = \"warning\"\n\
+         [[detection.unresolved_policy]]\nname = \"broken\"\ncause = \"missing\"\n\
+         severity = \"error\"\n\
+         [rules]\nimmutable_baseline = \"HEAD\"\n\
+         [[rules.body_immutable]]\nname = \"settled\"\nmode = \"frozen\"\n\
+         trigger = \"status\"\nstatuses = [\"active\"]\nkinds = [\"adr\"]\n",
+    )
+    .unwrap();
+    let adr = |status: &str| {
+        format!("---\nid: adr-a\ntitle: A\nkind: adr\nstatus: {status}\n---\n[gone](missing.md)\n")
+    };
+    write_doc(root, "docs/a.md", &adr("active"));
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "settled"]);
+    write_doc(root, "docs/a.md", &adr("draft"));
+    git(&["commit", "-qam", "reopened"]);
+    nodex(root).arg("build").assert().success();
+
+    let output = nodex(root)
+        .args(["check", "--since", "HEAD~1", "--introduced"])
+        .output()
+        .expect("ran");
+    let envelope: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let rules: Vec<&str> = envelope["data"]["violations"]
+        .as_array()
+        .expect("violations")
+        .iter()
+        .map(|v| v["rule_id"].as_str().expect("rule id"))
+        .collect();
+    assert_eq!(rules, ["unresolved_reference/broken"], "{envelope}");
+    assert_eq!(output.status.code(), Some(1));
+}
+
 /// The ref is judged as a `check` of that commit judged it, over the history
 /// git had recorded by then: a drift the range's commits made is introduced,
 /// one the ref already stood in is not.
