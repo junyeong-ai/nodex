@@ -86,7 +86,7 @@ jobs:
             builder: cargo
           - label: linux-arm64
             target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
+            os: ubuntu-26.04-arm
             archive: tar.gz
             builder: cargo
           - label: macos-universal
