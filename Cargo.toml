@@ -14,23 +14,23 @@ repository = "https://github.com/junyeong-ai/nodex"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 yaml_serde = "0.10.7"
-toml = "1.2.1"
+toml = "1.2.3"
 
 # Collections / hashing
 indexmap = { version = "2.14.2", features = ["serde"] }
-sha2 = "0.11.1"
+sha2 = "0.11.2"
 
 # Errors
 thiserror = "2.0.21"
-anyhow = "1.0.104"
+anyhow = "1.0.105"
 
 # Parsing
 pulldown-cmark = "0.13.6"
 fluent-uri = "0.4.1"
 percent-encoding = "2.3.2"
-regex = "1.13.1"
-regex-automata = { version = "0.4.18", default-features = false, features = ["std", "syntax", "dfa-build"] }
-globset = "0.4.21"
+regex = "1.13.2"
+regex-automata = { version = "0.4.19", default-features = false, features = ["std", "syntax", "dfa-build"] }
+globset = "0.4.22"
 
 # Time
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "clock"] }
@@ -39,7 +39,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["serde", "c
 rayon = "1.12.0"
 
 # CLI
-clap = { version = "4.6.7", features = ["derive"] }
+clap = { version = "4.6.10", features = ["derive"] }
 semver = "1.0.28"
 
 insta = { version = "1.49.0", features = ["json"] }
@@ -50,7 +50,7 @@ schemars = { version = "1.2.3", features = ["chrono04"] }
 # Test
 tempfile = "3.27.0"
 assert_cmd = "2.2.2"
-jsonschema = { version = "0.61.2", default-features = false }
+jsonschema = { version = "0.63.2", default-features = false }
 proptest = "1.12.0"
 
 
